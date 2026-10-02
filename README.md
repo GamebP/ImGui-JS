@@ -1,0 +1,95 @@
+# ImGui Browser Port (from `imgui-1.92.9b`) → Violentmonkey
+
+## How the ImGui window is made (what was ported)
+- `Begin(name, open, flags)` / `End()` — cf. `imgui.h:437-438`, `imgui.cpp:7527-8387`.
+  Every frame `Begin` looks up `windows.get(name)` or creates it (`CreateNewWindow`),
+  applies staged `SetNextWindowPos/Size` (`NextWindowData`, `imgui.cpp:8756-8805`),
+  handles title-bar drag-move (`StartMouseMovingWindow`), bottom-right resize grip,
+  double-click collapse, `[x]` close, then sets `cursor` for widgets. `End` auto-fits
+  height (`size.y==0`), clamps to screen, pops the window stack. Fixed-height windows
+  get wheel scrolling + scrollbar (`ImGui.extended.js` wrapper).
+- Widgets follow one pattern (cf. `imgui_widgets.cpp` + `imgui.cpp:11455 ItemAdd`,
+  `:5018 ItemHoverable`, `widgets.cpp:545 ButtonBehavior`):
+  `getID(label)` → layout box → `itemSize` → `itemAdd` → `buttonBehavior`
+  (hover/active/pressed via `hoveredId/activeId`) → push draw ops → `nextLine`.
+- Rendering (`imgui_draw.cpp` `ImDrawList`) is adapted: instead of triangle meshes
+  we record ops (`rectFilled/rect/line/circle/polyline/polygon/image/text`) per window
+  and flush them on a fixed overlay `<canvas>` back-to-front by `window.z`.
+- Input (`backends/imgui_impl_win32/glfw/sdl2` + `ImGuiIO Add*Event`, `imgui.h:2556+`):
+  `mousemove/mousedown/mouseup/wheel/keydown` on `window` (capture phase) feed
+  `io.AddMousePosEvent/AddMouseButtonEvent/AddMouseWheelEvent/AddInputCharactersUTF8`.
+  `WantCaptureMouse` = mouse over any window or dragging; when true we
+  `preventDefault/stopPropagation` so the page doesn't get the click.
+- Style defaults copied from `imgui.cpp:1507-1592` + `StyleColorsDark`
+  (`imgui_draw.cpp:187-253`); Classic/Light themes approximated.
+- `.ini` window persistence via `localStorage` (respects `NoSavedSettings`).
+
+## Files (this folder = `C:\Users\SkyD\Downloads\ImGui\Build`)
+| File | What |
+|---|---|
+| `ImGui.core.js` | Context, IO, style, `Begin/End`, move/resize/collapse, ID hash, layout |
+| `ImGui.draw.js` | `ImGui.CanvasRenderer` — windows + widgets + polyline/polygon/image on canvas |
+| `ImGui.widgets.js` | Base: Text/Button/Checkbox/Slider/Drag/Input/Color/Combo/Selectable/... |
+| `ImGui.widgets2.js` | Arrow/CheckboxFlags/RadioInt/SliderN-Angle-VSlider/DragN/InputFloat-Int-Double/Hint/ColorButton-Picker/Image/Plot/LabelText/Value/SeparatorText/... |
+| `ImGui.extended.js` | ID stack, groups, disabled, style stacks, cursor/scroll/ini, item+mouse+key queries, tooltip, popup/modal, menubar+menu, tabbar, tables, columns, TreeNodeEx, drag&drop |
+| `ImGui.demo.js` | `ShowDemoWindow/ShowStyleEditor/ShowMetricsWindow` (tabbed, exercises all APIs) |
+| `ImGui.backend.js` | Overlay canvas, listeners, hidden text input, rAF loop |
+| `ImGui.main.js` | **MAIN**: `// @require https://…` ×7 includes + `MY_MENU()` example (edit this) |
+| `ImGui.bundle.user.js` | One-click install (all files concatenated, no hosting needed) |
+| `build_bundle.py` | Rebuilds the bundle after editing split files (`ORDER` respected) |
+
+## Run it now (no hosting)
+1. Open Violentmonkey Dashboard → `+` → New userscript.
+2. Paste the entire `ImGui.bundle.user.js`, Save. Reload any `https://` page.
+3. Three windows appear: **My Menu ❤** + **Demo** + **full-port Demo** (tabs for
+   Widgets / Tables / Menus+Popups / Plots / Misc). Drag titles, resize via corner.
+
+## Use the split `ImGui.main.js` with `https://` includes (as requested)
+1. Push this `Build/` folder to GitHub, e.g. `YOURUSER/imgui-violentmonkey-port`.
+2. In `ImGui.main.js` replace all `YOURUSER/imgui-violentmonkey-port` (header
+   `@require` ×7 + `CDN_BASE`) with your `user/repo`, commit, wait ~1 min for jsDelivr.
+3. New userscript ← paste `ImGui.main.js` only. Violentmonkey fetches the 7 libs
+   via `https://cdn.jsdelivr.net/...` at install. If a lib 404s, the runtime
+   fallback in `ensureLibs()` loads them from `CDN_BASE` via `<script src>`.
+4. Local dev without pushing: `cd Build && python3 -m http.server 8000`,
+   set `CDN_BASE="http://127.0.0.1:8000/"` temporarily.
+
+## Add your own buttons / text / stuff (in `ImGui.main.js` → `MY_MENU()`)
+```js
+ImGui.Text("hello");
+ImGui.TextColored([1,0.3,0.3,1], "red text");
+if (ImGui.Button("Clicked: "+S.counter)) S.counter++;
+const c = ImGui.Checkbox("Enable ESP", S.checked); S.checked = c.checked;
+S.fval = ImGui.SliderFloat("Speed", S.fval, 0, 2).value;
+S.name = ImGui.InputText("Name", S.name).text;
+const ce = ImGui.ColorEdit4("Color", S.color); if (ce.changed) S.color = ce.color;
+const cb = ImGui.Combo("Weapon", S.combo, S.comboItems); if (cb.changed) S.combo = cb.index;
+// NEW: full-port APIs all available here too:
+ImGui.ArrowButton("arr", 1);
+S.fi = ImGui.InputFloat("HP", S.fi || 100).value;
+S.pk = ImGui.ColorPicker4("Pick", S.pk || [0.2,0.6,1,1]).color;
+ImGui.PlotLines("sig", [0.1,0.5,0.9]);
+if (ImGui.BeginMenuBar()) { if (ImGui.BeginMenu("File")) { if (ImGui.MenuItem("Save","Ctrl+S")) save(); ImGui.EndMenu(); } ImGui.EndMenuBar(); }
+if (ImGui.BeginTabBar("tb")) { if (ImGui.BeginTabItem("A")) { ImGui.Text("a"); ImGui.EndTabItem(); } ImGui.EndTabBar(); }
+if (ImGui.BeginTable("t", 2, ImGui.TableFlags.Borders)) { /* TableSetupColumn/HeadersRow/NextRow/SetColumnIndex */ ImGui.EndTable(); }
+if (ImGui.Button("Popup")) ImGui.OpenPopup("p"); if (ImGui.BeginPopup("p")) { ImGui.Text("hi"); ImGui.EndPopup(); }
+ImGui.PushID("k"); /* duplicate labels ok */ ImGui.PopID();
+ImGui.BeginDisabled(!enabled); ImGui.Button("ghost"); ImGui.EndDisabled();
+ImGui.SeparatorText("section"); ImGui.ProgressBar(0.5, "half");
+```
+Rules: call widgets only between `Begin`/`End`, every frame; keep values in `S`.
+`##` hides label text but keeps ID unique: `Button("Save##slot1")`.
+Full API tour: open the **full-port Demo** window → each tab shows copy-pasteable usage.
+
+## Rebuild after edits
+`cd Build && python3 build_bundle.py` (regenerates `ImGui.bundle.user.js`).
+Verified: `node --check` on all 8 files + headless test calling every new API
+(379 draw ops on one fully-exercised frame, boot creates all 3 windows).
+
+## Honest gaps (deliberately NOT ported)
+- Docking + multi-viewport platform windows (`DockSpace`, `Viewports`): browser has one page; use multiple `Begin` windows instead.
+- TrueType font atlas (`stb_truetype`, `ImFontAtlas` glyph baking): canvas uses system fonts; `PushFont` is a no-op.
+- Keyboard/gamepad navigation (`NavMove`, `NavInputs`): mouse + Tab-into-text-input only.
+- Complex table features (sorting, resizing, reordering, persistence, frozen rows, clipper): `BeginTable` is an equal-width grid with headers/row-bg/borders.
+- Multi-select + `ImGuiSelectionBasicStorage`, text filter `ImGuiTextFilter` (use plain JS arrays).
+- Canvas-clipped popups: popups/menus render inside the parent window's clip rect (may cut near edges); fine for menus, not pixel-perfect vs C++.
