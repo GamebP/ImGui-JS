@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Main Menu
-// @namespace    https://github.com/YOURUSER/imgui-violentmonkey-port
+// @namespace    https://github.com/GamebP/ImGui-JS
 // @version      1.0.0
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey (Canvas2D). Drag the demo windows, edit MY_MENU below to build your own menu.
 // @match        *://*/*
@@ -8,13 +8,13 @@
 // @noframes
 // @grant        none
 // @run-at       document-idle
-// @require      https://cdn.jsdelivr.net/gh/YOURUSER/imgui-violentmonkey-port@main/Build/ImGui.core.js
-// @require      https://cdn.jsdelivr.net/gh/YOURUSER/imgui-violentmonkey-port@main/Build/ImGui.draw.js
-// @require      https://cdn.jsdelivr.net/gh/YOURUSER/imgui-violentmonkey-port@main/Build/ImGui.widgets.js
-// @require      https://cdn.jsdelivr.net/gh/YOURUSER/imgui-violentmonkey-port@main/Build/ImGui.widgets2.js
-// @require      https://cdn.jsdelivr.net/gh/YOURUSER/imgui-violentmonkey-port@main/Build/ImGui.extended.js
-// @require      https://cdn.jsdelivr.net/gh/YOURUSER/imgui-violentmonkey-port@main/Build/ImGui.demo.js
-// @require      https://cdn.jsdelivr.net/gh/YOURUSER/imgui-violentmonkey-port@main/Build/ImGui.backend.js
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.0
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.0
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.0
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.0
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.0
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.0
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.0
 // ==/UserScript==
 
 /* ============================================================================
@@ -22,8 +22,11 @@
  * ----------------------------------------------------------------------------
  * HOW THE LIBS ARE INCLUDED (https:// as requested):
  *   1. Static (preferred, Violentmonkey-native): the 7x `// @require https://...`
- *      lines in the header above. After you push this Build/ folder to GitHub,
- *      replace YOURUSER + repo name, reinstall the script — Violentmonkey
+ *      lines in the header above point at GamebP/ImGui-JS (raw.githubusercontent,
+ *      with `?v=LIB_VERSION` cache-buster). On every update: bump `@version`,
+ *      `LIB_VERSION`, and the `?v=` in all 7 @require lines — new URL = new
+ *      cache entry, so clients drop the old cached libs. Push this Build/
+ *      folder to GitHub, reinstall the script — Violentmonkey
  *      downloads each lib ONCE at install time and runs them before this file.
  *   2. Dynamic fallback (local dev, no hosting yet): CDN_BASE below. If the
  *      @require libs are missing (fresh clone, 404), this file fetches them at
@@ -47,7 +50,8 @@
 (function () {
 "use strict";
 
-const CDN_BASE = "https://cdn.jsdelivr.net/gh/YOURUSER/imgui-violentmonkey-port@main/Build/";
+const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
+const LIB_VERSION = "1.0.0"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -70,7 +74,7 @@ async function ensureLibs() {
   if (libsPresent()) return;
   // eslint-disable-next-line no-console
   console.log("[ImGui] @require libs missing, loading from " + CDN_BASE);
-  for (const f of LIBS) await loadScript(CDN_BASE + f);
+  for (const f of LIBS) await loadScript(CDN_BASE + f + "?v=" + LIB_VERSION);
   if (!libsPresent()) throw new Error("ImGui libs still missing after CDN load. Host Build/ and update @require URLs.");
 }
 

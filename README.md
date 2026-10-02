@@ -44,13 +44,15 @@
 3. Three windows appear: **My Menu ❤** + **Demo** + **full-port Demo** (tabs for
    Widgets / Tables / Menus+Popups / Plots / Misc). Drag titles, resize via corner.
 
-## Use the split `ImGui.main.js` with `https://` includes (as requested)
-1. Push this `Build/` folder to GitHub, e.g. `YOURUSER/imgui-violentmonkey-port`.
-2. In `ImGui.main.js` replace all `YOURUSER/imgui-violentmonkey-port` (header
-   `@require` ×7 + `CDN_BASE`) with your `user/repo`, commit, wait ~1 min for jsDelivr.
+## Use the split `ImGui.main.js` with `https://` includes
+1. Pushed to `GamebP/ImGui-JS` — `@require` ×7 + `CDN_BASE` already point at
+   `https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/`
+   with `?v=1.0.0` cache-buster (files live at repo root, no `Build/` prefix).
+2. Next update: bump `@version`, `LIB_VERSION`, and the `?v=` in all 7 `@require`
+   lines (e.g. `?v=1.0.1`). New URL = cache miss, old cached libs are dropped.
 3. New userscript ← paste `ImGui.main.js` only. Violentmonkey fetches the 7 libs
-   via `https://cdn.jsdelivr.net/...` at install. If a lib 404s, the runtime
-   fallback in `ensureLibs()` loads them from `CDN_BASE` via `<script src>`.
+   via `https://raw.githubusercontent.com/...` at install. If a lib 404s, the runtime
+   fallback in `ensureLibs()` loads them from `CDN_BASE` + `?v=` via `<script src>`.
 4. Local dev without pushing: `cd Build && python3 -m http.server 8000`,
    set `CDN_BASE="http://127.0.0.1:8000/"` temporarily.
 
