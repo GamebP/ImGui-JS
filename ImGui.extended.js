@@ -471,16 +471,12 @@ function wrapEditTrack() {
   ImGui.InputText = function (label, text, flags, hint) {
     const c = ensure();
     const r = origInput(label, text, flags, hint); // forward hint (InputTextWithHint delegation)
-    if (c._wantTextFocus) {
+    if (c._wantTextFocus && c.lastItem.id) {
       c._wantTextFocus = false;
-      const id = c.lastItem.id, rect = c.lastItem.rect;
-      c.activeId = id; c.activeKind = "text"; c.activePayload = { value: r.text };
-      if (ImGui._backendFocusText && rect) {
-        // rect is content space; DOM input is screen space (popup = absolute).
-        const ww = c.current;
-        const screenY = (ww && ww.scrollY && !ww.dc._inPopup) ? (rect.y - ww.scrollY) : rect.y;
-        ImGui._backendFocusText(rect.x, screenY, rect.w, 24, r.text, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
-      }
+      c.activeId = c.lastItem.id; c.activeKind = "text";
+      c.activePayload = { value: String(r.text || ""), cursorPos: String(r.text || "").length, commit: false };
+      // No coordinates: the DOM capture input is strictly off-screen now.
+      if (ImGui._backendFocusText) ImGui._backendFocusText(c.activePayload.value, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
     }
     return r;
   };

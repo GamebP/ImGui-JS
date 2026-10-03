@@ -25,12 +25,18 @@ const Backend = {
     document.documentElement.appendChild(canvas);
     this.canvas = canvas;
     this.renderer = new ImGui.CanvasRenderer(canvas);
-    // hidden text input for IME/mobile (cf. win32 WM_CHAR / glfw CharCallback)
+    // hidden text input — STRICTLY off-screen (cf. win32 WM_CHAR / glfw
+    // CharCallback): it exists only so IME/mobile software keyboards can
+    // appear. Desktop keystrokes are routed by the window keydown handler
+    // below and rendered 100% in Canvas2D; this element is never positioned
+    // over the canvas.
     const inp = document.createElement("input");
     inp.type = "text";
+    inp.id = "imgui-ime-capture";
     Object.assign(inp.style, {
-      position: "fixed", zIndex: "2147483647", display: "none",
-      pointerEvents: "auto", font: "13px sans-serif",
+      position: "fixed", zIndex: "-1", display: "block",
+      top: "-9999px", left: "-9999px", width: "1px", height: "1px",
+      opacity: "0", pointerEvents: "none", font: "13px sans-serif",
     });
     document.documentElement.appendChild(inp);
     this.hiddenInput = inp;
@@ -39,9 +45,16 @@ const Backend = {
       if (e.key === "Enter" || e.key === "Escape") { this.blurText(); }
       e.stopPropagation();
     });
-    ImGui._backendFocusText = (x, y, w, h, cur, commit) => this.focusText(x, y, w, h, cur, commit);
-    ImGui._backendMoveText = (x, y, w, h) => this.moveText(x, y, w, h);
-    ImGui._backendBlurText = () => this.blurText();
+    // New contract: no coordinates — the DOM box is never shown or moved.
+    ImGui._backendFocusText = (cur, commit) => {
+      this.textCommit = commit;
+      inp.value = cur || "";
+      inp.focus();
+    };
+    ImGui._backendBlurText = () => {
+      inp.blur();
+      this.textCommit = null;
+    };
 
     const io = c.io;
     const resize = () => {
@@ -73,50 +86,36 @@ const Backend = {
       io.AddMouseWheelEvent(-(e.deltaY || 0) / 100);
     }, { capture: true, passive: false });
     window.addEventListener("keydown", (e) => {
-      const tag = (document.activeElement && document.activeElement.tagName) || "";
-      if (document.activeElement === inp) return; // hidden input handles its own keys
-      if (io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
       io.KeysDown[e.code] = true;
-      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
-      if (e.key === "Backspace" && ImGui.GetContext().activeKind === "text") {
-        const p = ImGui.GetContext().activePayload;
-        if (p && p.value) p.value = p.value.slice(0, -1);
+      const cc = ImGui.GetContext();
+      // Pure canvas text editing: route editing keys straight into the
+      // active widget's payload (no DOM element involved).
+      if (cc.activeKind === "text" && cc.activePayload) {
+        if (e.key === "Backspace") {
+          e.preventDefault();
+          cc.activePayload.value = cc.activePayload.value.slice(0, -1);
+          cc.activePayload.cursorPos = Math.max(0, (cc.activePayload.cursorPos || cc.activePayload.value.length) - 1);
+        } else if (e.key === "Enter" || e.key === "Escape") {
+          e.preventDefault();
+          cc.activePayload.commit = true;
+          this.blurText();
+        } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          cc.activePayload.value += e.key;
+          cc.activePayload.cursorPos = cc.activePayload.value.length;
+        }
+        e.stopPropagation(); // the page must never see keys typed into the UI
+        return;
       }
+      if (io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
+      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
     }, true);
     window.addEventListener("keyup", (e) => { io.KeysDown[e.code] = false; }, true);
     return this;
   },
 
-  focusText(x, y, w, h, cur, commit) {
-    const inp = this.hiddenInput;
-    this.textCommit = commit;
-    inp.value = cur || "";
-    inp.style.display = "block";
-    inp.style.position = "fixed";
-    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, Math.round(x))) + "px";
-    inp.style.top = Math.max(0, Math.round(y)) + "px";
-    inp.style.width = Math.max(60, Math.round(w)) + "px";
-    inp.style.height = Math.round(h) + "px";
-    // Visually hidden: the canvas draws the active box, so a white DOM rect
-    // over it would be a ghost. Still captures typing/IME/paste (opacity 0
-    // does not affect focus or input events).
-    inp.style.opacity = "0";
-    inp.style.pointerEvents = "auto";
-    setTimeout(() => { inp.focus(); inp.select(); }, 0);
-  },
-  // Per-frame position sync while a text widget stays active: the box can
-  // move under a scroll/resize between focus and commit.
-  moveText(x, y, w, h) {
-    const inp = this.hiddenInput;
-    if (!inp || inp.style.display === "none") return;
-    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, Math.round(x))) + "px";
-    inp.style.top = Math.max(0, Math.round(y)) + "px";
-    inp.style.width = Math.max(60, Math.round(w)) + "px";
-    inp.style.height = Math.round(h) + "px";
-  },
   blurText() {
     if (!this.hiddenInput) return;
-    this.hiddenInput.style.display = "none";
     this.hiddenInput.blur();
     this.textCommit = null;
   },

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.18
+// @version      1.0.19
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.18";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.19";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1261,55 +1261,72 @@ function InputText(label, text, flags = 0, hint = "") {
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
-  const h = c.hovered(x, y + 0, bw, ht);
+  const h = c.hovered(x, y, bw, ht);
   if (h) c.anyWindowHovered = true;
   const isActive = c.activeId === id && c.activeKind === "text";
+
+  // Activation: edit state lives in activePayload; rendering is 100% Canvas2D
+  // (the backend input stays strictly off-screen — IME/mobile capture only,
+  // cf. official Emscripten ports which never overlay a DOM box).
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
-    c.activeId = id; c.activeKind = "text"; c.activePayload = { value: text };
+    c.activeId = id; c.activeKind = "text";
+    c.activePayload = { value: String(text || ""), cursorPos: String(text || "").length, commit: false };
     if (ImGui._backendFocusText) {
-      // cursorPos is CONTENT space; the DOM input is position:fixed (screen
-      // space), so translate Y by -scrollY. Popup boxes are absolute overlay
-      // coords and never scroll, hence the _inPopup guard.
-      const screenY = (w && w.scrollY && !w.dc._inPopup) ? (y - w.scrollY) : y;
-      ImGui._backendFocusText(x, screenY, bw, ht, text, (nv) => {
+      ImGui._backendFocusText(c.activePayload.value, (nv) => {
         if (c.activePayload) c.activePayload.value = nv;
       });
     }
   }
-  if (isActive && c.io.MouseClicked[0] && !h) {
-    // click outside -> commit & close
-    text = c.activePayload ? c.activePayload.value : text;
-    c.activeId = 0; c.activeKind = null;
+
+  // Deactivation: click outside, or Enter/Escape (commit flag set by backend).
+  let deactivated = false, finalVal = String(text || "");
+  if (isActive && ((c.io.MouseClicked[0] && !h) || (c.activePayload && c.activePayload.commit))) {
+    finalVal = c.activePayload ? c.activePayload.value : String(text || "");
+    c.activeId = 0; c.activeKind = null; c.activePayload = null;
     if (ImGui._backendBlurText) ImGui._backendBlurText();
-    return { changed: true, text };
+    deactivated = true;
   }
-  // While active, re-sync the DOM input every frame so any scroll/resize
-  // moves it with the canvas box instead of leaving it frozen on screen.
-  if (isActive && ImGui._backendMoveText) {
-    const screenY = (w && w.scrollY && !w.dc._inPopup) ? (y - w.scrollY) : y;
-    ImGui._backendMoveText(x, screenY, bw, ht);
+
+  const activeNow = isActive && !deactivated;
+  let currentVal = activeNow && c.activePayload ? c.activePayload.value : String(text || "");
+  // live typing fallback when no backend capture exists (headless/tests)
+  if (activeNow && c.io.InputChars) {
+    currentVal += c.io.InputChars;
+    if (c.activePayload) c.activePayload.value = currentVal;
   }
-  let shown = isActive && c.activePayload ? c.activePayload.value : text;
-  // live typing via InputChars when no hidden input (fallback)
-  if (isActive && c.io.InputChars) {
-    shown += c.io.InputChars;
-    if (c.activePayload) c.activePayload.value = shown;
-  }
-  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[isActive ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
+
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
   emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
-  if (shown !== "") {
-    const display = shown.length > 24 ? "…" + shown.slice(-23) : shown;
-    emit({ t: "text", str: display + (isActive ? "▌" : ""), x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+
+  // Text + blinking caret, always canvas-rendered (cf. imgui_widgets.cpp)
+  const innerX = x + st.FramePadding.x + 2;
+  const innerY = y + Math.round((ht - st.FontSize) / 2);
+  if (currentVal !== "") {
+    // keep the tail visible: trim from the start until it fits the box
+    let displayStr = currentVal;
+    while (displayStr.length > 0 && textW(displayStr) > (bw - 16)) displayStr = displayStr.slice(1);
+    emit({ t: "text", str: displayStr, x: innerX, y: innerY, col: st.Colors[ImGui.Col.Text] });
+    if (activeNow && Math.floor(Date.now() / 500) % 2 === 0) {
+      const cx = innerX + textW(displayStr) + 1;
+      emit({ t: "line", x1: cx, y1: innerY, x2: cx, y2: innerY + st.FontSize, col: st.Colors[ImGui.Col.Text], th: 1.5 });
+    }
   } else if (hint !== "") {
     // Dimmed hint inside the box while empty (Dear ImGui: hint replaces value)
-    emit({ t: "text", str: hint, x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.TextDisabled] });
-    if (isActive) emit({ t: "text", str: "▌", x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+    emit({ t: "text", str: hint, x: innerX, y: innerY, col: st.Colors[ImGui.Col.TextDisabled] });
+    if (activeNow) emit({ t: "line", x1: innerX, y1: innerY, x2: innerX, y2: innerY + st.FontSize, col: st.Colors[ImGui.Col.Text], th: 1.5 });
+  } else if (activeNow) {
+    emit({ t: "line", x1: innerX, y1: innerY, x2: innerX, y2: innerY + st.FontSize, col: st.Colors[ImGui.Col.Text], th: 1.5 });
   } else {
-    emit({ t: "text", str: isActive ? "▌" : "(empty)", x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.TextDisabled] });
+    emit({ t: "text", str: "(empty)", x: innerX, y: innerY, col: st.Colors[ImGui.Col.TextDisabled] });
   }
-  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 5, col: st.Colors[ImGui.Col.Text] });
-  const changed = isActive && shown !== text;
-  return { changed, text: shown };
+
+  // Label stays outside, to the right
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: innerY, col: st.Colors[ImGui.Col.Text] });
+
+  const changed = deactivated ? (finalVal !== text) : (activeNow && currentVal !== text);
+  // On the commit frame the payload is already gone: return the committed
+  // value, otherwise callers like `s = InputText(...).text` would lose the edit.
+  return { changed, text: deactivated ? finalVal : currentVal };
 }
 function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
   // simplified: single-line box taller
@@ -2450,16 +2467,12 @@ function wrapEditTrack() {
   ImGui.InputText = function (label, text, flags, hint) {
     const c = ensure();
     const r = origInput(label, text, flags, hint); // forward hint (InputTextWithHint delegation)
-    if (c._wantTextFocus) {
+    if (c._wantTextFocus && c.lastItem.id) {
       c._wantTextFocus = false;
-      const id = c.lastItem.id, rect = c.lastItem.rect;
-      c.activeId = id; c.activeKind = "text"; c.activePayload = { value: r.text };
-      if (ImGui._backendFocusText && rect) {
-        // rect is content space; DOM input is screen space (popup = absolute).
-        const ww = c.current;
-        const screenY = (ww && ww.scrollY && !ww.dc._inPopup) ? (rect.y - ww.scrollY) : rect.y;
-        ImGui._backendFocusText(rect.x, screenY, rect.w, 24, r.text, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
-      }
+      c.activeId = c.lastItem.id; c.activeKind = "text";
+      c.activePayload = { value: String(r.text || ""), cursorPos: String(r.text || "").length, commit: false };
+      // No coordinates: the DOM capture input is strictly off-screen now.
+      if (ImGui._backendFocusText) ImGui._backendFocusText(c.activePayload.value, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
     }
     return r;
   };
@@ -3660,12 +3673,18 @@ const Backend = {
     document.documentElement.appendChild(canvas);
     this.canvas = canvas;
     this.renderer = new ImGui.CanvasRenderer(canvas);
-    // hidden text input for IME/mobile (cf. win32 WM_CHAR / glfw CharCallback)
+    // hidden text input — STRICTLY off-screen (cf. win32 WM_CHAR / glfw
+    // CharCallback): it exists only so IME/mobile software keyboards can
+    // appear. Desktop keystrokes are routed by the window keydown handler
+    // below and rendered 100% in Canvas2D; this element is never positioned
+    // over the canvas.
     const inp = document.createElement("input");
     inp.type = "text";
+    inp.id = "imgui-ime-capture";
     Object.assign(inp.style, {
-      position: "fixed", zIndex: "2147483647", display: "none",
-      pointerEvents: "auto", font: "13px sans-serif",
+      position: "fixed", zIndex: "-1", display: "block",
+      top: "-9999px", left: "-9999px", width: "1px", height: "1px",
+      opacity: "0", pointerEvents: "none", font: "13px sans-serif",
     });
     document.documentElement.appendChild(inp);
     this.hiddenInput = inp;
@@ -3674,9 +3693,16 @@ const Backend = {
       if (e.key === "Enter" || e.key === "Escape") { this.blurText(); }
       e.stopPropagation();
     });
-    ImGui._backendFocusText = (x, y, w, h, cur, commit) => this.focusText(x, y, w, h, cur, commit);
-    ImGui._backendMoveText = (x, y, w, h) => this.moveText(x, y, w, h);
-    ImGui._backendBlurText = () => this.blurText();
+    // New contract: no coordinates — the DOM box is never shown or moved.
+    ImGui._backendFocusText = (cur, commit) => {
+      this.textCommit = commit;
+      inp.value = cur || "";
+      inp.focus();
+    };
+    ImGui._backendBlurText = () => {
+      inp.blur();
+      this.textCommit = null;
+    };
 
     const io = c.io;
     const resize = () => {
@@ -3708,50 +3734,36 @@ const Backend = {
       io.AddMouseWheelEvent(-(e.deltaY || 0) / 100);
     }, { capture: true, passive: false });
     window.addEventListener("keydown", (e) => {
-      const tag = (document.activeElement && document.activeElement.tagName) || "";
-      if (document.activeElement === inp) return; // hidden input handles its own keys
-      if (io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
       io.KeysDown[e.code] = true;
-      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
-      if (e.key === "Backspace" && ImGui.GetContext().activeKind === "text") {
-        const p = ImGui.GetContext().activePayload;
-        if (p && p.value) p.value = p.value.slice(0, -1);
+      const cc = ImGui.GetContext();
+      // Pure canvas text editing: route editing keys straight into the
+      // active widget's payload (no DOM element involved).
+      if (cc.activeKind === "text" && cc.activePayload) {
+        if (e.key === "Backspace") {
+          e.preventDefault();
+          cc.activePayload.value = cc.activePayload.value.slice(0, -1);
+          cc.activePayload.cursorPos = Math.max(0, (cc.activePayload.cursorPos || cc.activePayload.value.length) - 1);
+        } else if (e.key === "Enter" || e.key === "Escape") {
+          e.preventDefault();
+          cc.activePayload.commit = true;
+          this.blurText();
+        } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          cc.activePayload.value += e.key;
+          cc.activePayload.cursorPos = cc.activePayload.value.length;
+        }
+        e.stopPropagation(); // the page must never see keys typed into the UI
+        return;
       }
+      if (io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
+      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
     }, true);
     window.addEventListener("keyup", (e) => { io.KeysDown[e.code] = false; }, true);
     return this;
   },
 
-  focusText(x, y, w, h, cur, commit) {
-    const inp = this.hiddenInput;
-    this.textCommit = commit;
-    inp.value = cur || "";
-    inp.style.display = "block";
-    inp.style.position = "fixed";
-    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, Math.round(x))) + "px";
-    inp.style.top = Math.max(0, Math.round(y)) + "px";
-    inp.style.width = Math.max(60, Math.round(w)) + "px";
-    inp.style.height = Math.round(h) + "px";
-    // Visually hidden: the canvas draws the active box, so a white DOM rect
-    // over it would be a ghost. Still captures typing/IME/paste (opacity 0
-    // does not affect focus or input events).
-    inp.style.opacity = "0";
-    inp.style.pointerEvents = "auto";
-    setTimeout(() => { inp.focus(); inp.select(); }, 0);
-  },
-  // Per-frame position sync while a text widget stays active: the box can
-  // move under a scroll/resize between focus and commit.
-  moveText(x, y, w, h) {
-    const inp = this.hiddenInput;
-    if (!inp || inp.style.display === "none") return;
-    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, Math.round(x))) + "px";
-    inp.style.top = Math.max(0, Math.round(y)) + "px";
-    inp.style.width = Math.max(60, Math.round(w)) + "px";
-    inp.style.height = Math.round(h) + "px";
-  },
   blurText() {
     if (!this.hiddenInput) return;
-    this.hiddenInput.style.display = "none";
     this.hiddenInput.blur();
     this.textCommit = null;
   },
@@ -3831,7 +3843,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.18"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.19"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

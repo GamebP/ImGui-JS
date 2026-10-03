@@ -252,55 +252,72 @@ function InputText(label, text, flags = 0, hint = "") {
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
-  const h = c.hovered(x, y + 0, bw, ht);
+  const h = c.hovered(x, y, bw, ht);
   if (h) c.anyWindowHovered = true;
   const isActive = c.activeId === id && c.activeKind === "text";
+
+  // Activation: edit state lives in activePayload; rendering is 100% Canvas2D
+  // (the backend input stays strictly off-screen — IME/mobile capture only,
+  // cf. official Emscripten ports which never overlay a DOM box).
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
-    c.activeId = id; c.activeKind = "text"; c.activePayload = { value: text };
+    c.activeId = id; c.activeKind = "text";
+    c.activePayload = { value: String(text || ""), cursorPos: String(text || "").length, commit: false };
     if (ImGui._backendFocusText) {
-      // cursorPos is CONTENT space; the DOM input is position:fixed (screen
-      // space), so translate Y by -scrollY. Popup boxes are absolute overlay
-      // coords and never scroll, hence the _inPopup guard.
-      const screenY = (w && w.scrollY && !w.dc._inPopup) ? (y - w.scrollY) : y;
-      ImGui._backendFocusText(x, screenY, bw, ht, text, (nv) => {
+      ImGui._backendFocusText(c.activePayload.value, (nv) => {
         if (c.activePayload) c.activePayload.value = nv;
       });
     }
   }
-  if (isActive && c.io.MouseClicked[0] && !h) {
-    // click outside -> commit & close
-    text = c.activePayload ? c.activePayload.value : text;
-    c.activeId = 0; c.activeKind = null;
+
+  // Deactivation: click outside, or Enter/Escape (commit flag set by backend).
+  let deactivated = false, finalVal = String(text || "");
+  if (isActive && ((c.io.MouseClicked[0] && !h) || (c.activePayload && c.activePayload.commit))) {
+    finalVal = c.activePayload ? c.activePayload.value : String(text || "");
+    c.activeId = 0; c.activeKind = null; c.activePayload = null;
     if (ImGui._backendBlurText) ImGui._backendBlurText();
-    return { changed: true, text };
+    deactivated = true;
   }
-  // While active, re-sync the DOM input every frame so any scroll/resize
-  // moves it with the canvas box instead of leaving it frozen on screen.
-  if (isActive && ImGui._backendMoveText) {
-    const screenY = (w && w.scrollY && !w.dc._inPopup) ? (y - w.scrollY) : y;
-    ImGui._backendMoveText(x, screenY, bw, ht);
+
+  const activeNow = isActive && !deactivated;
+  let currentVal = activeNow && c.activePayload ? c.activePayload.value : String(text || "");
+  // live typing fallback when no backend capture exists (headless/tests)
+  if (activeNow && c.io.InputChars) {
+    currentVal += c.io.InputChars;
+    if (c.activePayload) c.activePayload.value = currentVal;
   }
-  let shown = isActive && c.activePayload ? c.activePayload.value : text;
-  // live typing via InputChars when no hidden input (fallback)
-  if (isActive && c.io.InputChars) {
-    shown += c.io.InputChars;
-    if (c.activePayload) c.activePayload.value = shown;
-  }
-  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[isActive ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
+
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
   emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
-  if (shown !== "") {
-    const display = shown.length > 24 ? "…" + shown.slice(-23) : shown;
-    emit({ t: "text", str: display + (isActive ? "▌" : ""), x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+
+  // Text + blinking caret, always canvas-rendered (cf. imgui_widgets.cpp)
+  const innerX = x + st.FramePadding.x + 2;
+  const innerY = y + Math.round((ht - st.FontSize) / 2);
+  if (currentVal !== "") {
+    // keep the tail visible: trim from the start until it fits the box
+    let displayStr = currentVal;
+    while (displayStr.length > 0 && textW(displayStr) > (bw - 16)) displayStr = displayStr.slice(1);
+    emit({ t: "text", str: displayStr, x: innerX, y: innerY, col: st.Colors[ImGui.Col.Text] });
+    if (activeNow && Math.floor(Date.now() / 500) % 2 === 0) {
+      const cx = innerX + textW(displayStr) + 1;
+      emit({ t: "line", x1: cx, y1: innerY, x2: cx, y2: innerY + st.FontSize, col: st.Colors[ImGui.Col.Text], th: 1.5 });
+    }
   } else if (hint !== "") {
     // Dimmed hint inside the box while empty (Dear ImGui: hint replaces value)
-    emit({ t: "text", str: hint, x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.TextDisabled] });
-    if (isActive) emit({ t: "text", str: "▌", x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+    emit({ t: "text", str: hint, x: innerX, y: innerY, col: st.Colors[ImGui.Col.TextDisabled] });
+    if (activeNow) emit({ t: "line", x1: innerX, y1: innerY, x2: innerX, y2: innerY + st.FontSize, col: st.Colors[ImGui.Col.Text], th: 1.5 });
+  } else if (activeNow) {
+    emit({ t: "line", x1: innerX, y1: innerY, x2: innerX, y2: innerY + st.FontSize, col: st.Colors[ImGui.Col.Text], th: 1.5 });
   } else {
-    emit({ t: "text", str: isActive ? "▌" : "(empty)", x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.TextDisabled] });
+    emit({ t: "text", str: "(empty)", x: innerX, y: innerY, col: st.Colors[ImGui.Col.TextDisabled] });
   }
-  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 5, col: st.Colors[ImGui.Col.Text] });
-  const changed = isActive && shown !== text;
-  return { changed, text: shown };
+
+  // Label stays outside, to the right
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: innerY, col: st.Colors[ImGui.Col.Text] });
+
+  const changed = deactivated ? (finalVal !== text) : (activeNow && currentVal !== text);
+  // On the commit frame the payload is already gone: return the committed
+  // value, otherwise callers like `s = InputText(...).text` would lose the edit.
+  return { changed, text: deactivated ? finalVal : currentVal };
 }
 function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
   // simplified: single-line box taller
