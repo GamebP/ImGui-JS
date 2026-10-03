@@ -158,6 +158,8 @@ class CanvasRenderer {
       ctx.moveTo(gx + 16, gy); ctx.lineTo(gx, gy + 16); ctx.lineTo(gx + 16, gy + 16);
       ctx.closePath(); ctx.fill();
     }
+    // window chrome (scrollbar): drawn unclipped, above content
+    if (w._chromeOps) for (const op of w._chromeOps) this.drawOp(ctx, st, op);
     ctx.restore();
   }
   drawOp(ctx, st, op) {

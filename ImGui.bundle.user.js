@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.5
+// @version      1.0.6
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://*/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.5";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.6";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -700,6 +700,8 @@ class CanvasRenderer {
       ctx.moveTo(gx + 16, gy); ctx.lineTo(gx, gy + 16); ctx.lineTo(gx + 16, gy + 16);
       ctx.closePath(); ctx.fill();
     }
+    // window chrome (scrollbar): drawn unclipped, above content
+    if (w._chromeOps) for (const op of w._chromeOps) this.drawOp(ctx, st, op);
     ctx.restore();
   }
   drawOp(ctx, st, op) {
@@ -1799,6 +1801,8 @@ function wrapBeginEnd() {
       w.scrollMax = Math.max(0, contentH - visibleH);
       w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
     } else if (w && w.collapsed) { w.scrollMax = 0; w.scrollY = 0; }
+    // Chrome ops (scrollbar) draw unclipped after content; reset per frame.
+    if (w) w._chromeOps = [];
     // NOTE: auto-fit windows (size.y == 0) skip the zeroing above on purpose:
     // their scroll state survives into the viewport-clamp block below, which
     // fully recomputes it (zeroing would rubber-band wheel scrolling to 0).
@@ -1827,12 +1831,12 @@ function wrapBeginEnd() {
         w.scrollMax = 0; w.scrollY = 0;
       }
     }
-    // draw scrollbar when needed (clipped content stays inside window via draw.js)
+    // draw scrollbar when needed (unclipped chrome, drawn after content)
     if (w && w.scrollMax > 0 && !w.collapsed && !(w.flags & ImGui.WindowFlags.NoScrollbar)) {
       const st = this.style;
       const bx = w.pos.x + w.sizeFull.x - st.ScrollbarSize - 1;
       const by = w.pos.y + w.titleH, bh = w.sizeFull.y - w.titleH - 1;
-      w.drawList.push({ t: "rectFilled", x: bx, y: by, w: st.ScrollbarSize, h: bh, r: 7, col: st.Colors[ImGui.Col.ScrollbarBg] });
+      (w._chromeOps = w._chromeOps || []).push({ t: "rectFilled", x: bx, y: by, w: st.ScrollbarSize, h: bh, r: 7, col: st.Colors[ImGui.Col.ScrollbarBg] });
       const gripH = Math.max(st.GrabMinSize, bh * (bh / (bh + w.scrollMax)));
       const gy = by + (bh - gripH) * (w.scrollMax > 0 ? w.scrollY / w.scrollMax : 0);
       const gid = (w.id ^ 0x5c4011) >>> 0;
@@ -1843,7 +1847,7 @@ function wrapBeginEnd() {
       }
       w._scrollGrip = { id: gid, by: by, bh: bh, gripH: gripH };
       const active = this.activeId === gid;
-      w.drawList.push({ t: "rectFilled", x: bx, y: gy, w: st.ScrollbarSize, h: gripH, r: 7, col: st.Colors[active || hov ? ImGui.Col.ScrollbarGrabHovered : ImGui.Col.ScrollbarGrab] });
+      w._chromeOps.push({ t: "rectFilled", x: bx, y: gy, w: st.ScrollbarSize, h: gripH, r: 7, col: st.Colors[active || hov ? ImGui.Col.ScrollbarGrabHovered : ImGui.Col.ScrollbarGrab] });
     } else if (w) { w._scrollGrip = null; }
     throttleSaveIni(this);
   };
@@ -2190,7 +2194,8 @@ function popupBoxBegin(id, modal) {
   const a = c._popupAnchor[key] || { x: w.dc.cursorPos.x, y: w.dc.cursorPos.y };
   const bw = Math.min(300, Math.max(120, w.sizeFull.x - 20));
   const { bx, by } = popupBestPos(a, bw, 260);
-  if (modal) emit({ t: "rectFilled", x: w.pos.x, y: w.pos.y, w: w.sizeFull.x, h: w.sizeFull.y, r: 0, css: "rgba(0,0,0,0.45)" });
+  // NOTE: modal dim is drawn fullscreen into the overlay at End (top Z),
+  // not here — an in-window emit would be clipped to the parent window.
   // Save outer line state; popup content gets a fresh line context.
   // Stack (not singleton): nested popups each keep their own box + marker.
   const dc = w.dc;
@@ -2208,9 +2213,6 @@ function popupBoxBegin(id, modal) {
   // to the parent window's left margin (that stranded Close/OK outside).
   dc.cursorStartPos = { x: bx + 8, y: by + 8 };
   dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
-  w.drawList.push({ t: "_popupMark", key });
-  dc.cursorPos.x = bx + 8; dc.cursorPos.y = by + 8; dc.cursorPosPrevLine = { x: bx + 8, y: by + 8 };
-  dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
   PushID("popup:" + key);
   return true;
 }
@@ -2225,22 +2227,35 @@ function popupBoxEnd(modal) {
   stack.splice(bi, 1);
   c._popupBox = stack.length ? stack[stack.length - 1] : null;
   const dc = w.dc;
-  const h = Math.max(30, dc.cursorPos.y - b.y + 8);
+  // Height spans all placed lines: cursor top + current line height.
+  const h = Math.max(30, dc.cursorPos.y + dc.currLineHeight - b.y + 8);
   PopID();
   // Move popup ops (mark..end) to the context overlay: drawn after ALL
   // windows, unclipped, top Z — a top-level layer within the canvas model.
-  // Box frame goes first so content paints over it.
-  const frame = [
-    { t: "rectFilled", x: b.x, y: b.y, w: b.w, h, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.PopupBg] },
-    { t: "rect", x: b.x, y: b.y, w: b.w, h, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.Border], th: 1 },
-  ];
   let start = w.drawList.findIndex((op) => op.t === "_popupMark" && op.key === b.key);
   if (start < 0) start = w.drawList.length;
   const content = w.drawList.splice(start);
   const inner = content.filter((op) => op.t !== "_popupMark");
+  // Auto-fit width to the content (like height); frame hugs the widgets.
+  let maxR = b.x + 120;
+  for (const op of inner) {
+    if (op.t === "rectFilled" || op.t === "rect" || op.t === "image") maxR = Math.max(maxR, op.x + op.w);
+    else if (op.t === "text") maxR = Math.max(maxR, op.x + measure(op.str || ""));
+    else if (op.t === "line") maxR = Math.max(maxR, op.x1, op.x2);
+    else if (op.t === "circleFilled") maxR = Math.max(maxR, op.x + op.r);
+    else if ((op.t === "polyline" || op.t === "polygon") && op.pts) for (const p of op.pts) maxR = Math.max(maxR, p.x);
+  }
+  const boxW = Math.max(120, Math.min(b.w, maxR - b.x + 8));
+  // Box frame goes first so content paints over it. Modal dim covers the
+  // whole viewport underneath everything (fullscreen overlay layer).
+  if (modal) c._overlayOps.push({ t: "rectFilled", x: 0, y: 0, w: c.io.DisplaySize.x, h: c.io.DisplaySize.y, r: 0, css: "rgba(0,0,0,0.55)" });
+  const frame = [
+    { t: "rectFilled", x: b.x, y: b.y, w: boxW, h, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.PopupBg] },
+    { t: "rect", x: b.x, y: b.y, w: boxW, h, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.Border], th: 1 },
+  ];
   c._overlayOps.push(...frame, ...inner);
   // Record this frame's rect for next frame's click preemption.
-  c._popupRects[b.key] = { x: b.x, y: b.y, w: b.w, h };
+  c._popupRects[b.key] = { x: b.x, y: b.y, w: boxW, h };
   // Restore outer line state; continue below the popup anchor region.
   dc.cursorPos.x = b.savedCursor.x; dc.cursorPos.y = Math.max(b.savedCursor.y, b.y + h + 8);
   dc.cursorPosPrevLine = { ...dc.cursorPos };
@@ -2248,7 +2263,7 @@ function popupBoxEnd(modal) {
   dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
   dc.cursorMaxPos.y = Math.max(dc.cursorMaxPos.y, b.y + h);
   const m = c.io.MousePos;
-  const inside = m.x >= b.x && m.x <= b.x + b.w && m.y >= b.y && m.y <= b.y + h;
+  const inside = m.x >= b.x && m.x <= b.x + boxW && m.y >= b.y && m.y <= b.y + h;
   if (c.io.MouseClicked[0] && !inside && !modal) ClosePopup(b.key);
   if (c.io.KeysDown["Escape"]) ClosePopup(b.key);
 }
@@ -2362,6 +2377,9 @@ function MenuItem(label, shortcut = "", selected = false, enabled = true) {
 const TAB_H = 24, TAB_CONTENT_GAP = 1;
 function BeginTabBar(id) {
   const c = ensure(), w = W(); if (!w) return false;
+  // Block widget: break to a fresh line FIRST, otherwise the bar would start
+  // mid-line right after the previous widget (tabs glued to a button).
+  c.beforeItemPlacement(0, TAB_H);
   // Reserve scrollbar width so rightmost tabs are never occluded by the track.
   const hasScrollbar = (w.scrollMax > 0) && !(w.flags & ImGui.WindowFlags.NoScrollbar);
   const scrollReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
@@ -2461,10 +2479,12 @@ function TabItemButton(label) {
 // ---------- tables (imgui_tables.cpp: fixed distribution, cell grid) ----------
 function BeginTable(id, columns, flags = 0, outerW = 0, outerH = 0) {
   const c = ensure(), w = W(); if (!w) return false;
+  // Block widget: break to a fresh line FIRST, otherwise avail/origin would
+  // be measured from the previous widget's line-end (mid-line cursor).
+  c.beforeItemPlacement(0, 4);
   // outerWidth defaults to the available content width at the cursor.
   const avail = outerW > 0 ? outerW : GetContentRegionAvail().x;
   const x = w.dc.cursorPos.x;
-  c.beforeItemPlacement(avail, 4);
   c.itemSize(avail, 4);
   c._table = {
     id: String(id), cols: columns, flags, x, y: w.dc.cursorPos.y, row: -1, col: -1,
@@ -3106,7 +3126,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.5"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.6"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.backend.js"];
 
 function libsPresent() {
