@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.16
+// @version      1.0.17
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.16";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.17";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1243,7 +1243,7 @@ function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
 }
 
 // ---------- input text (uses hidden DOM input managed by backend) ----------
-function InputText(label, text, flags = 0) {
+function InputText(label, text, flags = 0, hint = "") {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
@@ -1279,8 +1279,16 @@ function InputText(label, text, flags = 0) {
   }
   emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[isActive ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
   emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
-  const display = shown.length > 24 ? "…" + shown.slice(-23) : (shown || (isActive ? "" : "(empty)"));
-  emit({ t: "text", str: display + (isActive ? "▌" : ""), x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+  if (shown !== "") {
+    const display = shown.length > 24 ? "…" + shown.slice(-23) : shown;
+    emit({ t: "text", str: display + (isActive ? "▌" : ""), x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+  } else if (hint !== "") {
+    // Dimmed hint inside the box while empty (Dear ImGui: hint replaces value)
+    emit({ t: "text", str: hint, x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.TextDisabled] });
+    if (isActive) emit({ t: "text", str: "▌", x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+  } else {
+    emit({ t: "text", str: isActive ? "▌" : "(empty)", x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.TextDisabled] });
+  }
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 5, col: st.Colors[ImGui.Col.Text] });
   const changed = isActive && shown !== text;
   return { changed, text: shown };
@@ -1738,18 +1746,10 @@ function InputIntN(label, values) {
   }
   return { changed, values: out };
 }
-function InputTextWithHint(label, hint, text) {
-  const shown = text === "" ? hint : text; // hint rendered by prefixing when empty
-  const r = ImGui.InputText(label, text);
-  if (text === "" ) {
-    // overlay hint text (drawn after, slightly transparent)
-    const w = cur();
-    if (w && w.drawList.length) {
-      const last = w.drawList[w.drawList.length - 1];
-      emit({ t: "text", str: hint + " (hint)", x: last.x, y: last.y, col: [0.55, 0.55, 0.55, 0.8] });
-    }
-  }
-  return r;
+function InputTextWithHint(label, hint, text, flags = 0) {
+  // Hint is drawn INSIDE the empty box by InputText itself (TextDisabled);
+  // the label stays outside to the right. Never overlay the last emitted op.
+  return ImGui.InputText(label, text, flags, hint);
 }
 
 // ---------- ColorButton / ColorPicker ----------
@@ -3768,7 +3768,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.16"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.17"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

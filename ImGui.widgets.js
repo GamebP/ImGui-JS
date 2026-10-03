@@ -240,7 +240,7 @@ function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
 }
 
 // ---------- input text (uses hidden DOM input managed by backend) ----------
-function InputText(label, text, flags = 0) {
+function InputText(label, text, flags = 0, hint = "") {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
@@ -276,8 +276,16 @@ function InputText(label, text, flags = 0) {
   }
   emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[isActive ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
   emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
-  const display = shown.length > 24 ? "…" + shown.slice(-23) : (shown || (isActive ? "" : "(empty)"));
-  emit({ t: "text", str: display + (isActive ? "▌" : ""), x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+  if (shown !== "") {
+    const display = shown.length > 24 ? "…" + shown.slice(-23) : shown;
+    emit({ t: "text", str: display + (isActive ? "▌" : ""), x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+  } else if (hint !== "") {
+    // Dimmed hint inside the box while empty (Dear ImGui: hint replaces value)
+    emit({ t: "text", str: hint, x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.TextDisabled] });
+    if (isActive) emit({ t: "text", str: "▌", x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
+  } else {
+    emit({ t: "text", str: isActive ? "▌" : "(empty)", x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.TextDisabled] });
+  }
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 5, col: st.Colors[ImGui.Col.Text] });
   const changed = isActive && shown !== text;
   return { changed, text: shown };

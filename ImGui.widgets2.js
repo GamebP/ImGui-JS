@@ -188,18 +188,10 @@ function InputIntN(label, values) {
   }
   return { changed, values: out };
 }
-function InputTextWithHint(label, hint, text) {
-  const shown = text === "" ? hint : text; // hint rendered by prefixing when empty
-  const r = ImGui.InputText(label, text);
-  if (text === "" ) {
-    // overlay hint text (drawn after, slightly transparent)
-    const w = cur();
-    if (w && w.drawList.length) {
-      const last = w.drawList[w.drawList.length - 1];
-      emit({ t: "text", str: hint + " (hint)", x: last.x, y: last.y, col: [0.55, 0.55, 0.55, 0.8] });
-    }
-  }
-  return r;
+function InputTextWithHint(label, hint, text, flags = 0) {
+  // Hint is drawn INSIDE the empty box by InputText itself (TextDisabled);
+  // the label stays outside to the right. Never overlay the last emitted op.
+  return ImGui.InputText(label, text, flags, hint);
 }
 
 // ---------- ColorButton / ColorPicker ----------
