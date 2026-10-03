@@ -138,10 +138,6 @@ function MY_MENU() {
     // NOTE: native <input type=color> fires async; poll each frame:
     if (ce.changed) S.color = ce.color;
 
-    // --- combo ---
-    const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
-    if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
-
     // --- collapsible section ---
     if (ImGui.CollapsingHeader("Features")) {
       for (let i = 0; i < 3; i++) {
@@ -151,6 +147,11 @@ function MY_MENU() {
     }
     ImGui.Separator();
     ImGui.TextWrapped("Tip: drag the title bar to move, corner grip to resize, double-click title to collapse.");
+
+    // Render the combo after the rows below it so its open list stays on top
+    // of the feature controls instead of being painted underneath them.
+    const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
+    if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
   }
   ImGui.End();
 }

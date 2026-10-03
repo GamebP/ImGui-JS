@@ -3063,18 +3063,35 @@ const TableFlags = {
 // ---------- legacy columns ----------
 function Columns(count = 1) {
   const c = ensure(), w = W(); if (!w) return;
-  if (count <= 1) { c._columns = null; return; }
+  if (count <= 1) {
+    if (c._columns) {
+      const cc = c._columns;
+      w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
+      w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+      w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc._lockFeed = true;
+      c._columns = null;
+    }
+    return;
+  }
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, w: avail / count };
+  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count };
   w.dc.cursorPos.x = c._columns.x; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._lockFeed = true;
 }
 function NextColumn() {
   const c = ensure(), w = W(); if (!w || !c._columns) return;
   const cc = c._columns;
+  // Finish this cell before moving the cursor. The next row starts below the
+  // tallest cell in the current row, so every column keeps the same baseline.
+  cc.rowHeight = Math.max(cc.rowHeight, w.dc.currLineHeight);
+  w.dc.currLineHeight = 0;
+  w.dc._lineUsed = false;
   cc.i = (cc.i + 1) % cc.n;
-  if (cc.i === 0) { w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, w.dc.cursorPosPrevLine.y + 22); }
-  else { w.dc.cursorPos.x = cc.x + cc.i * cc.w; w.dc.cursorPos.y = cc.y; }
+  if (cc.i === 0) {
+    cc.rowY += cc.rowHeight + C().style.ItemSpacing.y;
+    cc.rowHeight = 0;
+    w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
+  } else { w.dc.cursorPos.x = cc.x + cc.i * cc.w; w.dc.cursorPos.y = cc.rowY; }
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._lockFeed = true;
 }
@@ -3332,44 +3349,21 @@ function demoTables() {
 
 function demoPopups() {
   if (!ImGui.CollapsingHeader("Popups / menus / tabs")) return;
-  if (ImGui.Button("Open popup")) {
-    if (ImGui.Notify && typeof ImGui.Notify.Toast === "function") {
-      const toast = ImGui.Notify.Toast(
-        ImGui.Notify.ToastType.Info,
-        4000,
-        "Dismiss",
-        () => { /* Toast dismiss callback */ },
-        "Popup notification triggered from Demo window!"
-      );
-      toast.setTitle("Demo Notification");
+  const notificationButtons = [
+    ["Open popup (warning)", ImGui.Notify && ImGui.Notify.ToastType.Warning, "Warning"],
+    ["Open popup (success)", ImGui.Notify && ImGui.Notify.ToastType.Success, "Success"],
+    ["Open popup (info)", ImGui.Notify && ImGui.Notify.ToastType.Info, "Info"],
+    ["Open popup (error)", ImGui.Notify && ImGui.Notify.ToastType.Error, "Error"],
+  ];
+  for (const [label, type, title] of notificationButtons) {
+    if (ImGui.Button(label) && ImGui.Notify && type !== undefined) {
+      const toast = ImGui.Notify.Toast(type, 4000, "Dismiss", null, `${title} popup notification`);
+      toast.setTitle(title);
       ImGui.InsertNotification(toast);
     }
   }
   if (ImGui.Button("Open modal")) ImGui.OpenPopup("modal1");
   if (ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }
-  if (ImGui.Button("Open popup at mouse")) ImGui.OpenPopup("pop_mouse");
-  if (ImGui.BeginPopup("pop_mouse")) {
-    ImGui.Text("popup anchored at the mouse");
-    if (ImGui.Button("Close")) ImGui.ClosePopup("pop_mouse");
-    ImGui.EndPopup();
-  }
-  if (ImGui.Button("Open popup (center)")) ImGui.OpenPopup("pop_center", "center");
-  if (ImGui.BeginPopup("pop_center")) {
-    ImGui.Text("centered popup with options:");
-    ImGui.Selectable("option A");
-    ImGui.Selectable("option B");
-    if (ImGui.Button("Close")) ImGui.ClosePopup("pop_center");
-    ImGui.EndPopup();
-  }
-  if (ImGui.Button("Open modal (form)")) ImGui.OpenPopup("modal_form");
-  if (ImGui.BeginPopupModal("modal_form")) {
-    ImGui.Text("enter a value:");
-    D.formVal = ImGui.InputText("##form", D.formVal || "").text;
-    if (ImGui.Button("OK")) ImGui.CloseCurrentPopup();
-    ImGui.SameLine();
-    if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
-    ImGui.EndPopupModal();
-  }
   ImGui.Button("right-click me");
   if (ImGui.BeginPopupContextItem("ctx1")) { if (ImGui.MenuItem("Action A")) ImGui.CloseCurrentPopup(); ImGui.EndPopup(); }
   if (ImGui.BeginTabBar("tb2")) {
@@ -3996,10 +3990,6 @@ function MY_MENU() {
     // NOTE: native <input type=color> fires async; poll each frame:
     if (ce.changed) S.color = ce.color;
 
-    // --- combo ---
-    const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
-    if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
-
     // --- collapsible section ---
     if (ImGui.CollapsingHeader("Features")) {
       for (let i = 0; i < 3; i++) {
@@ -4009,6 +3999,11 @@ function MY_MENU() {
     }
     ImGui.Separator();
     ImGui.TextWrapped("Tip: drag the title bar to move, corner grip to resize, double-click title to collapse.");
+
+    // Render the combo after the rows below it so its open list stays on top
+    // of the feature controls instead of being painted underneath them.
+    const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
+    if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
   }
   ImGui.End();
 }

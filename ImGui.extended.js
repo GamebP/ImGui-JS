@@ -1042,18 +1042,35 @@ const TableFlags = {
 // ---------- legacy columns ----------
 function Columns(count = 1) {
   const c = ensure(), w = W(); if (!w) return;
-  if (count <= 1) { c._columns = null; return; }
+  if (count <= 1) {
+    if (c._columns) {
+      const cc = c._columns;
+      w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
+      w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+      w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc._lockFeed = true;
+      c._columns = null;
+    }
+    return;
+  }
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, w: avail / count };
+  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count };
   w.dc.cursorPos.x = c._columns.x; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._lockFeed = true;
 }
 function NextColumn() {
   const c = ensure(), w = W(); if (!w || !c._columns) return;
   const cc = c._columns;
+  // Finish this cell before moving the cursor. The next row starts below the
+  // tallest cell in the current row, so every column keeps the same baseline.
+  cc.rowHeight = Math.max(cc.rowHeight, w.dc.currLineHeight);
+  w.dc.currLineHeight = 0;
+  w.dc._lineUsed = false;
   cc.i = (cc.i + 1) % cc.n;
-  if (cc.i === 0) { w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, w.dc.cursorPosPrevLine.y + 22); }
-  else { w.dc.cursorPos.x = cc.x + cc.i * cc.w; w.dc.cursorPos.y = cc.y; }
+  if (cc.i === 0) {
+    cc.rowY += cc.rowHeight + C().style.ItemSpacing.y;
+    cc.rowHeight = 0;
+    w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
+  } else { w.dc.cursorPos.x = cc.x + cc.i * cc.w; w.dc.cursorPos.y = cc.rowY; }
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._lockFeed = true;
 }

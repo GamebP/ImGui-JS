@@ -162,44 +162,21 @@ function demoTables() {
 
 function demoPopups() {
   if (!ImGui.CollapsingHeader("Popups / menus / tabs")) return;
-  if (ImGui.Button("Open popup")) {
-    if (ImGui.Notify && typeof ImGui.Notify.Toast === "function") {
-      const toast = ImGui.Notify.Toast(
-        ImGui.Notify.ToastType.Info,
-        4000,
-        "Dismiss",
-        () => { /* Toast dismiss callback */ },
-        "Popup notification triggered from Demo window!"
-      );
-      toast.setTitle("Demo Notification");
+  const notificationButtons = [
+    ["Open popup (warning)", ImGui.Notify && ImGui.Notify.ToastType.Warning, "Warning"],
+    ["Open popup (success)", ImGui.Notify && ImGui.Notify.ToastType.Success, "Success"],
+    ["Open popup (info)", ImGui.Notify && ImGui.Notify.ToastType.Info, "Info"],
+    ["Open popup (error)", ImGui.Notify && ImGui.Notify.ToastType.Error, "Error"],
+  ];
+  for (const [label, type, title] of notificationButtons) {
+    if (ImGui.Button(label) && ImGui.Notify && type !== undefined) {
+      const toast = ImGui.Notify.Toast(type, 4000, "Dismiss", null, `${title} popup notification`);
+      toast.setTitle(title);
       ImGui.InsertNotification(toast);
     }
   }
   if (ImGui.Button("Open modal")) ImGui.OpenPopup("modal1");
   if (ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }
-  if (ImGui.Button("Open popup at mouse")) ImGui.OpenPopup("pop_mouse");
-  if (ImGui.BeginPopup("pop_mouse")) {
-    ImGui.Text("popup anchored at the mouse");
-    if (ImGui.Button("Close")) ImGui.ClosePopup("pop_mouse");
-    ImGui.EndPopup();
-  }
-  if (ImGui.Button("Open popup (center)")) ImGui.OpenPopup("pop_center", "center");
-  if (ImGui.BeginPopup("pop_center")) {
-    ImGui.Text("centered popup with options:");
-    ImGui.Selectable("option A");
-    ImGui.Selectable("option B");
-    if (ImGui.Button("Close")) ImGui.ClosePopup("pop_center");
-    ImGui.EndPopup();
-  }
-  if (ImGui.Button("Open modal (form)")) ImGui.OpenPopup("modal_form");
-  if (ImGui.BeginPopupModal("modal_form")) {
-    ImGui.Text("enter a value:");
-    D.formVal = ImGui.InputText("##form", D.formVal || "").text;
-    if (ImGui.Button("OK")) ImGui.CloseCurrentPopup();
-    ImGui.SameLine();
-    if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
-    ImGui.EndPopupModal();
-  }
   ImGui.Button("right-click me");
   if (ImGui.BeginPopupContextItem("ctx1")) { if (ImGui.MenuItem("Action A")) ImGui.CloseCurrentPopup(); ImGui.EndPopup(); }
   if (ImGui.BeginTabBar("tb2")) {
