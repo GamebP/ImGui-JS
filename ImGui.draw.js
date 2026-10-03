@@ -42,15 +42,8 @@ class CanvasRenderer {
       .filter((w) => w.open !== false)
       .sort((a, b) => a.z - b.z);
     for (const w of wins) this.drawWindow(imguiCtx, w);
-    // software cursor ring when hovering UI
-    if (imguiCtx.anyWindowHovered) {
-      const m = io.MousePos;
-      ctx.save();
-      ctx.strokeStyle = "rgba(120,180,255,0.9)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(m.x, m.y, 7, 0, Math.PI * 2); ctx.stroke();
-      ctx.restore();
-    }
+    // NOTE: no software cursor ring — the OS pointer is already visible and a
+    // canvas-drawn ring lags one frame behind, rendering as a ghost artifact.
   }
   drawWindow(c, w) {
     const ctx = this.ctx, st = c.style;

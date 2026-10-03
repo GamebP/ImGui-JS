@@ -1,15 +1,18 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.0
+// @version      1.0.1
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://*/*
 // @noframes
 // @grant        none
 // @run-at       document-idle
+// @downloadURL   https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.bundle.user.js
+// @updateURL     https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.bundle.user.js
 // ==/UserScript==
 /* BUNDLE: ImGui.core.js + ImGui.draw.js + ImGui.widgets.js + ImGui.backend.js + ImGui.main.js body.
  * Built from Build/. Edit the split files, then rebuild with: python3 build_bundle.py */
+
 
 
 
@@ -541,15 +544,8 @@ class CanvasRenderer {
       .filter((w) => w.open !== false)
       .sort((a, b) => a.z - b.z);
     for (const w of wins) this.drawWindow(imguiCtx, w);
-    // software cursor ring when hovering UI
-    if (imguiCtx.anyWindowHovered) {
-      const m = io.MousePos;
-      ctx.save();
-      ctx.strokeStyle = "rgba(120,180,255,0.9)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(m.x, m.y, 7, 0, Math.PI * 2); ctx.stroke();
-      ctx.restore();
-    }
+    // NOTE: no software cursor ring — the OS pointer is already visible and a
+    // canvas-drawn ring lags one frame behind, rendering as a ghost artifact.
   }
   drawWindow(c, w) {
     const ctx = this.ctx, st = c.style;
@@ -983,6 +979,26 @@ function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
 
 // ---------- color ----------
 function ColorEdit3(label, color) { return ColorEdit4(label, [color[0], color[1], color[2], 1]); }
+// Shared native picker input, reused across clicks so cancelled dialogs never
+// pile up orphan <input> elements. It is laid out EXACTLY over the swatch
+// (real width/height, near-opaque instead of opacity:0) because Chromium and
+// Firefox anchor the native popup at the element's layout box — a 0x0 or
+// opacity:0 element detached from layout opens the dialog at (0,0).
+let _colorInput = null;
+function colorInput() {
+  if (_colorInput && _colorInput.isConnected) return _colorInput;
+  const inp = document.createElement("input");
+  inp.type = "color";
+  inp.style.position = "fixed";
+  inp.style.zIndex = 2147483647;
+  inp.style.opacity = "0.01";
+  inp.style.padding = "0"; inp.style.border = "0"; inp.style.margin = "0";
+  inp.style.fontSize = "16px"; // avoid mobile zoom stealing the popup
+  inp.style.pointerEvents = "auto";
+  document.documentElement.appendChild(inp);
+  _colorInput = inp;
+  return inp;
+}
 function ColorEdit4(label, color) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
@@ -995,21 +1011,26 @@ function ColorEdit4(label, color) {
   const bb = c.buttonBehavior(id, x, y, bw, ht);
   let col = [...color], changed = false;
   if (bb.pressed) {
-    // cycle hue quickly as picker-lite (full picker would be a popup)
-    const inp = document.createElement("input");
-    inp.type = "color";
+    // Anchor the picker over the swatch in client coords. The overlay canvas
+    // is position:fixed at (0,0) with no CSS transform, so canvas layout px
+    // == viewport client px (no scroll/transform correction needed).
+    const inp = colorInput();
     const toHex = (v) => "#" + v.slice(0, 3).map((n) => Math.round(Math.max(0, Math.min(1, n)) * 255).toString(16).padStart(2, "0")).join("");
     inp.value = toHex(col);
-    inp.style.position = "fixed"; inp.style.left = x + "px"; inp.style.top = y + "px";
-    inp.style.zIndex = 2147483647; inp.style.opacity = "0"; inp.style.pointerEvents = "auto";
-    document.documentElement.appendChild(inp);
-    inp.click();
-    inp.addEventListener("input", () => {
+    inp.style.display = "block";
+    inp.style.left = Math.round(x) + "px";
+    inp.style.top = Math.round(y) + "px";
+    inp.style.width = bw + "px";
+    inp.style.height = ht + "px";
+    inp.oninput = () => {
       const hv = inp.value;
       col = [parseInt(hv.slice(1, 3), 16) / 255, parseInt(hv.slice(3, 5), 16) / 255, parseInt(hv.slice(5, 7), 16) / 255, col[3]];
       changed = true;
-    }, { once: false });
-    inp.addEventListener("change", () => inp.remove());
+    };
+    inp.onchange = () => { inp.style.display = "none"; inp.blur(); };
+    inp.onblur = () => { inp.style.display = "none"; };
+    inp.focus();
+    inp.click();
   }
   const cssC = `rgba(${Math.round(col[0] * 255)},${Math.round(col[1] * 255)},${Math.round(col[2] * 255)},${col[3]})`;
   emit({ t: "rectFilled", x, y, w: bw, h: ht - 2, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
@@ -1156,8 +1177,10 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   w.cursor.x = x + 6; w.cursor.y = y + 6;
   w._childBounds = { x, y, w: wd, h: ht };
   c.nextLine(0);
-  // reset cursor to child origin (nextLine moved it; pull back)
+  // reset cursor to child origin (nextLine moved it; pull back) and sync the
+  // line tracker so SameLine as the first child widget starts at the origin
   w.cursor.x = x + 6; w.cursor.y = y + 6; w.cursorPrevLine = { x: x + 6, y: y + 6 };
+  w._lastWd = 0; w._lastHt = 0;
   return true;
 }
 function EndChild() {
@@ -1167,6 +1190,10 @@ function EndChild() {
   if (b) {
     w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
     w.cursor.y = Math.max(w.cursor.y, b.y + b.h + c.style.ItemSpacing.y);
+    // sync line tracker: the next widget (and any SameLine after it) must
+    // continue from the post-child origin, not the pre-child coordinates
+    w.cursorPrevLine = { ...w.cursor };
+    w._lastWd = 0; w._lastHt = 0;
     w.maxPos.y = Math.max(w.maxPos.y, b.y + b.h);
   }
   w._childBounds = null;
@@ -1669,6 +1696,19 @@ function wrapBeginEnd() {
       w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
     } else if (w) { w.scrollMax = 0; w.scrollY = 0; }
     origEnd.call(this);
+    // Auto-fit windows (size.y == 0) grow unbounded by default. Clamp to the
+    // viewport so content can never flow off-screen: the excess becomes
+    // scrollable instead of overflowing past the taskbar.
+    if (w && !w.collapsed && (w.size.y === 0 || (w.flags & ImGui.WindowFlags.AlwaysAutoResize))) {
+      const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y - 8);
+      if (w.sizeFull.y > maxH) {
+        const contentTop = w.pos.y + w.titleH + w.padding.y - (w.scrollY || 0);
+        const contentH = (w.maxPos.y - contentTop) + w.padding.y;
+        w.sizeFull.y = maxH;
+        w.scrollMax = Math.max(0, contentH - (maxH - w.titleH - w.padding.y * 2));
+        w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
+      }
+    }
     // draw scrollbar when needed (clipped content stays inside window via draw.js)
     if (w && w.scrollMax > 0 && !w.collapsed && !(w.flags & ImGui.WindowFlags.NoScrollbar)) {
       const st = this.style;
@@ -2132,30 +2172,42 @@ function BeginTabBar(id) {
 }
 function BeginTabItem(label) {
   const c = ensure(), w = W(); if (!w || !c._tabBar) return false;
-  const shown = ImGui.findRenderedTextEnd(label);
-  const tw = measure(shown) + 24;
+  const full = ImGui.findRenderedTextEnd(label);
   const t = c._tabBar;
-  // Horizontal row: cumulative offset, wrap guard clamps inside bar width.
-  let x = t.x + t.offsetX;
-  if (x + tw > t.x + t.w) { x = t.x; t.offsetX = 0; }
-  const y = t.y;
+  // Shrink-to-fit: never wrap (wrapping overdraws earlier tabs). Truncate
+  // with ellipsis when the row is full; the renderer clips the rest.
+  const wantW = measure(full) + 24;
+  const remain = Math.max(0, t.x + t.w - (t.x + t.offsetX));
+  let tw = wantW, shown = full;
+  if (wantW > remain) {
+    tw = Math.max(28, remain);
+    const maxT = Math.max(0, tw - 24 - 8);
+    let s = full;
+    while (s.length > 1 && measure(s + "…") > maxT) s = s.slice(0, -1);
+    shown = s.length < full.length ? s + "…" : s;
+  }
+  const x = t.x + t.offsetX, y = t.y;
   t.offsetX += tw + TAB_GAP; t.n++;
-  if (c._tabs[t.id] === undefined) c._tabs[t.id] = shown;
-  const active = c._tabs[t.id] === shown;
+  if (c._tabs[t.id] === undefined) c._tabs[t.id] = full;
+  const active = c._tabs[t.id] === full;
   const id = w.getID("tab:" + label);
   c.itemAdd(x, y, tw, TAB_H, id);
   const h = c.hovered(x, y, tw, TAB_H);
   if (h) c.anyWindowHovered = true;
-  if (h && c.io.MouseClicked[0]) c._tabs[t.id] = shown;
+  if (h && c.io.MouseClicked[0]) c._tabs[t.id] = full;
   const col = active ? c.style.Colors[ImGui.Col.TabSelected]
     : h ? c.style.Colors[ImGui.Col.TabHovered]
     : c.style.Colors[ImGui.Col.Tab];
   emit({ t: "rectFilled", x, y, w: tw, h: TAB_H, r: 4, col });
-  if (active) emit({ t: "rectFilled", x, y, w: tw, h: 2, r: 1, col: c.style.Colors[ImGui.Col.TabSelectedOverline] });
+  if (active) {
+    emit({ t: "rectFilled", x, y, w: tw, h: 2, r: 1, col: c.style.Colors[ImGui.Col.TabSelectedOverline] });
+    t.activeRect = { x, w: tw };
+  }
   emit({ t: "text", str: shown, x: x + 12, y: y + 5, col: c.style.Colors[ImGui.Col.Text] });
   if (active) {
     // Snap content area immediately below the tab strip (no overlap).
     w.cursor.x = t.x; w.cursor.y = t.contentY; w.cursorPrevLine = { ...w.cursor };
+    w._lastWd = 0; w._lastHt = 0;
     w.maxPos.y = Math.max(w.maxPos.y, t.contentY);
   }
   return active;
@@ -2163,14 +2215,19 @@ function BeginTabItem(label) {
 function EndTabItem() {}
 function EndTabBar() {
   const c = ensure(), w = W();
+  // Continuous baseline under the whole row...
+  if (w && c._tabBar) {
+    emit({ t: "line", x1: c._tabBar.x, y1: c._tabBar.y + TAB_H + 1, x2: c._tabBar.x + c._tabBar.w, y2: c._tabBar.y + TAB_H + 1, col: c.style.Colors[ImGui.Col.Separator], th: 1 });
+    // ...masked behind the active tab so the bar reads as one cohesive unit.
+    const a = c._tabBar.activeRect;
+    if (a) emit({ t: "line", x1: a.x + 2, y1: c._tabBar.y + TAB_H + 1, x2: a.x + a.w - 2, y2: c._tabBar.y + TAB_H + 1, col: c.style.Colors[ImGui.Col.TabSelected], th: 3 });
+  }
   PopID();
   if (w && c._tabBar) {
-    // Separator under the row + force cursor below tabs even if no tab active.
-    emit({ t: "line", x1: c._tabBar.x, y1: c._tabBar.y + TAB_H + 1, x2: c._tabBar.x + c._tabBar.w, y2: c._tabBar.y + TAB_H + 1, col: c.style.Colors[ImGui.Col.Separator], th: 1 });
     w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
     w.cursor.y = Math.max(w.cursor.y, c._tabBar.contentY);
     w.cursorPrevLine = { ...w.cursor };
-    w._lastWd = 0;
+    w._lastWd = 0; w._lastHt = 0;
   }
   c._tabBar = null;
 }
@@ -2180,6 +2237,7 @@ function TabItemButton(label) {
 }
 
 // ---------- tables (fixed-width distribution on outerWidth, cf. imgui_tables.cpp) ----------
+const TABLE_CELL_PAD = 4; // text inset inside each cell; widths reserve it
 function BeginTable(id, columns, flags = 0, outerW = 0, outerH = 0) {
   const c = ensure(), w = W(); if (!w) return false;
   const avail = outerW > 0 ? outerW : w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
@@ -2199,6 +2257,7 @@ function TableSetupColumn(label, widthOrWeight = 0) {
 }
 function tableLayout(t) {
   // Fixed-width distribution: explicit widths win, remainder split equally.
+  // Every column reserves TABLE_CELL_PAD on both sides so text never clips.
   if (t.widths) return;
   const n = t.cols;
   t.widths = new Array(n); t.offsets = new Array(n);
@@ -2206,14 +2265,18 @@ function tableLayout(t) {
   let fixed = 0, auto = 0;
   for (let i = 0; i < n; i++) {
     const v = explicit[i] || 0;
-    if (v > 0) { t.widths[i] = v; fixed += v; } else auto++;
+    if (v > 0) { t.widths[i] = Math.max(v, TABLE_CELL_PAD * 2 + 10); fixed += t.widths[i]; } else auto++;
   }
   const rest = Math.max(0, t.avail - fixed);
-  const each = auto > 0 ? rest / auto : 0;
+  const each = auto > 0 ? Math.max(TABLE_CELL_PAD * 2 + 10, rest / auto) : 0;
   for (let i = 0; i < n; i++) if (!t.widths[i]) t.widths[i] = each;
   t.colW = t.avail / n;
   let acc = 0;
   for (let i = 0; i < n; i++) { t.offsets[i] = acc; acc += t.widths[i]; }
+}
+function tableHasInnerH(t) {
+  return (t.flags & TableFlags.BordersInnerH) || (t.flags & TableFlags.BordersInner) ||
+    (t.flags & TableFlags.BordersH) || (t.flags & TableFlags.Borders);
 }
 function TableHeadersRow() {
   const c = ensure(), w = W(); if (!w || !c._table) return;
@@ -2224,7 +2287,12 @@ function TableHeadersRow() {
     const nm = c._table.names[i] || ("C" + i);
     const cw = c._table.widths[i];
     emit({ t: "rectFilled", x: w.cursor.x - 2, y: w.cursor.y - 2, w: cw - 2, h: 20, r: 3, col: c.style.Colors[ImGui.Col.TableHeaderBg] });
-    emit({ t: "text", str: nm, x: w.cursor.x + 4, y: w.cursor.y, col: c.style.Colors[ImGui.Col.Text] });
+    emit({ t: "text", str: nm, x: w.cursor.x + TABLE_CELL_PAD, y: w.cursor.y, col: c.style.Colors[ImGui.Col.Text] });
+  }
+  // bottom separator splitting headers from data rows
+  if (tableHasInnerH(c._table)) {
+    const t = c._table, yb = (t.rowY || t.startY) + t.rowH;
+    emit({ t: "line", x1: t.x, y1: yb, x2: t.x + t.avail, y2: yb, col: c.style.Colors[ImGui.Col.TableBorderStrong], th: 1 });
   }
   tableInnerVerticals(c._table);
 }
@@ -2256,8 +2324,8 @@ function TableSetColumnIndex(n) {
   const t = c._table;
   tableLayout(t);
   t.col = n;
-  // Explicit x offset from stored widths (never arbitrary spacing).
-  w.cursor.x = t.x + t.offsets[n] + 4; w.cursor.y = t.rowY || t.y;
+  // Explicit x offset from stored widths + cell padding (never arbitrary).
+  w.cursor.x = t.x + t.offsets[n] + TABLE_CELL_PAD; w.cursor.y = t.rowY || t.y;
   w.cursorPrevLine = { ...w.cursor };
   return true;
 }
@@ -2274,16 +2342,20 @@ function EndTable() {
   const c = ensure(), w = W(); if (!w || !c._table) return;
   const t = c._table;
   tableLayout(t);
-  // Draw remaining inner verticals for body rows when requested.
+  // Draw grid lines for body rows: verticals + horizontals when requested.
   if (t.row >= 0) {
     const innerV = (t.flags & TableFlags.BordersInnerV) || (t.flags & TableFlags.BordersInner) || (t.flags & TableFlags.Borders);
-    if (innerV) {
-      for (let r = 0; r <= t.row; r++) {
-        const y0 = t.startY + r * t.rowH, y1 = y0 + t.rowH;
+    const innerH = tableHasInnerH(t);
+    for (let r = 0; r <= t.row; r++) {
+      const y0 = t.startY + r * t.rowH, y1 = y0 + t.rowH;
+      if (innerV) {
         for (let i = 1; i < t.cols; i++) {
           const lx = t.x + t.offsets[i];
           emit({ t: "line", x1: lx, y1: y0, x2: lx, y2: y1, col: c.style.Colors[ImGui.Col.TableBorderLight], th: 1 });
         }
+      }
+      if (innerH && r > 0) {
+        emit({ t: "line", x1: t.x, y1: y0, x2: t.x + t.avail, y2: y0, col: c.style.Colors[ImGui.Col.TableBorderLight], th: 1 });
       }
     }
   }
@@ -2796,7 +2868,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.0"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.1"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.backend.js"];
 
 function libsPresent() {

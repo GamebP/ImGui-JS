@@ -254,6 +254,26 @@ function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
 
 // ---------- color ----------
 function ColorEdit3(label, color) { return ColorEdit4(label, [color[0], color[1], color[2], 1]); }
+// Shared native picker input, reused across clicks so cancelled dialogs never
+// pile up orphan <input> elements. It is laid out EXACTLY over the swatch
+// (real width/height, near-opaque instead of opacity:0) because Chromium and
+// Firefox anchor the native popup at the element's layout box — a 0x0 or
+// opacity:0 element detached from layout opens the dialog at (0,0).
+let _colorInput = null;
+function colorInput() {
+  if (_colorInput && _colorInput.isConnected) return _colorInput;
+  const inp = document.createElement("input");
+  inp.type = "color";
+  inp.style.position = "fixed";
+  inp.style.zIndex = 2147483647;
+  inp.style.opacity = "0.01";
+  inp.style.padding = "0"; inp.style.border = "0"; inp.style.margin = "0";
+  inp.style.fontSize = "16px"; // avoid mobile zoom stealing the popup
+  inp.style.pointerEvents = "auto";
+  document.documentElement.appendChild(inp);
+  _colorInput = inp;
+  return inp;
+}
 function ColorEdit4(label, color) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
@@ -266,21 +286,26 @@ function ColorEdit4(label, color) {
   const bb = c.buttonBehavior(id, x, y, bw, ht);
   let col = [...color], changed = false;
   if (bb.pressed) {
-    // cycle hue quickly as picker-lite (full picker would be a popup)
-    const inp = document.createElement("input");
-    inp.type = "color";
+    // Anchor the picker over the swatch in client coords. The overlay canvas
+    // is position:fixed at (0,0) with no CSS transform, so canvas layout px
+    // == viewport client px (no scroll/transform correction needed).
+    const inp = colorInput();
     const toHex = (v) => "#" + v.slice(0, 3).map((n) => Math.round(Math.max(0, Math.min(1, n)) * 255).toString(16).padStart(2, "0")).join("");
     inp.value = toHex(col);
-    inp.style.position = "fixed"; inp.style.left = x + "px"; inp.style.top = y + "px";
-    inp.style.zIndex = 2147483647; inp.style.opacity = "0"; inp.style.pointerEvents = "auto";
-    document.documentElement.appendChild(inp);
-    inp.click();
-    inp.addEventListener("input", () => {
+    inp.style.display = "block";
+    inp.style.left = Math.round(x) + "px";
+    inp.style.top = Math.round(y) + "px";
+    inp.style.width = bw + "px";
+    inp.style.height = ht + "px";
+    inp.oninput = () => {
       const hv = inp.value;
       col = [parseInt(hv.slice(1, 3), 16) / 255, parseInt(hv.slice(3, 5), 16) / 255, parseInt(hv.slice(5, 7), 16) / 255, col[3]];
       changed = true;
-    }, { once: false });
-    inp.addEventListener("change", () => inp.remove());
+    };
+    inp.onchange = () => { inp.style.display = "none"; inp.blur(); };
+    inp.onblur = () => { inp.style.display = "none"; };
+    inp.focus();
+    inp.click();
   }
   const cssC = `rgba(${Math.round(col[0] * 255)},${Math.round(col[1] * 255)},${Math.round(col[2] * 255)},${col[3]})`;
   emit({ t: "rectFilled", x, y, w: bw, h: ht - 2, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
@@ -427,8 +452,10 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   w.cursor.x = x + 6; w.cursor.y = y + 6;
   w._childBounds = { x, y, w: wd, h: ht };
   c.nextLine(0);
-  // reset cursor to child origin (nextLine moved it; pull back)
+  // reset cursor to child origin (nextLine moved it; pull back) and sync the
+  // line tracker so SameLine as the first child widget starts at the origin
   w.cursor.x = x + 6; w.cursor.y = y + 6; w.cursorPrevLine = { x: x + 6, y: y + 6 };
+  w._lastWd = 0; w._lastHt = 0;
   return true;
 }
 function EndChild() {
@@ -438,6 +465,10 @@ function EndChild() {
   if (b) {
     w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
     w.cursor.y = Math.max(w.cursor.y, b.y + b.h + c.style.ItemSpacing.y);
+    // sync line tracker: the next widget (and any SameLine after it) must
+    // continue from the post-child origin, not the pre-child coordinates
+    w.cursorPrevLine = { ...w.cursor };
+    w._lastWd = 0; w._lastHt = 0;
     w.maxPos.y = Math.max(w.maxPos.y, b.y + b.h);
   }
   w._childBounds = null;
