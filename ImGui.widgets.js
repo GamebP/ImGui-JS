@@ -415,7 +415,10 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   c.itemAdd(x, y, wd, ht, 0);
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.ChildBg][3] === 0 ? [1, 1, 1, 0.03] : st.Colors[ImGui.Col.ChildBg] });
   if (border) emit({ t: "rect", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
-  _childStack.push({ x: x + 6, y: y + 6, maxW: wd - 12 });
+  // Isolate indentation: the panel itself sits at the outer indent, but the
+  // inner scope gets a clean slate so unbalanced Indent/Unindent (or early
+  // returns) inside the child can never leak into outer siblings.
+  _childStack.push({ x: x + 6, y: y + 6, maxW: wd - 12, savedIndent: w._indent || 0 });
   // shift cursor into child
   w.dc.cursorPos.x = x + 6; w.dc.cursorPos.y = y + 6;
   w._childBounds = { x, y, w: wd, h: ht };
@@ -430,7 +433,9 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
 function EndChild() {
   const c = ctx(), w = cur(); if (!w) return;
   const b = w._childBounds;
-  _childStack.pop();
+  const st = _childStack.pop();
+  // Restore the outer indentation even if inner code left it unbalanced.
+  w._indent = (st && st.savedIndent) || 0;
   if (b) {
     w.dc.cursorPos.x = w.pos.x + w.padding.x + (w._indent || 0);
     w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, b.y + b.h + c.style.ItemSpacing.y);

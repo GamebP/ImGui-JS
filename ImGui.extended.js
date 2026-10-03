@@ -87,7 +87,10 @@ function wrapBeginEnd() {
       const visibleH = w.sizeFull.y - w.titleH - w.padding.y * 2;
       w.scrollMax = Math.max(0, contentH - visibleH);
       w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
-    } else if (w) { w.scrollMax = 0; w.scrollY = 0; }
+    } else if (w && w.collapsed) { w.scrollMax = 0; w.scrollY = 0; }
+    // NOTE: auto-fit windows (size.y == 0) skip the zeroing above on purpose:
+    // their scroll state survives into the viewport-clamp block below, which
+    // fully recomputes it (zeroing would rubber-band wheel scrolling to 0).
     origEnd.call(this);
     // Auto-fit windows (size.y == 0) grow unbounded by default. Clamp to the
     // viewport so content can never flow off-screen: the excess becomes
@@ -101,6 +104,8 @@ function wrapBeginEnd() {
         w.sizeFull.y = maxH;
         w.scrollMax = Math.max(0, contentH - (maxH - w.titleH - w.padding.y * 2));
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
+      } else {
+        w.scrollMax = 0; w.scrollY = 0;
       }
     }
     // draw scrollbar when needed (clipped content stays inside window via draw.js)
@@ -610,11 +615,14 @@ function MenuItem(label, shortcut = "", selected = false, enabled = true) {
 const TAB_H = 24, TAB_CONTENT_GAP = 1;
 function BeginTabBar(id) {
   const c = ensure(), w = W(); if (!w) return false;
-  const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
+  // Reserve scrollbar width so rightmost tabs are never occluded by the track.
+  const hasScrollbar = (w.scrollMax > 0) && !(w.flags & ImGui.WindowFlags.NoScrollbar);
+  const scrollReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
+  const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0) - scrollReserve;
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   // Reserve the full bar strip so following widgets never overlap tabs.
   c.itemSize(bw, TAB_H);
-  c._tabBar = { id: String(id), x, y, w: bw, n: 0, offsetX: 0, contentY: y + TAB_H + TAB_CONTENT_GAP + c.style.ItemSpacing.y };
+  c._tabBar = { id: String(id), x, y, w: bw, n: 0, offsetX: 0, contentY: y + TAB_H + TAB_CONTENT_GAP + c.style.ItemSpacing.y, scrollReserve };
   PushID("tabbar:" + id);
   return true;
 }
@@ -623,12 +631,14 @@ function BeginTabItem(label) {
   const full = ImGui.findRenderedTextEnd(label);
   const t = c._tabBar;
   // Width = text + FramePadding.x * 2 + 8 (explicit row placement, never wrap).
-  const wantW = measure(full) + c.style.FramePadding.x * 2 + 8;
+  const textWidth = measure(full);
+  const wantW = Math.max(32, textWidth + c.style.FramePadding.x * 2 + 10);
   const remain = Math.max(0, t.x + t.w - (t.x + t.offsetX));
   let tw = wantW, shown = full;
   if (wantW > remain) {
-    // Shrink-to-fit with ellipsis; renderer clips any remainder.
+    // Shrink-to-fit with ellipsis; clamp so x + tw never crosses the bar end.
     tw = Math.max(28, remain);
+    tw = Math.min(tw, Math.max(28, (t.x + t.w) - (t.x + t.offsetX)));
     const maxT = Math.max(0, tw - c.style.FramePadding.x * 2 - 8 - 8);
     let s = full;
     while (s.length > 1 && measure(s + "…") > maxT) s = s.slice(0, -1);
@@ -651,9 +661,13 @@ function BeginTabItem(label) {
     emit({ t: "rectFilled", x, y, w: tw, h: 2, r: 1, col: c.style.Colors[ImGui.Col.TabSelectedOverline] });
     t.activeRect = { x, w: tw };
   }
-  // Inactive tabs use disabled text per C++ (dimmed, cohesive bar).
+  // Centered label: delta from tab edges is equal on both sides.
+  // (measure the *displayed* string so truncated tabs still center).
   const tcol = active ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled];
-  emit({ t: "text", str: shown, x: x + c.style.FramePadding.x + 8, y: y + 5, col: tcol });
+  const dispW = measure(shown);
+  const textX = Math.round(x + (tw - dispW) / 2);
+  const textY = Math.round(y + (TAB_H - c.style.FontSize) / 2);
+  emit({ t: "text", str: shown, x: textX, y: textY, col: tcol });
   if (active) {
     // Snap content area immediately below the tab strip (no overlap).
     w.dc.cursorPos.x = t.x; w.dc.cursorPos.y = t.contentY; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
@@ -666,12 +680,13 @@ function BeginTabItem(label) {
 function EndTabItem() {}
 function EndTabBar() {
   const c = ensure(), w = W();
-  // Continuous baseline under the whole row...
+  // Single source of truth: one continuous baseline for the whole row...
   if (w && c._tabBar) {
-    emit({ t: "line", x1: c._tabBar.x, y1: c._tabBar.y + TAB_H + 1, x2: c._tabBar.x + c._tabBar.w, y2: c._tabBar.y + TAB_H + 1, col: c.style.Colors[ImGui.Col.Separator], th: 1 });
-    // ...masked behind the active tab so the bar reads as one cohesive unit.
+    const ly = c._tabBar.y + TAB_H + 0.5; // half-px => crisp 1px line on canvas
+    emit({ t: "line", x1: c._tabBar.x, y1: ly, x2: c._tabBar.x + c._tabBar.w, y2: ly, col: c.style.Colors[ImGui.Col.Separator], th: 1 });
+    // ...masked behind the active tab (2px block overlapping y + TAB_H - 1).
     const a = c._tabBar.activeRect;
-    if (a) emit({ t: "line", x1: a.x + 2, y1: c._tabBar.y + TAB_H + 1, x2: a.x + a.w - 2, y2: c._tabBar.y + TAB_H + 1, col: c.style.Colors[ImGui.Col.TabSelected], th: 3 });
+    if (a) emit({ t: "rectFilled", x: a.x + 1, y: c._tabBar.y + TAB_H - 1, w: a.w - 2, h: 2, r: 0, col: c.style.Colors[ImGui.Col.TabSelected] });
   }
   PopID();
   if (w && c._tabBar) {
