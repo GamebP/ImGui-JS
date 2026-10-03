@@ -437,7 +437,9 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   c.itemAdd(x, y, wd, ht, 0);
+  const bgIndex = w.drawList.length;
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.ChildBg][3] === 0 ? [1, 1, 1, 0.03] : st.Colors[ImGui.Col.ChildBg] });
+  const borderIndex = border ? w.drawList.length : -1;
   if (border) emit({ t: "rect", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
   // Isolate the child scope: save the ENTIRE parent DC state so inner
   // indentation (or early returns) can never leak into outer siblings.
@@ -455,6 +457,8 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
     currLineHeight: w.dc.currLineHeight,
     bounds: { x, y, w: wd, h: ht },
     clipMark: w.drawList.length,
+    bgIndex: bgIndex,
+    borderIndex: borderIndex,
   });
   // Reset the child work area to its own origin with a clean slate.
   w._indent = 0;
@@ -469,12 +473,29 @@ function EndChild() {
   const c = ctx(), w = cur(); if (!w) return;
   const st = (c._childStack || []).pop();
   const b = st ? st.bounds : undefined;
+  // If the content overflowed the requested box (items leak above the border),
+  // grow the box + border to fit before wrapping the inner ops — otherwise
+  // the overflow would clip silently and the parent cursor wouldn't advance.
+  let boxH = st ? st.bounds.h : 0;
+  if (st) {
+    const contentH = w.dc.cursorMaxPos.y - st.bounds.y;
+    if (contentH > boxH) {
+      boxH = contentH;
+      const bg = w.drawList[st.bgIndex];
+      if (bg && bg.t === "rectFilled") bg.h = boxH;
+      if (st.borderIndex >= 0) {
+        const bd = w.drawList[st.borderIndex];
+        if (bd && bd.t === "rect") bd.h = boxH;
+      }
+      st.bounds.h = boxH;
+    }
+  }
   // Clip the child's inner ops to its own box before popping state. This
   // replaces the items that overflowed the border with a nested clip group,
   // so nested children produce nested groups (innermost clipped first).
   if (st && typeof st.clipMark === "number" && st.clipMark < w.drawList.length) {
     const innerOps = w.drawList.splice(st.clipMark, w.drawList.length - st.clipMark);
-    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: st.bounds.x, y: st.bounds.y, w: st.bounds.w, h: st.bounds.h, ops: innerOps });
+    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: st.bounds.x, y: st.bounds.y, w: st.bounds.w, h: boxH, ops: innerOps });
   }
   // Restore the outer scope even if inner code left it unbalanced.
   if (st) {
