@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.13
+// @version      1.0.14
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://*/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.13";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.14";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -3208,8 +3208,19 @@ function demoTables() {
 
 function demoPopups() {
   if (!ImGui.CollapsingHeader("Popups / menus / tabs")) return;
-  if (ImGui.Button("Open popup")) { const r = ImGui.GetItemRect(); if (r) ImGui.OpenPopup("hello", r.x, r.y + r.h + 2); else ImGui.OpenPopup("hello"); }
-  if (ImGui.BeginPopup("hello")) { ImGui.Text("popup content"); if (ImGui.Button("Close")) ImGui.CloseCurrentPopup(); ImGui.EndPopup(); }
+  if (ImGui.Button("Open popup")) {
+    if (ImGui.Notify && typeof ImGui.Notify.Toast === "function") {
+      const toast = ImGui.Notify.Toast(
+        ImGui.Notify.ToastType.Info,
+        4000,
+        "Dismiss",
+        () => { /* Toast dismiss callback */ },
+        "Popup notification triggered from Demo window!"
+      );
+      toast.setTitle("Demo Notification");
+      ImGui.InsertNotification(toast);
+    }
+  }
   if (ImGui.Button("Open modal")) ImGui.OpenPopup("modal1");
   if (ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }
   ImGui.Button("right-click me");
@@ -3739,7 +3750,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.13"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.14"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -3897,6 +3908,10 @@ async function boot() {
     DEMO_WINDOW(dt); // <-- reference demo (set S.showDemo=false to hide)
     if (S.showFull) ImGui.ShowDemoWindow(S.fullOpen); // <-- FULL port demo (tabs/tables/popups/plots)
     if (!S.fullOpen.value) S.showFull = false;
+    // Render toast notifications on top of all windows
+    if (typeof ImGui.RenderNotifications === "function") {
+      ImGui.RenderNotifications();
+    }
   });
   console.log("%c[ImGui]%c port ready — edit MY_MENU() in ImGui.main.js",
     "background:#1d4ed8;color:#fff;padding:2px 6px;border-radius:4px", "color:inherit");
