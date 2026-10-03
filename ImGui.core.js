@@ -192,6 +192,7 @@ class ImGuiWindow {
     this.z = __winSeq++;
     this.cursor = { x: 0, y: 0 };
     this.cursorPrevLine = { x: 0, y: 0 };
+    this._lastWd = 0; this._lastHt = 0;
     this.maxPos = { x: 0, y: 0 };
     this.idStack = [this.id];
     this.drawList = [];
@@ -222,6 +223,8 @@ class ImGuiContext {
     this.headerOpen = new Map();
     this.anyWindowHovered = false;
     this.focusOrder = [];
+    this._debugRects = [];
+    this._debugMode = false;
   }
   // -- frame --
   newFrame(dt) {
@@ -237,6 +240,7 @@ class ImGuiContext {
     this.windowStack.length = 0;
     this.current = null;
     this.anyWindowHovered = false;
+    this._debugRects.length = 0;
     this.hoveredId = this.activeId !== 0 ? this.hoveredId : 0;
     io.WantTextInput = (this.activeKind === "text");
   }
@@ -380,10 +384,16 @@ class ImGuiContext {
     this.current = this.windowStack[this.windowStack.length - 1] || null;
   }
   // -- layout / items (cf. imgui.cpp ItemSize/ItemAdd/ButtonBehavior) --
+  // Standardized cursor advance: every widget must go through itemSize()
+  // (reserves Wd x Ht + updates maxPos) followed by nextLine() OR sameLine()
+  // for horizontal flow. Coordinates are absolute screen space, always
+  // relative to w.pos (window position) + padding + indent.
+  advanceCursor(wd, ht) { this.itemSize(wd, ht); this.nextLine(ht); }
   itemSize(wd, ht) {
     const w = this.current; if (!w) return;
     const st = this.style;
     w.cursorPrevLine = { x: w.cursor.x, y: w.cursor.y };
+    w._lastWd = wd; w._lastHt = ht;
     w.cursor.x += wd + st.ItemSpacing.x;
     w.maxPos.x = Math.max(w.maxPos.x, w.cursorPrevLine.x + wd);
     w.maxPos.y = Math.max(w.maxPos.y, w.cursorPrevLine.y + ht);
@@ -398,13 +408,19 @@ class ImGuiContext {
     const w = this.current; if (!w) return;
     const st = this.style;
     const sp = spacing < 0 ? st.ItemSpacing.x : spacing;
-    w.cursor.x = w.cursorPrevLine.x + offX + sp;
+    // Continue from END of previous item, not its start (fixes overlap).
+    const prevWd = (w._lastWd || 0);
+    w.cursor.x = w.cursorPrevLine.x + prevWd + sp + offX;
     w.cursor.y = w.cursorPrevLine.y;
   }
   itemAdd(x, y, wd, ht, id = 0) {
     const io = this.io;
     const visible = true;
-    if (id) this.lastItem = { id, rect: { x, y, w: wd, h: ht } };
+    if (id) {
+      this.lastItem = { id, rect: { x, y, w: wd, h: ht } };
+      // Debug overlay: keep per-frame list of item rects (cleared in newFrame).
+      if (this._debugRects) this._debugRects.push({ x, y, w: wd, h: ht });
+    }
     return visible;
   }
   hovered(x, y, wd, ht) {
@@ -439,11 +455,13 @@ function CreateContext() { _ctx = new ImGuiContext(); return _ctx; }
 function GetContext() { if (!_ctx) _ctx = new ImGuiContext(); return _ctx; }
 function GetIO() { return GetContext().io; }
 function GetStyle() { return GetContext().style; }
+function SetDebugMode(on) { GetContext()._debugMode = !!on; }
+function IsDebugMode() { return !!GetContext()._debugMode; }
 
 const ImGuiBase = {
   VERSION: IMGUI_VERSION, WindowFlags, Cond, Col,
   hashStr, findRenderedTextEnd, colToCss, lerpCol, applyStyleDark,
-  CreateContext, GetContext, GetIO, GetStyle,
+  CreateContext, GetContext, GetIO, GetStyle, SetDebugMode, IsDebugMode,
   ImGuiWindow, ImGuiContext,
 };
 

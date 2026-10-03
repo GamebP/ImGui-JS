@@ -56,10 +56,22 @@ function wrapBeginEnd() {
     if (w) {
       if (w.scrollY === undefined) w.scrollY = 0;
       if (w.scrollMax === undefined) w.scrollMax = 0;
-      // wheel scroll when hovered (content taller than view)
-      if (w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && this.activeId === 0) {
+      const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
+      // wheel scroll when hovered (content taller than view); clipped via draw.js clip rect
+      if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && this.activeId === 0) {
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY - this.io.MouseWheel * 30));
       }
+      // scrollbar grip drag
+      if (!noScroll && w.scrollMax > 0 && !w.collapsed && w._scrollGrip) {
+        const g = w._scrollGrip;
+        if (this.activeId === g.id && this.activeKind === "scroll") {
+          const m = this.io.MousePos;
+          const t = (m.y - g.by - g.gripH / 2) / Math.max(1, g.bh - g.gripH);
+          w.scrollY = Math.max(0, Math.min(w.scrollMax, t * w.scrollMax));
+          if (!this.io.MouseDown[0]) { this.activeId = 0; this.activeKind = null; }
+        }
+      }
+      // Apply scroll offset as coordinate transform for all later ops in this window.
       w.cursor.y -= w.scrollY;
     }
     return r;
@@ -75,16 +87,24 @@ function wrapBeginEnd() {
       w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
     } else if (w) { w.scrollMax = 0; w.scrollY = 0; }
     origEnd.call(this);
-    // draw scrollbar when needed
-    if (w && w.scrollMax > 0 && !w.collapsed) {
+    // draw scrollbar when needed (clipped content stays inside window via draw.js)
+    if (w && w.scrollMax > 0 && !w.collapsed && !(w.flags & ImGui.WindowFlags.NoScrollbar)) {
       const st = this.style;
       const bx = w.pos.x + w.sizeFull.x - st.ScrollbarSize - 3;
       const by = w.pos.y + w.titleH + 4, bh = w.sizeFull.y - w.titleH - 8;
       w.drawList.push({ t: "rectFilled", x: bx, y: by, w: st.ScrollbarSize, h: bh, r: 7, col: st.Colors[ImGui.Col.ScrollbarBg] });
       const gripH = Math.max(20, bh * (bh / (bh + w.scrollMax)));
-      const gy = by + (bh - gripH) * (w.scrollY / w.scrollMax);
-      w.drawList.push({ t: "rectFilled", x: bx, y: gy, w: st.ScrollbarSize, h: gripH, r: 7, col: st.Colors[ImGui.Col.ScrollbarGrab] });
-    }
+      const gy = by + (bh - gripH) * (w.scrollMax > 0 ? w.scrollY / w.scrollMax : 0);
+      const gid = (w.id ^ 0x5c4011) >>> 0;
+      const hov = this.hovered(bx, gy, st.ScrollbarSize, gripH);
+      if (hov) this.anyWindowHovered = true;
+      if (hov && this.io.MouseClicked[0] && this.activeId === 0) {
+        this.activeId = gid; this.activeKind = "scroll";
+      }
+      w._scrollGrip = { id: gid, by: by, bh: bh, gripH: gripH };
+      const active = this.activeId === gid;
+      w.drawList.push({ t: "rectFilled", x: bx, y: gy, w: st.ScrollbarSize, h: gripH, r: 7, col: st.Colors[active || hov ? ImGui.Col.ScrollbarGrabHovered : ImGui.Col.ScrollbarGrab] });
+    } else if (w) { w._scrollGrip = null; }
     throttleSaveIni(this);
   };
   // disabled: swallow button-family clicks
@@ -516,13 +536,15 @@ function MenuItem(label, shortcut = "", selected = false, enabled = true) {
   return enabled && h && c.io.MouseClicked[0];
 }
 
-// ---------- tab bar ----------
+// ---------- tab bar (cohesive horizontal row, fixed height, single active) ----------
+const TAB_H = 24, TAB_GAP = 4, TAB_CONTENT_GAP = 6;
 function BeginTabBar(id) {
   const c = ensure(), w = W(); if (!w) return false;
   const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const x = w.cursor.x, y = w.cursor.y;
-  emit({ t: "line", x1: x, y1: y + 24, x2: x + bw, y2: y + 24, col: c.style.Colors[ImGui.Col.Separator], th: 1 });
-  c._tabBar = { id: String(id), x, y, w: bw, tabs: [], n: 0 };
+  // Reserve the full bar strip so following widgets never overlap tabs.
+  c.itemSize(bw, TAB_H);
+  c._tabBar = { id: String(id), x, y, w: bw, n: 0, offsetX: 0, contentY: y + TAB_H + TAB_CONTENT_GAP };
   PushID("tabbar:" + id);
   return true;
 }
@@ -531,24 +553,43 @@ function BeginTabItem(label) {
   const shown = ImGui.findRenderedTextEnd(label);
   const tw = measure(shown) + 24;
   const t = c._tabBar;
-  const x = t.x + t.n * (tw + 4), y = t.y;
-  t.n++;
+  // Horizontal row: cumulative offset, wrap guard clamps inside bar width.
+  let x = t.x + t.offsetX;
+  if (x + tw > t.x + t.w) { x = t.x; t.offsetX = 0; }
+  const y = t.y;
+  t.offsetX += tw + TAB_GAP; t.n++;
   if (c._tabs[t.id] === undefined) c._tabs[t.id] = shown;
   const active = c._tabs[t.id] === shown;
   const id = w.getID("tab:" + label);
-  c.itemAdd(x, y, tw, 24, id);
-  const h = c.hovered(x, y, tw, 24);
-  if (h && c.io.MouseClicked[0]) { c._tabs[t.id] = shown; c.anyWindowHovered = true; }
-  emit({ t: "rectFilled", x, y, w: tw, h: 24, r: 4, col: active ? c.style.Colors[ImGui.Col.ButtonHovered] : (h ? c.style.Colors[ImGui.Col.HeaderHovered] : c.style.Colors[ImGui.Col.FrameBg]) });
+  c.itemAdd(x, y, tw, TAB_H, id);
+  const h = c.hovered(x, y, tw, TAB_H);
+  if (h) c.anyWindowHovered = true;
+  if (h && c.io.MouseClicked[0]) c._tabs[t.id] = shown;
+  const col = active ? c.style.Colors[ImGui.Col.TabSelected]
+    : h ? c.style.Colors[ImGui.Col.TabHovered]
+    : c.style.Colors[ImGui.Col.Tab];
+  emit({ t: "rectFilled", x, y, w: tw, h: TAB_H, r: 4, col });
+  if (active) emit({ t: "rectFilled", x, y, w: tw, h: 2, r: 1, col: c.style.Colors[ImGui.Col.TabSelectedOverline] });
   emit({ t: "text", str: shown, x: x + 12, y: y + 5, col: c.style.Colors[ImGui.Col.Text] });
-  if (active) { w.cursor.x = t.x; w.cursor.y = t.y + 30; w.cursorPrevLine = { ...w.cursor }; }
+  if (active) {
+    // Snap content area immediately below the tab strip (no overlap).
+    w.cursor.x = t.x; w.cursor.y = t.contentY; w.cursorPrevLine = { ...w.cursor };
+    w.maxPos.y = Math.max(w.maxPos.y, t.contentY);
+  }
   return active;
 }
 function EndTabItem() {}
 function EndTabBar() {
   const c = ensure(), w = W();
   PopID();
-  if (w && c._tabBar) { w.cursor.y = Math.max(w.cursor.y, c._tabBar.y + 34); }
+  if (w && c._tabBar) {
+    // Separator under the row + force cursor below tabs even if no tab active.
+    emit({ t: "line", x1: c._tabBar.x, y1: c._tabBar.y + TAB_H + 1, x2: c._tabBar.x + c._tabBar.w, y2: c._tabBar.y + TAB_H + 1, col: c.style.Colors[ImGui.Col.Separator], th: 1 });
+    w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
+    w.cursor.y = Math.max(w.cursor.y, c._tabBar.contentY);
+    w.cursorPrevLine = { ...w.cursor };
+    w._lastWd = 0;
+  }
   c._tabBar = null;
 }
 function TabItemButton(label) {
@@ -556,35 +597,74 @@ function TabItemButton(label) {
   return pressed;
 }
 
-// ---------- tables (lite grid, cf. imgui_tables.cpp flow) ----------
+// ---------- tables (fixed-width distribution on outerWidth, cf. imgui_tables.cpp) ----------
 function BeginTable(id, columns, flags = 0, outerW = 0, outerH = 0) {
   const c = ensure(), w = W(); if (!w) return false;
   const avail = outerW > 0 ? outerW : w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const x = w.cursor.x, y = w.cursor.y + (w._table ? 0 : 0);
+  const x = w.cursor.x;
   c.itemSize(avail, 4);
-  c._table = { id: String(id), cols: columns, flags, x, y: w.cursor.y, row: -1, col: -1, colW: avail / columns, names: [], rowH: 22, startY: w.cursor.y };
+  c._table = {
+    id: String(id), cols: columns, flags, x, y: w.cursor.y, row: -1, col: -1,
+    avail, colW: avail / columns, widths: null, offsets: null,
+    names: [], rowH: 22, startY: w.cursor.y,
+  };
   PushID("table:" + id);
   return true;
 }
-function TableSetupColumn(label) { const c = ensure(); if (c._table) c._table.names.push(label); }
+function TableSetupColumn(label, widthOrWeight = 0) {
+  const c = ensure();
+  if (c._table) { c._table.names.push(label); c._table._widths = c._table._widths || []; c._table._widths.push(widthOrWeight); }
+}
+function tableLayout(t) {
+  // Fixed-width distribution: explicit widths win, remainder split equally.
+  if (t.widths) return;
+  const n = t.cols;
+  t.widths = new Array(n); t.offsets = new Array(n);
+  const explicit = (t._widths || []).slice(0, n);
+  let fixed = 0, auto = 0;
+  for (let i = 0; i < n; i++) {
+    const v = explicit[i] || 0;
+    if (v > 0) { t.widths[i] = v; fixed += v; } else auto++;
+  }
+  const rest = Math.max(0, t.avail - fixed);
+  const each = auto > 0 ? rest / auto : 0;
+  for (let i = 0; i < n; i++) if (!t.widths[i]) t.widths[i] = each;
+  t.colW = t.avail / n;
+  let acc = 0;
+  for (let i = 0; i < n; i++) { t.offsets[i] = acc; acc += t.widths[i]; }
+}
 function TableHeadersRow() {
   const c = ensure(), w = W(); if (!w || !c._table) return;
+  tableLayout(c._table);
   TableNextRow();
   for (let i = 0; i < c._table.cols; i++) {
     TableSetColumnIndex(i);
     const nm = c._table.names[i] || ("C" + i);
-    emit({ t: "rectFilled", x: w.cursor.x - 2, y: w.cursor.y - 2, w: c._table.colW - 2, h: 20, r: 3, col: c.style.Colors[ImGui.Col.Header] });
+    const cw = c._table.widths[i];
+    emit({ t: "rectFilled", x: w.cursor.x - 2, y: w.cursor.y - 2, w: cw - 2, h: 20, r: 3, col: c.style.Colors[ImGui.Col.TableHeaderBg] });
     emit({ t: "text", str: nm, x: w.cursor.x + 4, y: w.cursor.y, col: c.style.Colors[ImGui.Col.Text] });
+  }
+  tableInnerVerticals(c._table);
+}
+function tableInnerVerticals(t) {
+  const c = ensure();
+  const innerV = (t.flags & TableFlags.BordersInnerV) || (t.flags & TableFlags.BordersInner) || (t.flags & TableFlags.Borders);
+  if (!innerV || t.row < 0) return;
+  const y0 = t.rowY || t.startY, y1 = y0 + t.rowH;
+  for (let i = 1; i < t.cols; i++) {
+    const lx = t.x + t.offsets[i];
+    emit({ t: "line", x1: lx, y1: y0, x2: lx, y2: y1, col: c.style.Colors[ImGui.Col.TableBorderLight], th: 1 });
   }
 }
 function TableNextRow() {
   const c = ensure(), w = W(); if (!w || !c._table) return;
   const t = c._table;
+  tableLayout(t);
   t.row++; t.col = -1;
-  const y = t.startY + (t.row * t.rowH) + (t.row === 0 ? 0 : 0);
+  const y = t.startY + (t.row * t.rowH);
   // row bg (accept real RowBg bit and legacy lite value 1)
   const rowBg = (t.flags & TableFlags.RowBg) || (t.flags & 1);
-  if (rowBg && t.row % 2 === 1) emit({ t: "rectFilled", x: t.x, y, w: t.colW * t.cols, h: t.rowH, r: 0, css: "rgba(255,255,255,0.03)" });
+  if (rowBg && t.row % 2 === 1) emit({ t: "rectFilled", x: t.x, y, w: t.avail, h: t.rowH, r: 0, css: "rgba(255,255,255,0.03)" });
   t.rowY = y;
   w.cursor.x = t.x; w.cursor.y = y; w.cursorPrevLine = { x: t.x, y };
   w.maxPos.y = Math.max(w.maxPos.y, y + t.rowH);
@@ -592,8 +672,10 @@ function TableNextRow() {
 function TableSetColumnIndex(n) {
   const c = ensure(), w = W(); if (!w || !c._table) return false;
   const t = c._table;
+  tableLayout(t);
   t.col = n;
-  w.cursor.x = t.x + n * t.colW + 4; w.cursor.y = t.rowY || t.y;
+  // Explicit x offset from stored widths (never arbitrary spacing).
+  w.cursor.x = t.x + t.offsets[n] + 4; w.cursor.y = t.rowY || t.y;
   w.cursorPrevLine = { ...w.cursor };
   return true;
 }
@@ -609,11 +691,25 @@ function TableGetColumnCount() { const c = ensure(); return c._table ? c._table.
 function EndTable() {
   const c = ensure(), w = W(); if (!w || !c._table) return;
   const t = c._table;
+  tableLayout(t);
+  // Draw remaining inner verticals for body rows when requested.
+  if (t.row >= 0) {
+    const innerV = (t.flags & TableFlags.BordersInnerV) || (t.flags & TableFlags.BordersInner) || (t.flags & TableFlags.Borders);
+    if (innerV) {
+      for (let r = 0; r <= t.row; r++) {
+        const y0 = t.startY + r * t.rowH, y1 = y0 + t.rowH;
+        for (let i = 1; i < t.cols; i++) {
+          const lx = t.x + t.offsets[i];
+          emit({ t: "line", x1: lx, y1: y0, x2: lx, y2: y1, col: c.style.Colors[ImGui.Col.TableBorderLight], th: 1 });
+        }
+      }
+    }
+  }
   // borders: any real border bit, or legacy lite Borders=2
   const borderMask = TableFlags.Borders | TableFlags.BordersInner | TableFlags.BordersOuter |
     TableFlags.BordersH | TableFlags.BordersV | TableFlags.BordersInnerH |
     TableFlags.BordersOuterH | TableFlags.BordersInnerV | TableFlags.BordersOuterV;
-  if ((t.flags & borderMask) || (t.flags & 2)) emit({ t: "rect", x: t.x, y: t.startY - 2, w: t.colW * t.cols, h: (t.row + 1) * t.rowH + 4, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
+  if ((t.flags & borderMask) || (t.flags & 2)) emit({ t: "rect", x: t.x, y: t.startY - 2, w: t.avail, h: (t.row + 1) * t.rowH + 4, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
   w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
   w.cursor.y = t.startY + (t.row + 1) * t.rowH + 6;
   w.maxPos.y = Math.max(w.maxPos.y, w.cursor.y);

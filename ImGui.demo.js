@@ -55,6 +55,14 @@ function ShowMetricsWindow() {
     for (const [name, win] of c.windows) {
       ImGui.BulletText(`${name} @${Math.round(win.pos.x)},${Math.round(win.pos.y)} ${Math.round(win.sizeFull.x)}x${Math.round(win.sizeFull.y)} ops=${win.drawList.length}`);
     }
+    ImGui.SeparatorText("debug");
+    const dbg = ImGui.Checkbox("Show item rects", !!c._debugMode);
+    c._debugMode = dbg.checked;
+    if (dbg.changed && typeof ImGui.SetDebugMode === "function") ImGui.SetDebugMode(dbg.checked);
+    if (c._debugMode && c.lastItem.rect) {
+      const r = c.lastItem.rect;
+      ImGui.Text(`lastItem id=${c.lastItem.id} @${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.w)}x${Math.round(r.h)}`);
+    }
     ImGui.SeparatorText("ini");
     if (ImGui.Button("Copy ini to console")) console.log(ImGui.SaveIniSettingsToMemory());
   }

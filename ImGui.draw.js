@@ -118,12 +118,30 @@ class CanvasRenderer {
     // border
     ctx.strokeStyle = css(st.Colors[ImGui.Col.Border]); ctx.lineWidth = st.WindowBorderSize;
     roundRectPath(ctx, x + 0.5, y + 0.5, ww - 1, hh - 1, st.WindowRounding); ctx.stroke();
-    // content ops clipped to inner rect
+    // content ops clipped to inner rect (Begin/End clipping cycle)
     ctx.save();
     ctx.beginPath();
     ctx.rect(x + w.padding.x - 2, y + w.titleH, ww - (w.padding.x - 2) * 2, hh - w.titleH - 4);
     ctx.clip();
     for (const op of w.drawList) this.drawOp(ctx, st, op);
+    // visual debug: outline every item rect pushed this frame via itemAdd()
+    if (c._debugMode && c._debugRects && c._debugRects.length) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,0,255,0.9)"; ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      for (const r of c._debugRects) {
+        // only rects belonging to this window's draw space (rough filter)
+        if (r.x >= x - 2 && r.x <= x + ww + 2) ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+      }
+      ctx.restore();
+      const li = c.lastItem && c.lastItem.rect;
+      if (li) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(0,255,255,1)"; ctx.lineWidth = 1.5;
+        ctx.strokeRect(li.x - 1.5, li.y - 1.5, li.w + 3, li.h + 3);
+        ctx.restore();
+      }
+    }
     ctx.restore();
     // resize grip
     if (!(w.flags & ImGui.WindowFlags.NoResize)) {

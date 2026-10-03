@@ -204,15 +204,24 @@ function rgb2hsv(r, g, b) {
   return [h, mx === 0 ? 0 : d / mx, mx];
 }
 function ColorPicker4(label, color) {
-  // Compact canvas-style picker: SV square (drag) + Hue bar (drag). Immediate-mode.
+  // Inline picker anchored at WindowPos + Padding + CursorPos, clamped to the
+  // window's clip rect so it never renders "on the other side of the world".
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
-  const S = 150, HB = 18;
-  const x = w.cursor.x, y = w.cursor.y;
+  const availW = Math.max(60, w.sizeFull.x - w.padding.x * 2 - (w._indent || 0));
+  const S = Math.min(150, Math.max(80, availW - 18 - 60));
+  const HB = 18;
+  // Absolute anchor = window-relative cursor (cursor is already absolute).
+  let x = w.cursor.x, y = w.cursor.y;
+  const needW = S + HB + 14;
+  // Clamp horizontally inside window content area.
+  const minX = w.pos.x + w.padding.x + (w._indent || 0);
+  const maxX = w.pos.x + w.sizeFull.x - w.padding.x - needW;
+  if (maxX > minX) x = Math.max(minX, Math.min(maxX, x));
   const ht = S + 26;
-  c.itemSize(S + HB + 60, ht);
+  c.itemSize(needW + 46, ht);
   const id = w.getID(label + "##picker");
-  c.itemAdd(x, y, S + HB + 14, S, id);
+  c.itemAdd(x, y, needW, S, id);
   let [h, s, v] = rgb2hsv(color[0], color[1], color[2]);
   let changed = false;
   const setSV = (mx, my) => {
