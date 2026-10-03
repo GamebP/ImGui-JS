@@ -48,6 +48,7 @@ function ensure() {
   c._wantTextFocus = false;
   c._iniLoaded = false;
   c._iniSaveT = 0;
+  c._childStack = []; // ImGuiChildStack (shared by widgets.js + widgets2.js)
   }
   // Per-frame rollover: last frame's popup rects become the preemption map.
   // Runs on every ensure() (c.frame bumps in newFrame before any widget).

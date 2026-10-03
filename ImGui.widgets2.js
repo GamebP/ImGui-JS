@@ -16,6 +16,13 @@ function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
 // Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
 function contentAvail() {
   const w = cur(); if (!w) return 0;
+  // Inside a child panel, the wrapping boundary is the child's inner right
+  // edge, NOT the parent window's right edge (which would overflow the panel).
+  const stack = ctx()._childStack;
+  if (stack && stack.length > 0) {
+    const t = stack[stack.length - 1];
+    return Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
+  }
   return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x);
 }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }

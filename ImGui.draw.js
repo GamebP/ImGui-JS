@@ -168,6 +168,17 @@ class CanvasRenderer {
   }
   drawOp(ctx, st, op) {
     switch (op.t) {
+      case "childClip": {
+        // Child sub-panel: clip its inner ops to its own bounds so nothing
+        // overflowing the border leaks into the parent window's layout.
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(op.x, op.y, op.w, op.h);
+        ctx.clip();
+        if (op.ops) for (const o of op.ops) this.drawOp(ctx, st, o);
+        ctx.restore();
+        break;
+      }
       case "polyline": {
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.lineJoin = "round"; ctx.lineCap = "round";

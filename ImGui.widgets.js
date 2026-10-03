@@ -22,6 +22,13 @@ function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
 // Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
 function contentAvail() {
   const w = cur(); if (!w) return 0;
+  // Inside a child panel, the wrapping boundary is the child's inner right
+  // edge, NOT the parent window's right edge (which would overflow the panel).
+  const stack = ctx()._childStack;
+  if (stack && stack.length > 0) {
+    const t = stack[stack.length - 1];
+    return Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
+  }
   return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x);
 }
 // Popup input preemption: while a popup owns the left click, underlying
@@ -372,9 +379,7 @@ function Selectable(label, selected = false) {
 function ListBox(label, current, items, hItems = 4) {
   Text(label);
   let idx = current, changed = false;
-  const n = Math.min(items.length, Math.max(2, hItems));
-  // child frame
-  if (BeginChild(label + "##box", 0, n * 22 + 8, true)) {
+  if (BeginChild(label + "##box", 0, items.length * 22 + 8, true)) {
     for (let i = 0; i < items.length; i++) {
       if (Selectable(items[i], i === idx)) { idx = i; changed = true; }
     }
@@ -423,7 +428,6 @@ function TreeNode(label) {
 function TreePop() { Unindent(); }
 
 // ---------- child ----------
-const _childStack = [];
 function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
@@ -438,7 +442,11 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   // Isolate the child scope: save the ENTIRE parent DC state so inner
   // indentation (or early returns) can never leak into outer siblings.
   // cursorMaxPos stays shared so inner content still grows the parent window.
-  _childStack.push({
+  // clipMark: index in drawList where the child's inner ops begin. At
+  // EndChild we wrap those ops in a childClip op so any that overflow the
+  // fixed box are clipped instead of leaking over the border / sibling layout.
+  c._childStack = c._childStack || [];
+  c._childStack.push({
     cursorPos: { ...w.dc.cursorPos },
     cursorPosPrevLine: { ...w.dc.cursorPosPrevLine },
     cursorStartPos: { ...w.dc.cursorStartPos },
@@ -446,6 +454,7 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
     lineUsed: w.dc._lineUsed,
     currLineHeight: w.dc.currLineHeight,
     bounds: { x, y, w: wd, h: ht },
+    clipMark: w.drawList.length,
   });
   // Reset the child work area to its own origin with a clean slate.
   w._indent = 0;
@@ -458,8 +467,15 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
 }
 function EndChild() {
   const c = ctx(), w = cur(); if (!w) return;
-  const b = w._childBounds;
-  const st = _childStack.pop();
+  const st = (c._childStack || []).pop();
+  const b = st ? st.bounds : undefined;
+  // Clip the child's inner ops to its own box before popping state. This
+  // replaces the items that overflowed the border with a nested clip group,
+  // so nested children produce nested groups (innermost clipped first).
+  if (st && typeof st.clipMark === "number" && st.clipMark < w.drawList.length) {
+    const innerOps = w.drawList.splice(st.clipMark, w.drawList.length - st.clipMark);
+    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: st.bounds.x, y: st.bounds.y, w: st.bounds.w, h: st.bounds.h, ops: innerOps });
+  }
   // Restore the outer scope even if inner code left it unbalanced.
   if (st) {
     w._indent = st.indent || 0;
