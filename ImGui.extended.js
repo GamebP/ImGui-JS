@@ -202,8 +202,9 @@ function wrapBeginEnd() {
     const r = origBB.call(this, id, x, y, wd, ht);
     // Underlying UI must not activate while a popup owns the click; popup
     // content itself evaluates with a non-empty box stack and stays live.
-    if (r.pressed && (this._popupBoxStack || []).length === 0 && this._suppressChrome) {
-      r.pressed = false;
+    if (r.pressed && (this._popupBoxStack || []).length === 0) {
+      if (this._swallowNextPress === this.frame) { r.pressed = false; this._swallowNextPress = 0; } // click that dismissed a popup is consumed
+      else if (this._suppressChrome) r.pressed = false;
     }
     return r;
   };
@@ -523,8 +524,27 @@ function OpenPopup(id, ax, ay) {
 }
 function OpenPopupOnItemClick(id) { if (IsItemClicked(1)) OpenPopup(id); }
 function IsPopupOpen(id) { const c = ensure(); return c._popupStack.includes(String(id)); }
-function CloseCurrentPopup() { const c = ensure(); c._popupStack.pop(); c._activeModalRect = null; }
-function ClosePopup(id) { const c = ensure(); c._popupStack = c._popupStack.filter((p) => p !== String(id)); c._activeModalRect = null; }
+function _anyModalOpen(c) {
+  return c._popupStack.some((k) => {
+    const r = (c._popupRects && c._popupRects[k]) || (c._popupRectsPrev && c._popupRectsPrev[k]);
+    return !!(r && r.modal);
+  });
+}
+function CloseCurrentPopup() {
+  const c = ensure();
+  const top = c._popupStack[c._popupStack.length - 1];
+  const topRect = top && ((c._popupRects && c._popupRects[top]) || (c._popupRectsPrev && c._popupRectsPrev[top]));
+  const wasModal = !!(topRect && topRect.modal);
+  c._popupStack.pop();
+  if (wasModal && !_anyModalOpen(c)) c._activeModalRect = null;
+}
+function ClosePopup(id) {
+  const c = ensure();
+  c._popupStack = c._popupStack.filter((p) => p !== String(id));
+  // Only drop the modal input lock when NO modal remains open — closing a
+  // sibling non-modal popup must never un-lock an active modal.
+  if (!_anyModalOpen(c)) c._activeModalRect = null;
+}
 function popupBestPos(a, bw, estH) {
   // imgui.cpp FindBestWindowPosForPopup: prefer below-left, flip on overflow.
   const c = ensure();
@@ -648,7 +668,7 @@ function popupBoxEnd(modal) {
   dc._inPopup = b.savedInPopup;
   const m = c.io.MousePos;
   const inside = m.x >= b.x && m.x <= b.x + boxW && m.y >= b.y && m.y <= b.y + h;
-  if (c.io.MouseClicked[0] && !inside && !modal) ClosePopup(b.key);
+  if (c.io.MouseClicked[0] && !inside && !modal) { c._swallowNextPress = c.frame + 1; ClosePopup(b.key); }
   if (c.io.KeysDown["Escape"]) ClosePopup(b.key);
   // Refresh the lock with the exact frame rect (or clear it right away if
   // this modal was just closed — ClosePopup/CloseCurrentPopup also clear).

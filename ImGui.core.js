@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.19";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.21";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -261,6 +261,18 @@ class ImGuiContext {
   endFrame() {
     const io = this.io;
     io.WantCaptureMouse = this.anyWindowHovered || this.activeId !== 0;
+    // Modal popups own the ENTIRE screen and open popups own their rect:
+    // the page behind the (pointer-events:none) canvas must never receive
+    // those clicks, or it selects text / follows links "through" the modal
+    // dimmer even though no canvas widget reacts.
+    if (this._activeModalRect) {
+      io.WantCaptureMouse = true;
+    } else if (this._popupStack && this._popupStack.length && this._popupRectsPrev) {
+      for (const k of this._popupStack) {
+        const r = this._popupRectsPrev[k];
+        if (r && io.MousePos.x >= r.x && io.MousePos.x <= r.x + r.w && io.MousePos.y >= r.y && io.MousePos.y <= r.y + r.h) { io.WantCaptureMouse = true; break; }
+      }
+    }
     io.WantCaptureKeyboard = (this.activeKind === "text");
     io.MouseWheel = 0;
     io.InputChars = "";
@@ -497,6 +509,16 @@ class ImGuiContext {
     if (this._activeModalRect && !(this._popupBoxStack && this._popupBoxStack.length > 0)) return false;
     const m = this.io.MousePos;
     const w = this.current;
+    // POPUP PREEMPTION: open popups own their screen rect (known from the
+    // previous frame) — widgets beneath, drawn or hit-tested outside popup
+    // content, must not hover or click there (e.g. a color-picker popup
+    // overlapping a combo must not highlight the combo behind it).
+    if (!(this._popupBoxStack && this._popupBoxStack.length > 0) && this._popupRectsPrev && this._popupStack && this._popupStack.length) {
+      for (const k of this._popupStack) {
+        const r = this._popupRectsPrev[k];
+        if (r && m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h) return false;
+      }
+    }
     // Items register at natural content coordinates, but the canvas is drawn
     // translated by -scrollY. Translate the raw mouse position into that same
     // content space so hit-testing matches the scrolled visuals 1:1. The

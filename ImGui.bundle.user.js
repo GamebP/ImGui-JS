@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.19
+// @version      1.0.21
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.19";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.21";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -276,6 +276,18 @@ class ImGuiContext {
   endFrame() {
     const io = this.io;
     io.WantCaptureMouse = this.anyWindowHovered || this.activeId !== 0;
+    // Modal popups own the ENTIRE screen and open popups own their rect:
+    // the page behind the (pointer-events:none) canvas must never receive
+    // those clicks, or it selects text / follows links "through" the modal
+    // dimmer even though no canvas widget reacts.
+    if (this._activeModalRect) {
+      io.WantCaptureMouse = true;
+    } else if (this._popupStack && this._popupStack.length && this._popupRectsPrev) {
+      for (const k of this._popupStack) {
+        const r = this._popupRectsPrev[k];
+        if (r && io.MousePos.x >= r.x && io.MousePos.x <= r.x + r.w && io.MousePos.y >= r.y && io.MousePos.y <= r.y + r.h) { io.WantCaptureMouse = true; break; }
+      }
+    }
     io.WantCaptureKeyboard = (this.activeKind === "text");
     io.MouseWheel = 0;
     io.InputChars = "";
@@ -512,6 +524,16 @@ class ImGuiContext {
     if (this._activeModalRect && !(this._popupBoxStack && this._popupBoxStack.length > 0)) return false;
     const m = this.io.MousePos;
     const w = this.current;
+    // POPUP PREEMPTION: open popups own their screen rect (known from the
+    // previous frame) — widgets beneath, drawn or hit-tested outside popup
+    // content, must not hover or click there (e.g. a color-picker popup
+    // overlapping a combo must not highlight the combo behind it).
+    if (!(this._popupBoxStack && this._popupBoxStack.length > 0) && this._popupRectsPrev && this._popupStack && this._popupStack.length) {
+      for (const k of this._popupStack) {
+        const r = this._popupRectsPrev[k];
+        if (r && m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h) return false;
+      }
+    }
     // Items register at natural content coordinates, but the canvas is drawn
     // translated by -scrollY. Translate the raw mouse position into that same
     // content space so hit-testing matches the scrolled visuals 1:1. The
@@ -1963,8 +1985,11 @@ function SeparatorText(label) {
   const bw = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y + 2;
   const tw = measure(label);
-  emit({ t: "text", str: label, x: x + 4, y, col: st.Colors[ImGui.Col.Text] });
-  emit({ t: "line", x1: x + tw + 12, y1: y + 8, x2: x + bw, y2: y + 8, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  // Centered section header: label mid-width, separator lines on both sides.
+  const tx = x + (bw - tw) / 2;
+  emit({ t: "text", str: label, x: tx, y, col: st.Colors[ImGui.Col.Text] });
+  if (tx - x > 10) emit({ t: "line", x1: x, y1: y + 8, x2: tx - 6, y2: y + 8, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  emit({ t: "line", x1: tx + tw + 6, y1: y + 8, x2: x + bw, y2: y + 8, col: st.Colors[ImGui.Col.Separator], th: 1 });
   c.itemSize(bw, 20);
 }
 function Bullet() {
@@ -2198,8 +2223,9 @@ function wrapBeginEnd() {
     const r = origBB.call(this, id, x, y, wd, ht);
     // Underlying UI must not activate while a popup owns the click; popup
     // content itself evaluates with a non-empty box stack and stays live.
-    if (r.pressed && (this._popupBoxStack || []).length === 0 && this._suppressChrome) {
-      r.pressed = false;
+    if (r.pressed && (this._popupBoxStack || []).length === 0) {
+      if (this._swallowNextPress === this.frame) { r.pressed = false; this._swallowNextPress = 0; } // click that dismissed a popup is consumed
+      else if (this._suppressChrome) r.pressed = false;
     }
     return r;
   };
@@ -2519,8 +2545,27 @@ function OpenPopup(id, ax, ay) {
 }
 function OpenPopupOnItemClick(id) { if (IsItemClicked(1)) OpenPopup(id); }
 function IsPopupOpen(id) { const c = ensure(); return c._popupStack.includes(String(id)); }
-function CloseCurrentPopup() { const c = ensure(); c._popupStack.pop(); c._activeModalRect = null; }
-function ClosePopup(id) { const c = ensure(); c._popupStack = c._popupStack.filter((p) => p !== String(id)); c._activeModalRect = null; }
+function _anyModalOpen(c) {
+  return c._popupStack.some((k) => {
+    const r = (c._popupRects && c._popupRects[k]) || (c._popupRectsPrev && c._popupRectsPrev[k]);
+    return !!(r && r.modal);
+  });
+}
+function CloseCurrentPopup() {
+  const c = ensure();
+  const top = c._popupStack[c._popupStack.length - 1];
+  const topRect = top && ((c._popupRects && c._popupRects[top]) || (c._popupRectsPrev && c._popupRectsPrev[top]));
+  const wasModal = !!(topRect && topRect.modal);
+  c._popupStack.pop();
+  if (wasModal && !_anyModalOpen(c)) c._activeModalRect = null;
+}
+function ClosePopup(id) {
+  const c = ensure();
+  c._popupStack = c._popupStack.filter((p) => p !== String(id));
+  // Only drop the modal input lock when NO modal remains open — closing a
+  // sibling non-modal popup must never un-lock an active modal.
+  if (!_anyModalOpen(c)) c._activeModalRect = null;
+}
 function popupBestPos(a, bw, estH) {
   // imgui.cpp FindBestWindowPosForPopup: prefer below-left, flip on overflow.
   const c = ensure();
@@ -2644,7 +2689,7 @@ function popupBoxEnd(modal) {
   dc._inPopup = b.savedInPopup;
   const m = c.io.MousePos;
   const inside = m.x >= b.x && m.x <= b.x + boxW && m.y >= b.y && m.y <= b.y + h;
-  if (c.io.MouseClicked[0] && !inside && !modal) ClosePopup(b.key);
+  if (c.io.MouseClicked[0] && !inside && !modal) { c._swallowNextPress = c.frame + 1; ClosePopup(b.key); }
   if (c.io.KeysDown["Escape"]) ClosePopup(b.key);
   // Refresh the lock with the exact frame rect (or clear it right away if
   // this modal was just closed — ClosePopup/CloseCurrentPopup also clear).
@@ -3198,19 +3243,19 @@ function ShowDemoWindow(pOpen) {
   const w0 = ImGui.Begin("Dear ImGui Demo (full port)", pOpen === undefined ? true : pOpen);
   if (pOpen !== undefined && typeof pOpen === "object") pOpen.value = w0.open !== false;
   if (!w0.visible) { ImGui.End(); return; }
-  // menu bar
-  if (ImGui.BeginMenuBar()) {
-    if (ImGui.BeginMenu("File")) {
-      if (ImGui.MenuItem("Log ini", "Ctrl+S")) console.log(ImGui.SaveIniSettingsToMemory());
-      if (ImGui.MenuItem("Metrics")) ShowMetricsWindow._show = true;
-      ImGui.EndMenu();
-    }
-    if (ImGui.BeginMenu("Edit")) {
-      if (ImGui.MenuItem("Clear plot")) D.plotVals = D.plotVals.map(() => 0.5);
-      ImGui.EndMenu();
-    }
-    ImGui.EndMenuBar();
-  }
+  // menu bar (File/Edit) — disabled by request; code kept for easy restore
+  // if (ImGui.BeginMenuBar()) {
+  //   if (ImGui.BeginMenu("File")) {
+  //     if (ImGui.MenuItem("Log ini", "Ctrl+S")) console.log(ImGui.SaveIniSettingsToMemory());
+  //     if (ImGui.MenuItem("Metrics")) ShowMetricsWindow._show = true;
+  //     ImGui.EndMenu();
+  //   }
+  //   if (ImGui.BeginMenu("Edit")) {
+  //     if (ImGui.MenuItem("Clear plot")) D.plotVals = D.plotVals.map(() => 0.5);
+  //     ImGui.EndMenu();
+  //   }
+  //   ImGui.EndMenuBar();
+  // }
   if (ShowMetricsWindow._show) { ShowMetricsWindow(); if (ImGui.Button("Close metrics")) ShowMetricsWindow._show = false; }
   // tab bar over demo sections
   if (ImGui.BeginTabBar("demo")) {
@@ -3278,7 +3323,10 @@ function demoTables() {
   }
   ImGui.SeparatorText("Legacy columns");
   ImGui.Columns(2);
-  ImGui.Text("left col"); ImGui.NextColumn(); ImGui.Text("right col"); ImGui.NextColumn();
+  for (let r = 0; r < 3; r++) {
+    ImGui.Text("left " + r); ImGui.NextColumn();
+    ImGui.Text("right " + r); ImGui.NextColumn();
+  }
   ImGui.Columns(1);
 }
 
@@ -3299,6 +3347,29 @@ function demoPopups() {
   }
   if (ImGui.Button("Open modal")) ImGui.OpenPopup("modal1");
   if (ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }
+  if (ImGui.Button("Open popup at mouse")) ImGui.OpenPopup("pop_mouse");
+  if (ImGui.BeginPopup("pop_mouse")) {
+    ImGui.Text("popup anchored at the mouse");
+    if (ImGui.Button("Close")) ImGui.ClosePopup("pop_mouse");
+    ImGui.EndPopup();
+  }
+  if (ImGui.Button("Open popup (center)")) ImGui.OpenPopup("pop_center", "center");
+  if (ImGui.BeginPopup("pop_center")) {
+    ImGui.Text("centered popup with options:");
+    ImGui.Selectable("option A");
+    ImGui.Selectable("option B");
+    if (ImGui.Button("Close")) ImGui.ClosePopup("pop_center");
+    ImGui.EndPopup();
+  }
+  if (ImGui.Button("Open modal (form)")) ImGui.OpenPopup("modal_form");
+  if (ImGui.BeginPopupModal("modal_form")) {
+    ImGui.Text("enter a value:");
+    D.formVal = ImGui.InputText("##form", D.formVal || "").text;
+    if (ImGui.Button("OK")) ImGui.CloseCurrentPopup();
+    ImGui.SameLine();
+    if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
+    ImGui.EndPopupModal();
+  }
   ImGui.Button("right-click me");
   if (ImGui.BeginPopupContextItem("ctx1")) { if (ImGui.MenuItem("Action A")) ImGui.CloseCurrentPopup(); ImGui.EndPopup(); }
   if (ImGui.BeginTabBar("tb2")) {
@@ -3843,7 +3914,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.19"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.21"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

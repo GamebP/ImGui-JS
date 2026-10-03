@@ -73,19 +73,19 @@ function ShowDemoWindow(pOpen) {
   const w0 = ImGui.Begin("Dear ImGui Demo (full port)", pOpen === undefined ? true : pOpen);
   if (pOpen !== undefined && typeof pOpen === "object") pOpen.value = w0.open !== false;
   if (!w0.visible) { ImGui.End(); return; }
-  // menu bar
-  if (ImGui.BeginMenuBar()) {
-    if (ImGui.BeginMenu("File")) {
-      if (ImGui.MenuItem("Log ini", "Ctrl+S")) console.log(ImGui.SaveIniSettingsToMemory());
-      if (ImGui.MenuItem("Metrics")) ShowMetricsWindow._show = true;
-      ImGui.EndMenu();
-    }
-    if (ImGui.BeginMenu("Edit")) {
-      if (ImGui.MenuItem("Clear plot")) D.plotVals = D.plotVals.map(() => 0.5);
-      ImGui.EndMenu();
-    }
-    ImGui.EndMenuBar();
-  }
+  // menu bar (File/Edit) — disabled by request; code kept for easy restore
+  // if (ImGui.BeginMenuBar()) {
+  //   if (ImGui.BeginMenu("File")) {
+  //     if (ImGui.MenuItem("Log ini", "Ctrl+S")) console.log(ImGui.SaveIniSettingsToMemory());
+  //     if (ImGui.MenuItem("Metrics")) ShowMetricsWindow._show = true;
+  //     ImGui.EndMenu();
+  //   }
+  //   if (ImGui.BeginMenu("Edit")) {
+  //     if (ImGui.MenuItem("Clear plot")) D.plotVals = D.plotVals.map(() => 0.5);
+  //     ImGui.EndMenu();
+  //   }
+  //   ImGui.EndMenuBar();
+  // }
   if (ShowMetricsWindow._show) { ShowMetricsWindow(); if (ImGui.Button("Close metrics")) ShowMetricsWindow._show = false; }
   // tab bar over demo sections
   if (ImGui.BeginTabBar("demo")) {
@@ -153,7 +153,10 @@ function demoTables() {
   }
   ImGui.SeparatorText("Legacy columns");
   ImGui.Columns(2);
-  ImGui.Text("left col"); ImGui.NextColumn(); ImGui.Text("right col"); ImGui.NextColumn();
+  for (let r = 0; r < 3; r++) {
+    ImGui.Text("left " + r); ImGui.NextColumn();
+    ImGui.Text("right " + r); ImGui.NextColumn();
+  }
   ImGui.Columns(1);
 }
 
@@ -174,6 +177,29 @@ function demoPopups() {
   }
   if (ImGui.Button("Open modal")) ImGui.OpenPopup("modal1");
   if (ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }
+  if (ImGui.Button("Open popup at mouse")) ImGui.OpenPopup("pop_mouse");
+  if (ImGui.BeginPopup("pop_mouse")) {
+    ImGui.Text("popup anchored at the mouse");
+    if (ImGui.Button("Close")) ImGui.ClosePopup("pop_mouse");
+    ImGui.EndPopup();
+  }
+  if (ImGui.Button("Open popup (center)")) ImGui.OpenPopup("pop_center", "center");
+  if (ImGui.BeginPopup("pop_center")) {
+    ImGui.Text("centered popup with options:");
+    ImGui.Selectable("option A");
+    ImGui.Selectable("option B");
+    if (ImGui.Button("Close")) ImGui.ClosePopup("pop_center");
+    ImGui.EndPopup();
+  }
+  if (ImGui.Button("Open modal (form)")) ImGui.OpenPopup("modal_form");
+  if (ImGui.BeginPopupModal("modal_form")) {
+    ImGui.Text("enter a value:");
+    D.formVal = ImGui.InputText("##form", D.formVal || "").text;
+    if (ImGui.Button("OK")) ImGui.CloseCurrentPopup();
+    ImGui.SameLine();
+    if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
+    ImGui.EndPopupModal();
+  }
   ImGui.Button("right-click me");
   if (ImGui.BeginPopupContextItem("ctx1")) { if (ImGui.MenuItem("Action A")) ImGui.CloseCurrentPopup(); ImGui.EndPopup(); }
   if (ImGui.BeginTabBar("tb2")) {
