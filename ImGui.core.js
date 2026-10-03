@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.3";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.4";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -335,8 +335,8 @@ class ImGuiContext {
           w._lastTitleClick = now;
         }
       }
-      // move drag
-      if (inTitle && !(flags & WindowFlags.NoMove) && io.MouseClicked[0] && this.activeId === 0) {
+      // move drag (suppressed while a popup owns the click)
+      if (inTitle && !(flags & WindowFlags.NoMove) && io.MouseClicked[0] && this.activeId === 0 && !this._suppressChrome) {
         // ignore clicks on close box
         const cs = 16, cx = w.pos.x + w.sizeFull.x - 8 - cs;
         if (w.open === null || w.open === undefined || m.x < cx) {
@@ -344,8 +344,8 @@ class ImGuiContext {
           this.activePayload = { win: w, dx: m.x - w.pos.x, dy: m.y - w.pos.y };
         }
       }
-      // resize drag (bottom-right grip 18px)
-      if (!(flags & WindowFlags.NoResize) && !w.collapsed && this.activeId === 0) {
+      // resize drag (bottom-right grip 18px; suppressed while popup owns click)
+      if (!(flags & WindowFlags.NoResize) && !w.collapsed && this.activeId === 0 && !this._suppressChrome) {
         const gx = w.pos.x + w.sizeFull.x - 18, gy = w.pos.y + w.sizeFull.y - 18;
         if (m.x >= gx && m.x <= w.pos.x + w.sizeFull.x && m.y >= gy && m.y <= w.pos.y + w.sizeFull.y) {
           this.hoveredId = (w.id ^ 0xbe51ed) >>> 0;

@@ -18,6 +18,12 @@ function textW(s, font = "13px -apple-system,Segoe UI,Roboto,Arial,sans-serif") 
   return _mc.measureText(s).width;
 }
 function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
+// Popup input preemption: while a popup owns the left click, underlying
+// widgets (empty popup-box stack) must not start interactions.
+function clickSuppressed() {
+  const cc = ctx();
+  return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
+}
 function frameCol(base, hov, act, h, held) {
   const c = ctx(), st = c.style;
   return h ? (held ? st.Colors[act] : st.Colors[hov]) : st.Colors[base];
@@ -146,7 +152,7 @@ function sliderBehavior(id, x, y, wd, ht, vmin, vmax, value) {
   const h = c.hovered(x, y, wd, ht);
   if (h) c.anyWindowHovered = true;
   let v = value, changed = false;
-  if (h && c.io.MouseClicked[0] && c.activeId === 0) {
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
     c.activeId = id; c.activeKind = "slider"; c.activePayload = { vmin, vmax };
   }
   if (c.activeId === id && c.activeKind === "slider") {
@@ -195,7 +201,7 @@ function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
   const h = c.hovered(x, y, wd, ht);
   if (h) c.anyWindowHovered = true;
   let v = value, changed = false;
-  if (h && c.io.MouseClicked[0] && c.activeId === 0) { c.activeId = id; c.activeKind = "drag"; c.activePayload = { startX: c.io.MousePos.x, startV: value, speed }; }
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) { c.activeId = id; c.activeKind = "drag"; c.activePayload = { startX: c.io.MousePos.x, startV: value, speed }; }
   if (c.activeId === id && c.activeKind === "drag") {
     const dx = c.io.MousePos.x - c.activePayload.startX;
     v = c.activePayload.startV + dx * speed * Math.max(0.1, Math.abs(vmax - vmin) / 200 || 1);
@@ -223,7 +229,7 @@ function InputText(label, text, flags = 0) {
   const h = c.hovered(x, y + 0, bw, ht);
   if (h) c.anyWindowHovered = true;
   const isActive = c.activeId === id && c.activeKind === "text";
-  if (h && c.io.MouseClicked[0] && c.activeId === 0) {
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
     c.activeId = id; c.activeKind = "text"; c.activePayload = { value: text };
     if (ImGui._backendFocusText) ImGui._backendFocusText(x + w.pos.x * 0 + (x - w.pos.x) + 0, y, bw, ht, text, (nv) => {
       if (c.activePayload) c.activePayload.value = nv;
@@ -415,17 +421,23 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   c.itemAdd(x, y, wd, ht, 0);
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.ChildBg][3] === 0 ? [1, 1, 1, 0.03] : st.Colors[ImGui.Col.ChildBg] });
   if (border) emit({ t: "rect", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
-  // Isolate indentation: the panel itself sits at the outer indent, but the
-  // inner scope gets a clean slate so unbalanced Indent/Unindent (or early
-  // returns) inside the child can never leak into outer siblings.
-  _childStack.push({ x: x + 6, y: y + 6, maxW: wd - 12, savedIndent: w._indent || 0 });
-  // shift cursor into child
+  // Isolate the child scope: save the ENTIRE parent DC state so inner
+  // indentation (or early returns) can never leak into outer siblings.
+  // cursorMaxPos stays shared so inner content still grows the parent window.
+  _childStack.push({
+    cursorPos: { ...w.dc.cursorPos },
+    cursorPosPrevLine: { ...w.dc.cursorPosPrevLine },
+    cursorStartPos: { ...w.dc.cursorStartPos },
+    indent: w._indent || 0,
+    lineUsed: w.dc._lineUsed,
+    currLineHeight: w.dc.currLineHeight,
+    bounds: { x, y, w: wd, h: ht },
+  });
+  // Reset the child work area to its own origin with a clean slate.
+  w._indent = 0;
+  w.dc.cursorStartPos = { x: x + 6, y: y + 6 };
   w.dc.cursorPos.x = x + 6; w.dc.cursorPos.y = y + 6;
-  w._childBounds = { x, y, w: wd, h: ht };
-  c.nextLine(0);
-  // reset cursor to child origin (nextLine moved it; pull back) and sync the
-  // line tracker so SameLine as the first child widget starts at the origin
-  w.dc.cursorPos.x = x + 6; w.dc.cursorPos.y = y + 6; w.dc.cursorPosPrevLine = { x: x + 6, y: y + 6 };
+  w.dc.cursorPosPrevLine = { x: x + 6, y: y + 6 };
   w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
   w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc._lockFeed = true;
   return true;
@@ -434,16 +446,17 @@ function EndChild() {
   const c = ctx(), w = cur(); if (!w) return;
   const b = w._childBounds;
   const st = _childStack.pop();
-  // Restore the outer indentation even if inner code left it unbalanced.
-  w._indent = (st && st.savedIndent) || 0;
+  // Restore the outer scope even if inner code left it unbalanced.
+  if (st) {
+    w._indent = st.indent || 0;
+    w.dc.cursorStartPos = { ...st.cursorStartPos };
+  }
   if (b) {
-    w.dc.cursorPos.x = w.pos.x + w.padding.x + (w._indent || 0);
+    w.dc.cursorPos.x = b.x;
     w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, b.y + b.h + c.style.ItemSpacing.y);
-    // sync line tracker: the next widget (and any SameLine after it) must
-    // continue from the post-child origin, not the pre-child coordinates
     w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
-    w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
     w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
     w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, b.y + b.h);
   }
   w._childBounds = null;

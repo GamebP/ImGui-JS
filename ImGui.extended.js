@@ -13,9 +13,13 @@ const C = () => ImGui.GetContext();
 const W = () => C().current;
 const measure = (s) => (ImGui._measure ? ImGui._measure(s) : String(s).length * 7);
 function emit(op) { const w = W(); if (w) w.drawList.push(op); }
+function menuClickSuppressed() {
+  const cc = C();
+  return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
+}
 function ensure() {
   const c = C();
-  if (c._extInit) return c;
+  if (!c._extInit) {
   c._extInit = true;
   c._idExtra = 0;
   c._groupStack = [];
@@ -27,6 +31,10 @@ function ensure() {
   c._popupStack = [];          // open popup ids (top = last)
   c._popupPending = null;      // id requested this frame via OpenPopup
   c._popupAnchor = {};         // id -> {x,y}
+  c._popupBoxStack = [];       // open popup layout boxes (stack: nesting-safe)
+  c._popupRects = {};          // key -> last-frame rect (for click preemption)
+  c._popupRectsPrev = {};
+  c._popupRolloverFrame = -1;
   c._menuOpen = {};            // menu label -> bool
   c._menuStack = [];           // open menu labels (for cursor restore)
   c._overlayOps = [];          // popup overlay ops (drawn last, unclipped)
@@ -40,7 +48,36 @@ function ensure() {
   c._wantTextFocus = false;
   c._iniLoaded = false;
   c._iniSaveT = 0;
+  }
+  // Per-frame rollover: last frame's popup rects become the preemption map.
+  // Runs on every ensure() (c.frame bumps in newFrame before any widget).
+  if (c._popupRolloverFrame !== c.frame) {
+    c._popupRolloverFrame = c.frame;
+    c._popupRectsPrev = c._popupRects || {};
+    c._popupRects = {};
+  }
   return c;
+}
+// A left click is consumed by the popup layer while any popup is open: the
+// popup rects are known from the previous frame, so underlying widgets must
+// not activate (either the popup handles the click, or the click dismisses).
+function clickInsideOpenPopup() {
+  const c = ensure();
+  if (!c.io.MouseClicked[0]) return false;
+  const m = c.io.MousePos;
+  for (const k of c._popupStack) {
+    const r = (c._popupRectsPrev || {})[k] || (c._popupRects || {})[k];
+    if (r && m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h) return true;
+  }
+  return false;
+}
+function popupConsumesClick() {
+  const c = ensure();
+  return c._popupStack.length > 0 && c.io.MouseClicked[0];
+}
+function inPopupContent() {
+  const c = ensure();
+  return (c._popupBoxStack && c._popupBoxStack.length > 0);
 }
 
 // ---------- lazily wrap Begin/End once (scroll + ini) ----------
@@ -53,6 +90,9 @@ function wrapBeginEnd() {
     const c = this;
     ensure();
     if (!c._iniLoaded) { c._iniLoaded = true; tryLoadIni(c); }
+    // Consume left clicks for the popup layer BEFORE any widget or chrome
+    // hit-testing runs (uses previous frame's popup rects).
+    c._suppressChrome = popupConsumesClick();
     const r = origBegin.call(this, name, pOpen, flags);
     const w = this.current;
     if (w) {
@@ -92,6 +132,14 @@ function wrapBeginEnd() {
     // their scroll state survives into the viewport-clamp block below, which
     // fully recomputes it (zeroing would rubber-band wheel scrolling to 0).
     origEnd.call(this);
+    // Tab row growth (stored by EndTabBar): applied after core End so the
+    // size.x reset cannot clobber it. Consumed every frame. Never grows the
+    // window past the viewport edge.
+    if (w && w._tabExpandW) {
+      const maxW = Math.max(80, this.io.DisplaySize.x - w.pos.x - 8);
+      if (w._tabExpandW > w.sizeFull.x) w.sizeFull.x = Math.min(w._tabExpandW, maxW);
+      w._tabExpandW = 0;
+    }
     // Auto-fit windows (size.y == 0) grow unbounded by default. Clamp to the
     // viewport so content can never flow off-screen: the excess becomes
     // scrollable instead of overflowing past the taskbar.
@@ -128,14 +176,20 @@ function wrapBeginEnd() {
     } else if (w) { w._scrollGrip = null; }
     throttleSaveIni(this);
   };
-  // disabled: swallow button-family clicks
+  // disabled: swallow button-family clicks; popups: swallow click-through
   const origBB = Proto.buttonBehavior;
   Proto.buttonBehavior = function (id, x, y, wd, ht) {
     if ((this._disabledDepth || 0) > 0) {
       const h = this.hovered(x, y, wd, ht);
       return { hovered: false, held: false, pressed: false };
     }
-    return origBB.call(this, id, x, y, wd, ht);
+    const r = origBB.call(this, id, x, y, wd, ht);
+    // Underlying UI must not activate while a popup owns the click; popup
+    // content itself evaluates with a non-empty box stack and stays live.
+    if (r.pressed && (this._popupBoxStack || []).length === 0 && this._suppressChrome) {
+      r.pressed = false;
+    }
+    return r;
   };
 }
 wrapBeginEnd();
@@ -467,13 +521,15 @@ function popupBoxBegin(id, modal) {
   const { bx, by } = popupBestPos(a, bw, 260);
   if (modal) emit({ t: "rectFilled", x: w.pos.x, y: w.pos.y, w: w.sizeFull.x, h: w.sizeFull.y, r: 0, css: "rgba(0,0,0,0.45)" });
   // Save outer line state; popup content gets a fresh line context.
+  // Stack (not singleton): nested popups each keep their own box + marker.
   const dc = w.dc;
-  c._popupBox = {
-    x: bx, y: by, w: bw, key, modal,
+  const box = {
+    x: bx, y: by, w: bw, key, modal, win: w,
     savedCursor: { ...dc.cursorPos }, savedPrev: { ...dc.cursorPosPrevLine },
     savedLine: { currH: dc.currLineHeight, used: dc._lineUsed, same: dc.isSameLine, sp: dc.sameLineSpacing, lw: dc.lastItemWidth },
-    markIndex: w.drawList.length,
   };
+  c._popupBoxStack.push(box);
+  c._popupBox = box; // legacy alias = top of stack
   w.drawList.push({ t: "_popupMark", key });
   dc.cursorPos.x = bx + 8; dc.cursorPos.y = by + 8; dc.cursorPosPrevLine = { x: bx + 8, y: by + 8 };
   dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
@@ -481,8 +537,16 @@ function popupBoxBegin(id, modal) {
   return true;
 }
 function popupBoxEnd(modal) {
-  const c = ensure(), w = W(); if (!w || !c._popupBox) return;
-  const b = c._popupBox, dc = w.dc;
+  const c = ensure(), w = W(); if (!w) return;
+  const stack = c._popupBoxStack || [];
+  // Pop the top box belonging to THIS window (balanced Begin/End => top).
+  let bi = stack.length - 1;
+  while (bi >= 0 && stack[bi].win !== w) bi--;
+  if (bi < 0) return;
+  const b = stack[bi];
+  stack.splice(bi, 1);
+  c._popupBox = stack.length ? stack[stack.length - 1] : null;
+  const dc = w.dc;
   const h = Math.max(30, dc.cursorPos.y - b.y + 8);
   PopID();
   // Move popup ops (mark..end) to the context overlay: drawn after ALL
@@ -493,10 +557,12 @@ function popupBoxEnd(modal) {
     { t: "rect", x: b.x, y: b.y, w: b.w, h, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.Border], th: 1 },
   ];
   let start = w.drawList.findIndex((op) => op.t === "_popupMark" && op.key === b.key);
-  if (start < 0) start = b.markIndex;
+  if (start < 0) start = w.drawList.length;
   const content = w.drawList.splice(start);
   const inner = content.filter((op) => op.t !== "_popupMark");
   c._overlayOps.push(...frame, ...inner);
+  // Record this frame's rect for next frame's click preemption.
+  c._popupRects[b.key] = { x: b.x, y: b.y, w: b.w, h };
   // Restore outer line state; continue below the popup anchor region.
   dc.cursorPos.x = b.savedCursor.x; dc.cursorPos.y = Math.max(b.savedCursor.y, b.y + h + 8);
   dc.cursorPosPrevLine = { ...dc.cursorPos };
@@ -506,7 +572,6 @@ function popupBoxEnd(modal) {
   const inside = m.x >= b.x && m.x <= b.x + b.w && m.y >= b.y && m.y <= b.y + h;
   if (c.io.MouseClicked[0] && !inside && !modal) ClosePopup(b.key);
   if (c.io.KeysDown["Escape"]) ClosePopup(b.key);
-  c._popupBox = null;
 }
 function BeginPopup(id) { return popupBoxBegin(id, false); }
 function EndPopup() { popupBoxEnd(false); }
@@ -555,7 +620,7 @@ function BeginMenu(label) {
   const id = w.getID("menu:" + label);
   c.itemAdd(x, y, tw, 22, id);
   const h = c.hovered(x, y, tw, 22);
-  if (h && (c.io.MouseClicked[0] || c._menuOpen[label])) { c._menuOpen[label] = !c._menuOpen[label]; c.anyWindowHovered = true; }
+  if (h && ((c.io.MouseClicked[0] && !menuClickSuppressed()) || c._menuOpen[label])) { c._menuOpen[label] = !c._menuOpen[label]; c.anyWindowHovered = true; }
   else if (h) c.anyWindowHovered = true;
   const open = !!c._menuOpen[label];
   emit({ t: "rectFilled", x, y, w: tw, h: 22, r: 4, col: open || h ? c.style.Colors[ImGui.Col.HeaderHovered] : [0, 0, 0, 0] });
@@ -606,7 +671,7 @@ function MenuItem(label, shortcut = "", selected = false, enabled = true) {
   if (h) { emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] }); c.anyWindowHovered = true; }
   emit({ t: "text", str: (selected ? "● " : "") + shown, x: x + 8, y: y + 3, col: enabled ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled] });
   if (shortcut) emit({ t: "text", str: shortcut, x: x + wd - measure(shortcut) - 8, y: y + 3, col: c.style.Colors[ImGui.Col.TextDisabled] });
-  return enabled && h && c.io.MouseClicked[0];
+  return enabled && h && c.io.MouseClicked[0] && !menuClickSuppressed();
 }
 
 // ---------- tab bar (imgui_widgets.cpp BeginTabBar/BeginTabItem) ----------
@@ -637,22 +702,23 @@ function BeginTabItem(label) {
   let tw = wantW, shown = full;
   if (wantW > remain) {
     // Shrink-to-fit with ellipsis; clamp so x + tw never crosses the bar end.
-    tw = Math.max(28, remain);
-    tw = Math.min(tw, Math.max(28, (t.x + t.w) - (t.x + t.offsetX)));
+    // Minimum 40px keeps the label readable when truncation is mandatory.
+    tw = Math.max(40, remain);
+    tw = Math.min(tw, Math.max(40, (t.x + t.w) - (t.x + t.offsetX)));
     const maxT = Math.max(0, tw - c.style.FramePadding.x * 2 - 8 - 8);
     let s = full;
     while (s.length > 1 && measure(s + "…") > maxT) s = s.slice(0, -1);
     shown = s.length < full.length ? s + "…" : s;
   }
   const x = t.x + t.offsetX, y = t.y;
-  t.offsetX += tw + 2; t.n++;
+  t.offsetX += tw + 2; t.wantX = (t.wantX || 0) + wantW + 2; t.n++;
   if (c._tabs[t.id] === undefined) c._tabs[t.id] = full;
   const active = c._tabs[t.id] === full;
   const id = w.getID("tab:" + label);
   c.itemAdd(x, y, tw, TAB_H, id);
   const h = c.hovered(x, y, tw, TAB_H);
   if (h) c.anyWindowHovered = true;
-  if (h && c.io.MouseClicked[0]) c._tabs[t.id] = full;
+  if (h && c.io.MouseClicked[0] && !menuClickSuppressed()) c._tabs[t.id] = full;
   const col = active ? c.style.Colors[ImGui.Col.TabSelected]
     : h ? c.style.Colors[ImGui.Col.TabHovered]
     : c.style.Colors[ImGui.Col.Tab];
@@ -690,6 +756,13 @@ function EndTabBar() {
   }
   PopID();
   if (w && c._tabBar) {
+    // Auto-height windows (the common demo case) grow horizontally to fit the
+    // tab row instead of truncating; fixed-size panels keep ellipsis.
+    if (w.size.y === 0) {
+      // wantX = unshrunk row width. Stored for the End() wrapper: core End
+      // resets sizeFull.x from size.x, so growth applies after it instead.
+      w._tabExpandW = c._tabBar.x - w.pos.x + (c._tabBar.wantX || c._tabBar.offsetX) + w.padding.x;
+    }
     w.dc.cursorPos.x = w.pos.x + w.padding.x + (w._indent || 0);
     w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, c._tabBar.contentY);
     w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };

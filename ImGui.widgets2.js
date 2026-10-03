@@ -13,6 +13,10 @@ const cur = () => ctx().current;
 const measure = (s) => (ImGui._measure ? ImGui._measure(s) : s.length * 7);
 function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
+function clickSuppressed() {
+  const cc = ctx();
+  return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
+}
 
 // ---------- ArrowButton ----------
 function ArrowButton(id, dir) { // dir: 0=left 1=right 2=up 3=down
@@ -87,7 +91,7 @@ function VSliderFloat(label, wArg, hArg, value, vmin, vmax) {
   const h = c.hovered(x, y, bw, ht);
   if (h) c.anyWindowHovered = true;
   let v = value, changed = false;
-  if (h && c.io.MouseClicked[0] && c.activeId === 0) { c.activeId = id; c.activeKind = "vslider"; }
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) { c.activeId = id; c.activeKind = "vslider"; }
   if (c.activeId === id && c.activeKind === "vslider") {
     const t = 1 - (c.io.MousePos.y - y) / Math.max(1, ht);
     v = vmin + Math.max(0, Math.min(1, t)) * (vmax - vmin);
@@ -229,7 +233,7 @@ function ColorPicker4(label, color) {
   };
   const setH = (my) => { h = Math.max(0, Math.min(0.999, (my - y) / S)); changed = true; };
   const inSV = c.hovered(x, y, S, S), inH = c.hovered(x + S + 6, y, HB, S);
-  if ((inSV || inH) && c.io.MouseClicked[0] && c.activeId === 0) {
+  if ((inSV || inH) && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
     c.activeId = id; c.activeKind = "picker"; c.activePayload = { zone: inH ? "h" : "sv" };
     if (inH) setH(c.io.MousePos.y); else setSV(c.io.MousePos.x, c.io.MousePos.y);
   }
