@@ -257,9 +257,15 @@ function InputText(label, text, flags = 0, hint = "") {
   const isActive = c.activeId === id && c.activeKind === "text";
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
     c.activeId = id; c.activeKind = "text"; c.activePayload = { value: text };
-    if (ImGui._backendFocusText) ImGui._backendFocusText(x + w.pos.x * 0 + (x - w.pos.x) + 0, y, bw, ht, text, (nv) => {
-      if (c.activePayload) c.activePayload.value = nv;
-    });
+    if (ImGui._backendFocusText) {
+      // cursorPos is CONTENT space; the DOM input is position:fixed (screen
+      // space), so translate Y by -scrollY. Popup boxes are absolute overlay
+      // coords and never scroll, hence the _inPopup guard.
+      const screenY = (w && w.scrollY && !w.dc._inPopup) ? (y - w.scrollY) : y;
+      ImGui._backendFocusText(x, screenY, bw, ht, text, (nv) => {
+        if (c.activePayload) c.activePayload.value = nv;
+      });
+    }
   }
   if (isActive && c.io.MouseClicked[0] && !h) {
     // click outside -> commit & close
@@ -267,6 +273,12 @@ function InputText(label, text, flags = 0, hint = "") {
     c.activeId = 0; c.activeKind = null;
     if (ImGui._backendBlurText) ImGui._backendBlurText();
     return { changed: true, text };
+  }
+  // While active, re-sync the DOM input every frame so any scroll/resize
+  // moves it with the canvas box instead of leaving it frozen on screen.
+  if (isActive && ImGui._backendMoveText) {
+    const screenY = (w && w.scrollY && !w.dc._inPopup) ? (y - w.scrollY) : y;
+    ImGui._backendMoveText(x, screenY, bw, ht);
   }
   let shown = isActive && c.activePayload ? c.activePayload.value : text;
   // live typing via InputChars when no hidden input (fallback)

@@ -40,6 +40,7 @@ const Backend = {
       e.stopPropagation();
     });
     ImGui._backendFocusText = (x, y, w, h, cur, commit) => this.focusText(x, y, w, h, cur, commit);
+    ImGui._backendMoveText = (x, y, w, h) => this.moveText(x, y, w, h);
     ImGui._backendBlurText = () => this.blurText();
 
     const io = c.io;
@@ -91,10 +92,27 @@ const Backend = {
     this.textCommit = commit;
     inp.value = cur || "";
     inp.style.display = "block";
-    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, x)) + "px";
-    inp.style.top = Math.max(0, y) + "px";
-    inp.style.width = Math.max(60, w) + "px";
+    inp.style.position = "fixed";
+    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, Math.round(x))) + "px";
+    inp.style.top = Math.max(0, Math.round(y)) + "px";
+    inp.style.width = Math.max(60, Math.round(w)) + "px";
+    inp.style.height = Math.round(h) + "px";
+    // Visually hidden: the canvas draws the active box, so a white DOM rect
+    // over it would be a ghost. Still captures typing/IME/paste (opacity 0
+    // does not affect focus or input events).
+    inp.style.opacity = "0";
+    inp.style.pointerEvents = "auto";
     setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  },
+  // Per-frame position sync while a text widget stays active: the box can
+  // move under a scroll/resize between focus and commit.
+  moveText(x, y, w, h) {
+    const inp = this.hiddenInput;
+    if (!inp || inp.style.display === "none") return;
+    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, Math.round(x))) + "px";
+    inp.style.top = Math.max(0, Math.round(y)) + "px";
+    inp.style.width = Math.max(60, Math.round(w)) + "px";
+    inp.style.height = Math.round(h) + "px";
   },
   blurText() {
     if (!this.hiddenInput) return;

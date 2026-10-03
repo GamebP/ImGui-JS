@@ -468,14 +468,19 @@ function wrapEditTrack() {
   }
   // keyboard focus: activate text widget recorded as lastItem
   const origInput = ImGui.InputText;
-  ImGui.InputText = function (label, text, flags) {
+  ImGui.InputText = function (label, text, flags, hint) {
     const c = ensure();
-    const r = origInput(label, text, flags);
+    const r = origInput(label, text, flags, hint); // forward hint (InputTextWithHint delegation)
     if (c._wantTextFocus) {
       c._wantTextFocus = false;
       const id = c.lastItem.id, rect = c.lastItem.rect;
       c.activeId = id; c.activeKind = "text"; c.activePayload = { value: r.text };
-      if (ImGui._backendFocusText && rect) ImGui._backendFocusText(rect.x, rect.y, rect.w, 24, r.text, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+      if (ImGui._backendFocusText && rect) {
+        // rect is content space; DOM input is screen space (popup = absolute).
+        const ww = c.current;
+        const screenY = (ww && ww.scrollY && !ww.dc._inPopup) ? (rect.y - ww.scrollY) : rect.y;
+        ImGui._backendFocusText(rect.x, screenY, rect.w, 24, r.text, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+      }
     }
     return r;
   };
@@ -573,9 +578,14 @@ function popupBoxBegin(id, modal) {
     savedCursor: { ...dc.cursorPos }, savedPrev: { ...dc.cursorPosPrevLine },
     savedStart: { ...dc.cursorStartPos },
     savedLine: { currH: dc.currLineHeight, used: dc._lineUsed, same: dc.isSameLine, sp: dc.sameLineSpacing, lw: dc.lastItemWidth, cellX: dc._cellStartX },
+    savedInPopup: dc._inPopup,
   };
   c._popupBoxStack.push(box);
   c._popupBox = box; // legacy alias = top of stack
+  // Popup content lives in ABSOLUTE overlay coords (unclipped, not scrolled
+  // with the host window): mark it so hovered()/screen-space translations
+  // skip the host's scrollY while this box is current.
+  dc._inPopup = true;
   w.drawList.push({ t: "_popupMark", key });
   dc.cursorPos.x = bx + 8; dc.cursorPos.y = by + 8; dc.cursorPosPrevLine = { x: bx + 8, y: by + 8 };
   // Popup is its own layout origin: feeds wrap inside the box, never back
@@ -639,6 +649,7 @@ function popupBoxEnd(modal) {
   dc.lastItemWidth = b.savedLine.lw;
   if (b.savedLine.cellX !== undefined) dc._cellStartX = b.savedLine.cellX;
   else delete dc._cellStartX;
+  dc._inPopup = b.savedInPopup;
   const m = c.io.MousePos;
   const inside = m.x >= b.x && m.x <= b.x + boxW && m.y >= b.y && m.y <= b.y + h;
   if (c.io.MouseClicked[0] && !inside && !modal) ClosePopup(b.key);

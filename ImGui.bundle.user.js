@@ -1266,9 +1266,15 @@ function InputText(label, text, flags = 0, hint = "") {
   const isActive = c.activeId === id && c.activeKind === "text";
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
     c.activeId = id; c.activeKind = "text"; c.activePayload = { value: text };
-    if (ImGui._backendFocusText) ImGui._backendFocusText(x + w.pos.x * 0 + (x - w.pos.x) + 0, y, bw, ht, text, (nv) => {
-      if (c.activePayload) c.activePayload.value = nv;
-    });
+    if (ImGui._backendFocusText) {
+      // cursorPos is CONTENT space; the DOM input is position:fixed (screen
+      // space), so translate Y by -scrollY. Popup boxes are absolute overlay
+      // coords and never scroll, hence the _inPopup guard.
+      const screenY = (w && w.scrollY && !w.dc._inPopup) ? (y - w.scrollY) : y;
+      ImGui._backendFocusText(x, screenY, bw, ht, text, (nv) => {
+        if (c.activePayload) c.activePayload.value = nv;
+      });
+    }
   }
   if (isActive && c.io.MouseClicked[0] && !h) {
     // click outside -> commit & close
@@ -1276,6 +1282,12 @@ function InputText(label, text, flags = 0, hint = "") {
     c.activeId = 0; c.activeKind = null;
     if (ImGui._backendBlurText) ImGui._backendBlurText();
     return { changed: true, text };
+  }
+  // While active, re-sync the DOM input every frame so any scroll/resize
+  // moves it with the canvas box instead of leaving it frozen on screen.
+  if (isActive && ImGui._backendMoveText) {
+    const screenY = (w && w.scrollY && !w.dc._inPopup) ? (y - w.scrollY) : y;
+    ImGui._backendMoveText(x, screenY, bw, ht);
   }
   let shown = isActive && c.activePayload ? c.activePayload.value : text;
   // live typing via InputChars when no hidden input (fallback)
@@ -2435,14 +2447,19 @@ function wrapEditTrack() {
   }
   // keyboard focus: activate text widget recorded as lastItem
   const origInput = ImGui.InputText;
-  ImGui.InputText = function (label, text, flags) {
+  ImGui.InputText = function (label, text, flags, hint) {
     const c = ensure();
-    const r = origInput(label, text, flags);
+    const r = origInput(label, text, flags, hint); // forward hint (InputTextWithHint delegation)
     if (c._wantTextFocus) {
       c._wantTextFocus = false;
       const id = c.lastItem.id, rect = c.lastItem.rect;
       c.activeId = id; c.activeKind = "text"; c.activePayload = { value: r.text };
-      if (ImGui._backendFocusText && rect) ImGui._backendFocusText(rect.x, rect.y, rect.w, 24, r.text, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+      if (ImGui._backendFocusText && rect) {
+        // rect is content space; DOM input is screen space (popup = absolute).
+        const ww = c.current;
+        const screenY = (ww && ww.scrollY && !ww.dc._inPopup) ? (rect.y - ww.scrollY) : rect.y;
+        ImGui._backendFocusText(rect.x, screenY, rect.w, 24, r.text, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+      }
     }
     return r;
   };
@@ -2540,9 +2557,14 @@ function popupBoxBegin(id, modal) {
     savedCursor: { ...dc.cursorPos }, savedPrev: { ...dc.cursorPosPrevLine },
     savedStart: { ...dc.cursorStartPos },
     savedLine: { currH: dc.currLineHeight, used: dc._lineUsed, same: dc.isSameLine, sp: dc.sameLineSpacing, lw: dc.lastItemWidth, cellX: dc._cellStartX },
+    savedInPopup: dc._inPopup,
   };
   c._popupBoxStack.push(box);
   c._popupBox = box; // legacy alias = top of stack
+  // Popup content lives in ABSOLUTE overlay coords (unclipped, not scrolled
+  // with the host window): mark it so hovered()/screen-space translations
+  // skip the host's scrollY while this box is current.
+  dc._inPopup = true;
   w.drawList.push({ t: "_popupMark", key });
   dc.cursorPos.x = bx + 8; dc.cursorPos.y = by + 8; dc.cursorPosPrevLine = { x: bx + 8, y: by + 8 };
   // Popup is its own layout origin: feeds wrap inside the box, never back
@@ -2606,6 +2628,7 @@ function popupBoxEnd(modal) {
   dc.lastItemWidth = b.savedLine.lw;
   if (b.savedLine.cellX !== undefined) dc._cellStartX = b.savedLine.cellX;
   else delete dc._cellStartX;
+  dc._inPopup = b.savedInPopup;
   const m = c.io.MousePos;
   const inside = m.x >= b.x && m.x <= b.x + boxW && m.y >= b.y && m.y <= b.y + h;
   if (c.io.MouseClicked[0] && !inside && !modal) ClosePopup(b.key);
@@ -3652,6 +3675,7 @@ const Backend = {
       e.stopPropagation();
     });
     ImGui._backendFocusText = (x, y, w, h, cur, commit) => this.focusText(x, y, w, h, cur, commit);
+    ImGui._backendMoveText = (x, y, w, h) => this.moveText(x, y, w, h);
     ImGui._backendBlurText = () => this.blurText();
 
     const io = c.io;
@@ -3703,10 +3727,27 @@ const Backend = {
     this.textCommit = commit;
     inp.value = cur || "";
     inp.style.display = "block";
-    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, x)) + "px";
-    inp.style.top = Math.max(0, y) + "px";
-    inp.style.width = Math.max(60, w) + "px";
+    inp.style.position = "fixed";
+    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, Math.round(x))) + "px";
+    inp.style.top = Math.max(0, Math.round(y)) + "px";
+    inp.style.width = Math.max(60, Math.round(w)) + "px";
+    inp.style.height = Math.round(h) + "px";
+    // Visually hidden: the canvas draws the active box, so a white DOM rect
+    // over it would be a ghost. Still captures typing/IME/paste (opacity 0
+    // does not affect focus or input events).
+    inp.style.opacity = "0";
+    inp.style.pointerEvents = "auto";
     setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  },
+  // Per-frame position sync while a text widget stays active: the box can
+  // move under a scroll/resize between focus and commit.
+  moveText(x, y, w, h) {
+    const inp = this.hiddenInput;
+    if (!inp || inp.style.display === "none") return;
+    inp.style.left = Math.max(0, Math.min(window.innerWidth - w - 8, Math.round(x))) + "px";
+    inp.style.top = Math.max(0, Math.round(y)) + "px";
+    inp.style.width = Math.max(60, Math.round(w)) + "px";
+    inp.style.height = Math.round(h) + "px";
   },
   blurText() {
     if (!this.hiddenInput) return;
