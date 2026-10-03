@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.17
+// @version      1.0.18
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.17";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.18";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -334,7 +334,7 @@ class ImGuiContext {
     const inWin = m.x >= w.pos.x && m.x <= w.pos.x + w.sizeFull.x &&
                   m.y >= w.pos.y && m.y <= w.pos.y + w.sizeFull.y;
     if (inWin) this.anyWindowHovered = true;
-    w.contentHover = inWin;
+    w.contentHover = inWin && !this._activeModalRect; // modal locks wheel/right-click below it
     // title-bar interactions: drag-move, double-click collapse, close btn
     const barH = w.titleH;
     const inTitle = barH > 0 && m.x >= w.pos.x && m.x <= w.pos.x + w.sizeFull.x &&
@@ -344,7 +344,7 @@ class ImGuiContext {
     const collapseId = (w.id ^ 0xc011a9) >>> 0;
     if (!(flags & WindowFlags.NoMouseInputs)) {
       // close button zone (right side of title)
-      if (w.open !== null && w.open !== undefined && inTitle) {
+      if (!this._activeModalRect && w.open !== null && w.open !== undefined && inTitle) {
         const cs = 16, cx = w.pos.x + w.sizeFull.x - 8 - cs, cy = w.pos.y + (barH - cs) / 2;
         if (m.x >= cx && m.x <= cx + cs && m.y >= cy && m.y <= cy + cs) {
           this.hoveredId = closeId;
@@ -352,7 +352,7 @@ class ImGuiContext {
         }
       }
       // collapse on double-click title (approx: two clicks within 400ms)
-      if (inTitle && !(flags & WindowFlags.NoCollapse)) {
+      if (!this._activeModalRect && inTitle && !(flags & WindowFlags.NoCollapse)) {
         if (io.MouseClicked[0]) {
           const now = performance.now();
           if (now - (w._lastTitleClick || 0) < 400) w.collapsed = !w.collapsed;
@@ -360,7 +360,7 @@ class ImGuiContext {
         }
       }
       // move drag (suppressed while a popup owns the click)
-      if (inTitle && !(flags & WindowFlags.NoMove) && io.MouseClicked[0] && this.activeId === 0 && !this._suppressChrome) {
+      if (inTitle && !(flags & WindowFlags.NoMove) && io.MouseClicked[0] && this.activeId === 0 && !this._suppressChrome && !this._activeModalRect) {
         // ignore clicks on close box
         const cs = 16, cx = w.pos.x + w.sizeFull.x - 8 - cs;
         if (w.open === null || w.open === undefined || m.x < cx) {
@@ -369,7 +369,7 @@ class ImGuiContext {
         }
       }
       // resize drag (bottom-right grip 18px; suppressed while popup owns click)
-      if (!(flags & WindowFlags.NoResize) && !w.collapsed && this.activeId === 0 && !this._suppressChrome) {
+      if (!(flags & WindowFlags.NoResize) && !w.collapsed && this.activeId === 0 && !this._suppressChrome && !this._activeModalRect) {
         const gx = w.pos.x + w.sizeFull.x - 18, gy = w.pos.y + w.sizeFull.y - 18;
         if (m.x >= gx && m.x <= w.pos.x + w.sizeFull.x && m.y >= gy && m.y <= w.pos.y + w.sizeFull.y) {
           this.hoveredId = (w.id ^ 0xbe51ed) >>> 0;
@@ -504,6 +504,12 @@ class ImGuiContext {
     return visible;
   }
   hovered(x, y, wd, ht) {
+    // MODAL LOCK: while a modal popup is open, only items inside the popup
+    // box stack (the modal's own content) may hover or claim input. Every
+    // window evaluated earlier in the frame has an empty box stack, so it is
+    // fully inert regardless of where the mouse points — this is the JS
+    // equivalent of Dear ImGui's ItemHoverable() modal/Z-order check.
+    if (this._activeModalRect && !(this._popupBoxStack && this._popupBoxStack.length > 0)) return false;
     const m = this.io.MousePos;
     const w = this.current;
     // Items register at natural content coordinates, but the canvas is drawn
@@ -2017,6 +2023,15 @@ function ensure() {
     c._popupRolloverFrame = c.frame;
     c._popupRectsPrev = c._popupRects || {};
     c._popupRects = {};
+    // MODAL LOCK — authoritative recompute at frame start, before ANY window
+    // evaluates. A modal that was open last frame re-registers its screen
+    // rect, so windows earlier in the frame loop than the modal's host are
+    // already locked out. Closed modal => null (input flows again).
+    c._activeModalRect = null;
+    for (let i = c._popupStack.length - 1; i >= 0; i--) {
+      const r = c._popupRectsPrev[c._popupStack[i]];
+      if (r && r.modal) { c._activeModalRect = { x: r.x, y: r.y, w: r.w, h: r.h }; break; }
+    }
   }
   return c;
 }
@@ -2132,7 +2147,7 @@ function wrapBeginEnd() {
       // Grip lives in raw viewport space (never scrolled), and this.current is
       // already the parent window here, so hit-test against raw mouse coords.
       const mm = this.io.MousePos;
-      const hov = mm.x >= bx && mm.x <= bx + st.ScrollbarSize && mm.y >= gy && mm.y <= gy + gripH;
+      const hov = !this._activeModalRect && mm.x >= bx && mm.x <= bx + st.ScrollbarSize && mm.y >= gy && mm.y <= gy + gripH;
       if (hov) this.anyWindowHovered = true;
       if (hov && this.io.MouseClicked[0] && this.activeId === 0) {
         this.activeId = gid; this.activeKind = "scroll";
@@ -2474,8 +2489,8 @@ function OpenPopup(id, ax, ay) {
 }
 function OpenPopupOnItemClick(id) { if (IsItemClicked(1)) OpenPopup(id); }
 function IsPopupOpen(id) { const c = ensure(); return c._popupStack.includes(String(id)); }
-function CloseCurrentPopup() { const c = ensure(); c._popupStack.pop(); }
-function ClosePopup(id) { const c = ensure(); c._popupStack = c._popupStack.filter((p) => p !== String(id)); }
+function CloseCurrentPopup() { const c = ensure(); c._popupStack.pop(); c._activeModalRect = null; }
+function ClosePopup(id) { const c = ensure(); c._popupStack = c._popupStack.filter((p) => p !== String(id)); c._activeModalRect = null; }
 function popupBestPos(a, bw, estH) {
   // imgui.cpp FindBestWindowPosForPopup: prefer below-left, flip on overflow.
   const c = ensure();
@@ -2501,6 +2516,9 @@ function popupBoxBegin(id, modal) {
     const estH = 140;
     bx = Math.round((dw - bw) / 2);
     by = Math.round((dh - estH) / 2);
+    // Register the lock immediately: windows evaluated AFTER this point in
+    // the same frame must already see the modal (popupBoxEnd refines it).
+    c._activeModalRect = { x: bx, y: by, w: bw, h: estH };
   } else if (a && a.center) {
     // Explicit center anchor: OpenPopup(id, "center").
     bw = Math.min(300, Math.max(120, w.sizeFull.x - 20));
@@ -2572,8 +2590,9 @@ function popupBoxEnd(modal) {
     { t: "rect", x: b.x, y: b.y, w: boxW, h, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.Border], th: 1 },
   ];
   c._overlayOps.push(...frame, ...inner);
-  // Record this frame's rect for next frame's click preemption.
-  c._popupRects[b.key] = { x: b.x, y: b.y, w: boxW, h };
+  // Record this frame's rect for next frame's click preemption. The modal
+  // flag lets next frame's ensure() re-derive the input lock from it.
+  c._popupRects[b.key] = { x: b.x, y: b.y, w: boxW, h, modal: !!b.modal };
   // Restore the EXACT pre-popup layout state. The popup is an overlay layer:
   // it contributes no document flow, so the parent cursor, line state and
   // extents must be byte-identical to the moment before BeginPopup ran.
@@ -2591,6 +2610,9 @@ function popupBoxEnd(modal) {
   const inside = m.x >= b.x && m.x <= b.x + boxW && m.y >= b.y && m.y <= b.y + h;
   if (c.io.MouseClicked[0] && !inside && !modal) ClosePopup(b.key);
   if (c.io.KeysDown["Escape"]) ClosePopup(b.key);
+  // Refresh the lock with the exact frame rect (or clear it right away if
+  // this modal was just closed — ClosePopup/CloseCurrentPopup also clear).
+  if (modal) c._activeModalRect = c._popupStack.includes(b.key) ? { x: b.x, y: b.y, w: boxW, h } : null;
 }
 function BeginPopup(id) { return popupBoxBegin(id, false); }
 function EndPopup() { popupBoxEnd(false); }
@@ -3768,7 +3790,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.17"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.18"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

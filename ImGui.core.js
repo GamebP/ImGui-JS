@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.17";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.18";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -319,7 +319,7 @@ class ImGuiContext {
     const inWin = m.x >= w.pos.x && m.x <= w.pos.x + w.sizeFull.x &&
                   m.y >= w.pos.y && m.y <= w.pos.y + w.sizeFull.y;
     if (inWin) this.anyWindowHovered = true;
-    w.contentHover = inWin;
+    w.contentHover = inWin && !this._activeModalRect; // modal locks wheel/right-click below it
     // title-bar interactions: drag-move, double-click collapse, close btn
     const barH = w.titleH;
     const inTitle = barH > 0 && m.x >= w.pos.x && m.x <= w.pos.x + w.sizeFull.x &&
@@ -329,7 +329,7 @@ class ImGuiContext {
     const collapseId = (w.id ^ 0xc011a9) >>> 0;
     if (!(flags & WindowFlags.NoMouseInputs)) {
       // close button zone (right side of title)
-      if (w.open !== null && w.open !== undefined && inTitle) {
+      if (!this._activeModalRect && w.open !== null && w.open !== undefined && inTitle) {
         const cs = 16, cx = w.pos.x + w.sizeFull.x - 8 - cs, cy = w.pos.y + (barH - cs) / 2;
         if (m.x >= cx && m.x <= cx + cs && m.y >= cy && m.y <= cy + cs) {
           this.hoveredId = closeId;
@@ -337,7 +337,7 @@ class ImGuiContext {
         }
       }
       // collapse on double-click title (approx: two clicks within 400ms)
-      if (inTitle && !(flags & WindowFlags.NoCollapse)) {
+      if (!this._activeModalRect && inTitle && !(flags & WindowFlags.NoCollapse)) {
         if (io.MouseClicked[0]) {
           const now = performance.now();
           if (now - (w._lastTitleClick || 0) < 400) w.collapsed = !w.collapsed;
@@ -345,7 +345,7 @@ class ImGuiContext {
         }
       }
       // move drag (suppressed while a popup owns the click)
-      if (inTitle && !(flags & WindowFlags.NoMove) && io.MouseClicked[0] && this.activeId === 0 && !this._suppressChrome) {
+      if (inTitle && !(flags & WindowFlags.NoMove) && io.MouseClicked[0] && this.activeId === 0 && !this._suppressChrome && !this._activeModalRect) {
         // ignore clicks on close box
         const cs = 16, cx = w.pos.x + w.sizeFull.x - 8 - cs;
         if (w.open === null || w.open === undefined || m.x < cx) {
@@ -354,7 +354,7 @@ class ImGuiContext {
         }
       }
       // resize drag (bottom-right grip 18px; suppressed while popup owns click)
-      if (!(flags & WindowFlags.NoResize) && !w.collapsed && this.activeId === 0 && !this._suppressChrome) {
+      if (!(flags & WindowFlags.NoResize) && !w.collapsed && this.activeId === 0 && !this._suppressChrome && !this._activeModalRect) {
         const gx = w.pos.x + w.sizeFull.x - 18, gy = w.pos.y + w.sizeFull.y - 18;
         if (m.x >= gx && m.x <= w.pos.x + w.sizeFull.x && m.y >= gy && m.y <= w.pos.y + w.sizeFull.y) {
           this.hoveredId = (w.id ^ 0xbe51ed) >>> 0;
@@ -489,6 +489,12 @@ class ImGuiContext {
     return visible;
   }
   hovered(x, y, wd, ht) {
+    // MODAL LOCK: while a modal popup is open, only items inside the popup
+    // box stack (the modal's own content) may hover or claim input. Every
+    // window evaluated earlier in the frame has an empty box stack, so it is
+    // fully inert regardless of where the mouse points — this is the JS
+    // equivalent of Dear ImGui's ItemHoverable() modal/Z-order check.
+    if (this._activeModalRect && !(this._popupBoxStack && this._popupBoxStack.length > 0)) return false;
     const m = this.io.MousePos;
     const w = this.current;
     // Items register at natural content coordinates, but the canvas is drawn
