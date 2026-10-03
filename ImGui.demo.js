@@ -159,7 +159,7 @@ function demoTables() {
 
 function demoPopups() {
   if (!ImGui.CollapsingHeader("Popups / menus / tabs")) return;
-  if (ImGui.Button("Open popup")) ImGui.OpenPopup("hello");
+  if (ImGui.Button("Open popup")) { const r = ImGui.GetItemRect(); if (r) ImGui.OpenPopup("hello", r.x, r.y + r.h + 2); else ImGui.OpenPopup("hello"); }
   if (ImGui.BeginPopup("hello")) { ImGui.Text("popup content"); if (ImGui.Button("Close")) ImGui.CloseCurrentPopup(); ImGui.EndPopup(); }
   if (ImGui.Button("Open modal")) ImGui.OpenPopup("modal1");
   if (ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }

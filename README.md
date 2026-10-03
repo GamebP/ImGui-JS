@@ -34,6 +34,7 @@
 | `ImGui.widgets2.js` | Arrow/CheckboxFlags/RadioInt/SliderN-Angle-VSlider/DragN/InputFloat-Int-Double/Hint/ColorButton-Picker/Image/Plot/LabelText/Value/SeparatorText/... |
 | `ImGui.extended.js` | ID stack, groups, disabled, style stacks, cursor/scroll/ini, item+mouse+key queries, tooltip, popup/modal, menubar+menu, tabbar, tables, columns, TreeNodeEx, drag&drop |
 | `ImGui.demo.js` | `ShowDemoWindow/ShowStyleEditor/ShowMetricsWindow` (tabbed, exercises all APIs) |
+| `ImGui.notify.js` | Toast notifications (ImGuiNotify port: bottom-corner stack, fade, dismiss/action buttons) |
 | `ImGui.backend.js` | Overlay canvas, listeners, hidden text input, rAF loop |
 | `ImGui.main.js` | **MAIN**: `// @require https://…` ×7 includes + `MY_MENU()` example (edit this) |
 | `ImGui.bundle.user.js` | One-click install (all files concatenated, no hosting needed) |
@@ -48,9 +49,9 @@
 ## Use the split `ImGui.main.js` with `https://` includes
 1. Pushed to `GamebP/ImGui-JS` — `@require` ×7 + `CDN_BASE` already point at
    `https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/`
-   with `?v=<version>` cache-buster (currently `?v=1.0.7`) (files live at repo root, no `Build/` prefix).
+   with `?v=<version>` cache-buster (currently `?v=1.0.9`) (files live at repo root, no `Build/` prefix).
 2. Next update: bump `@version`, `LIB_VERSION`, and the `?v=` in all 7 `@require`
-   lines (e.g. `?v=1.0.7` → `?v=1.0.7`). New URL = cache miss, old cached libs are dropped.
+   lines (e.g. `?v=1.0.9` → `?v=1.0.9`). New URL = cache miss, old cached libs are dropped.
 3. New userscript ← paste `ImGui.main.js` only. Violentmonkey fetches the 7 libs
    via `https://raw.githubusercontent.com/...` at install. If a lib 404s, the runtime
    fallback in `ensureLibs()` loads them from `CDN_BASE` + `?v=` via `<script src>`.
@@ -99,3 +100,19 @@ Verified: `node --check` on all 8 files + headless test calling every new API
 
 ## Release a new version
 `python3 bump_version.py 1.0.3` — bumps `@version`, all 7 `?v=`, `LIB_VERSION`, and rebuilds the bundle in one step.
+
+## Toast notifications (ImGuiNotify port)
+```js
+ImGui.Notify.InsertNotification(ImGui.Notify.Toast(ImGui.Notify.ToastType.Success, 3000, "Saved!"));
+ImGui.Notify.InsertNotification(ImGui.Notify.Toast(ImGui.Notify.ToastType.Error, 5000, "Click me!", () => retry(), "Failed to save"));
+// every frame, after your windows (call FIRST if you want clicks consumed before other UI):
+ImGui.Notify.RenderNotifications();
+```
+Types: `Success` (green check), `Warning` (yellow triangle), `Error` (red `!`), `Info` (blue `i`).
+Config: `ImGui.Notify.Config` (`dismiss` ms, `opacity`, `renderLimit`, `position`:
+`BottomRight` default, also `BottomLeft`/`TopRight`/`TopLeft`).
+Icons follow [IconFontCppHeaders](https://github.com/juliettef/IconFontCppHeaders)
+(Font Awesome 6 codepoints `f058/f071/f06a/f05a/f00d`, merged at 2/3 size per
+their ImGui example). `RenderNotifications()` auto-loads the FA6 solid webfont
+from jsDelivr once (`ImGui.Notify.loadFontAwesome(url)` to override); until it
+arrives — or offline — crisp vector fallback glyphs are drawn instead.

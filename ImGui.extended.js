@@ -271,6 +271,7 @@ function PushID(id) {
 }
 function PopID() { const w = W(); if (w && w.idStack.length > 1) w.idStack.pop(); }
 function GetID(str) { const w = W(); return w ? w.getID(str) : 0; }
+function GetItemRect() { const r = ensure().lastItem.rect; return r ? { ...r } : null; }
 
 // ---------- groups / disabled / item width ----------
 function BeginGroup() {
@@ -549,7 +550,7 @@ function popupBoxBegin(id, modal) {
     x: bx, y: by, w: bw, key, modal, win: w,
     savedCursor: { ...dc.cursorPos }, savedPrev: { ...dc.cursorPosPrevLine },
     savedStart: { ...dc.cursorStartPos },
-    savedLine: { currH: dc.currLineHeight, used: dc._lineUsed, same: dc.isSameLine, sp: dc.sameLineSpacing, lw: dc.lastItemWidth },
+    savedLine: { currH: dc.currLineHeight, used: dc._lineUsed, same: dc.isSameLine, sp: dc.sameLineSpacing, lw: dc.lastItemWidth, cellX: dc._cellStartX },
   };
   c._popupBoxStack.push(box);
   c._popupBox = box; // legacy alias = top of stack
@@ -602,12 +603,19 @@ function popupBoxEnd(modal) {
   c._overlayOps.push(...frame, ...inner);
   // Record this frame's rect for next frame's click preemption.
   c._popupRects[b.key] = { x: b.x, y: b.y, w: boxW, h };
-  // Restore outer line state; continue below the popup anchor region.
-  dc.cursorPos.x = b.savedCursor.x; dc.cursorPos.y = Math.max(b.savedCursor.y, b.y + h + 8);
-  dc.cursorPosPrevLine = { ...dc.cursorPos };
+  // Restore the EXACT pre-popup layout state. The popup is an overlay layer:
+  // it contributes no document flow, so the parent cursor, line state and
+  // extents must be byte-identical to the moment before BeginPopup ran.
+  // (Advancing past the popup here created the black void + accordion
+  // resizing + stair-stepped siblings: parent maxPos absorbed popup coords.)
+  dc.cursorPos.x = b.savedCursor.x; dc.cursorPos.y = b.savedCursor.y;
+  dc.cursorPosPrevLine = { ...b.savedPrev };
   dc.cursorStartPos = { ...b.savedStart };
-  dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
-  dc.cursorMaxPos.y = Math.max(dc.cursorMaxPos.y, b.y + h);
+  dc.currLineHeight = b.savedLine.currH; dc._lineUsed = b.savedLine.used;
+  dc.isSameLine = b.savedLine.same; dc.sameLineSpacing = b.savedLine.sp;
+  dc.lastItemWidth = b.savedLine.lw;
+  if (b.savedLine.cellX !== undefined) dc._cellStartX = b.savedLine.cellX;
+  else delete dc._cellStartX;
   const m = c.io.MousePos;
   const inside = m.x >= b.x && m.x <= b.x + boxW && m.y >= b.y && m.y <= b.y + h;
   if (c.io.MouseClicked[0] && !inside && !modal) ClosePopup(b.key);
@@ -1059,7 +1067,7 @@ if (ImGui.CanvasRenderer && !ImGui.CanvasRenderer.prototype.__extPatched) {
 wrapEditTrack();
 
 Object.assign(ImGui, {
-  PushID, PopID, GetID, BeginGroup, EndGroup, BeginDisabled, EndDisabled,
+  PushID, PopID, GetID, GetItemRect, BeginGroup, EndGroup, BeginDisabled, EndDisabled,
   PushItemWidth, PopItemWidth, PushStyleColor, PopStyleColor, PushStyleVar, PopStyleVar,
   GetStyleColorVec4, GetColorU32, StyleColorsDark, StyleColorsClassic, StyleColorsLight,
   SetCursorPos, SetCursorPosX, SetCursorPosY, GetCursorPos, GetCursorScreenPos, SetCursorScreenPos,
