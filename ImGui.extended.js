@@ -121,7 +121,8 @@ function wrapBeginEnd() {
           const m = this.io.MousePos;
           const deltaY = m.y - (this.activePayload && this.activePayload.startMouseY || m.y);
           const scrollDelta = deltaY * (w.scrollMax / Math.max(1, g.bh - g.gripH));
-          w.scrollY = Math.max(0, Math.min(w.scrollMax, (this.activePayload && this.activePayload.startScrollY || w.scrollY) + scrollDelta));
+          const startScrollY = this.activePayload ? this.activePayload.startScrollY : w.scrollY;
+          w.scrollY = Math.max(0, Math.min(w.scrollMax, startScrollY + scrollDelta));
           if (!this.io.MouseDown[0]) { this.activeId = 0; this.activeKind = null; this.activePayload = null; }
         }
       }

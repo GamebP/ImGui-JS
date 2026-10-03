@@ -399,10 +399,14 @@ class ImGuiContext {
     }
     if (this.activeKind === "resize" && this.activePayload && this.activePayload.win === w) {
       if (io.MouseDown[0]) {
-        w.sizeFull.x = Math.max(st.WindowMinSize.x, m.x - w.pos.x);
-        w.sizeFull.y = Math.max(80, m.y - w.pos.y);
-        if (w.size.x > 0) w.size.x = w.sizeFull.x;
-        if (w.size.y > 0) w.size.y = w.sizeFull.y;
+        const maxW = Math.max(st.WindowMinSize.x, this.io.DisplaySize.x - w.pos.x);
+        const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y);
+        w.sizeFull.x = Math.max(st.WindowMinSize.x, Math.min(maxW, m.x - w.pos.x));
+        w.sizeFull.y = Math.max(80, Math.min(maxH, m.y - w.pos.y));
+        // A user resize turns an auto-fit dimension into a fixed live size;
+        // otherwise End() immediately restores the content height each frame.
+        w.size.x = w.sizeFull.x;
+        w.size.y = w.sizeFull.y;
       } else { this.activeId = 0; this.activeKind = null; this.activePayload = null; }
     }
     // setup cursor (work area origin = pos + title + padding)
@@ -524,6 +528,8 @@ class ImGuiContext {
     if (this._activeModalRect && !(this._popupBoxStack && this._popupBoxStack.length > 0)) return false;
     const m = this.io.MousePos;
     const w = this.current;
+    const comboRect = this._comboRect;
+    if (comboRect && m.x >= comboRect.x && m.x <= comboRect.x + comboRect.w && m.y >= comboRect.y && m.y <= comboRect.y + comboRect.h) return false;
     // POPUP PREEMPTION: open popups own their screen rect (known from the
     // previous frame) — widgets beneath, drawn or hit-tested outside popup
     // content, must not hover or click there (e.g. a color-picker popup
@@ -1413,7 +1419,10 @@ function Combo(label, current, items) {
   if (BeginCombo(label, preview)) {
     const c = ctx();
     const a = c._comboAnchor;
-    // draw popup box as overlay ops in same window (clipped but visible since near anchor)
+    const w = cur(), drawStart = w.drawList.length;
+    // The combo owns hover inside its list; allow its own item hit tests before
+    // blocking the controls that are painted underneath it.
+    c._comboRect = null;
     const itemH = 22, ph = items.length * itemH + 8;
     emit({ t: "rectFilled", x: a.x, y: a.y, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.PopupBg] });
     emit({ t: "rect", x: a.x, y: a.y, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.Border], th: 1 });
@@ -1429,8 +1438,13 @@ function Combo(label, current, items) {
     const m = c.io.MousePos;
     const inside = m.x >= a.x && m.x <= a.x + a.w && m.y >= a.y && m.y <= a.y + ph;
     if (c.io.MouseClicked[0] && !inside) c.comboOpen = 0;
+    // Draw above later controls and neighboring windows, and prevent those
+    // controls from receiving clicks through the open list.
+    c._overlayOps = c._overlayOps || [];
+    c._overlayOps.push(...w.drawList.splice(drawStart));
+    c._comboRect = c.comboOpen ? { x: a.x, y: a.y, w: a.w, h: ph } : null;
     EndCombo();
-  }
+  } else ctx()._comboRect = null;
   return { changed, index };
 }
 function Selectable(label, selected = false) {
@@ -1511,7 +1525,14 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   c.itemSize(wd, ht);
   c.itemAdd(x, y, wd, ht, 0);
   const bgIndex = w.drawList.length;
-  emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.ChildBg][3] === 0 ? [1, 1, 1, 0.03] : st.Colors[ImGui.Col.ChildBg] });
+  const childBg = st.Colors[ImGui.Col.ChildBg];
+  const windowBg = st.Colors[ImGui.Col.WindowBg];
+  // The port renders over live webpage content, so ImGui's default fully
+  // transparent ChildBg exposes page text through the child and looks like
+  // ghosted content. Use an opaque window-colored fill unless a child color
+  // was explicitly configured.
+  const childFill = childBg[3] === 0 ? [windowBg[0], windowBg[1], windowBg[2], 1] : childBg;
+  emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.ChildRounding, col: childFill });
   const borderIndex = border ? w.drawList.length : -1;
   if (border) emit({ t: "rect", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
   // Isolate the child scope: save the ENTIRE parent DC state so inner
@@ -2142,7 +2163,8 @@ function wrapBeginEnd() {
           const m = this.io.MousePos;
           const deltaY = m.y - (this.activePayload && this.activePayload.startMouseY || m.y);
           const scrollDelta = deltaY * (w.scrollMax / Math.max(1, g.bh - g.gripH));
-          w.scrollY = Math.max(0, Math.min(w.scrollMax, (this.activePayload && this.activePayload.startScrollY || w.scrollY) + scrollDelta));
+          const startScrollY = this.activePayload ? this.activePayload.startScrollY : w.scrollY;
+          w.scrollY = Math.max(0, Math.min(w.scrollMax, startScrollY + scrollDelta));
           if (!this.io.MouseDown[0]) { this.activeId = 0; this.activeKind = null; this.activePayload = null; }
         }
       }
@@ -3990,6 +4012,10 @@ function MY_MENU() {
     // NOTE: native <input type=color> fires async; poll each frame:
     if (ce.changed) S.color = ce.color;
 
+    // --- combo ---
+    const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
+    if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
+
     // --- collapsible section ---
     if (ImGui.CollapsingHeader("Features")) {
       for (let i = 0; i < 3; i++) {
@@ -4000,10 +4026,6 @@ function MY_MENU() {
     ImGui.Separator();
     ImGui.TextWrapped("Tip: drag the title bar to move, corner grip to resize, double-click title to collapse.");
 
-    // Render the combo after the rows below it so its open list stays on top
-    // of the feature controls instead of being painted underneath them.
-    const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
-    if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
   }
   ImGui.End();
 }

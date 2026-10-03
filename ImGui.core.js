@@ -384,10 +384,14 @@ class ImGuiContext {
     }
     if (this.activeKind === "resize" && this.activePayload && this.activePayload.win === w) {
       if (io.MouseDown[0]) {
-        w.sizeFull.x = Math.max(st.WindowMinSize.x, m.x - w.pos.x);
-        w.sizeFull.y = Math.max(80, m.y - w.pos.y);
-        if (w.size.x > 0) w.size.x = w.sizeFull.x;
-        if (w.size.y > 0) w.size.y = w.sizeFull.y;
+        const maxW = Math.max(st.WindowMinSize.x, this.io.DisplaySize.x - w.pos.x);
+        const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y);
+        w.sizeFull.x = Math.max(st.WindowMinSize.x, Math.min(maxW, m.x - w.pos.x));
+        w.sizeFull.y = Math.max(80, Math.min(maxH, m.y - w.pos.y));
+        // A user resize turns an auto-fit dimension into a fixed live size;
+        // otherwise End() immediately restores the content height each frame.
+        w.size.x = w.sizeFull.x;
+        w.size.y = w.sizeFull.y;
       } else { this.activeId = 0; this.activeKind = null; this.activePayload = null; }
     }
     // setup cursor (work area origin = pos + title + padding)
@@ -509,6 +513,8 @@ class ImGuiContext {
     if (this._activeModalRect && !(this._popupBoxStack && this._popupBoxStack.length > 0)) return false;
     const m = this.io.MousePos;
     const w = this.current;
+    const comboRect = this._comboRect;
+    if (comboRect && m.x >= comboRect.x && m.x <= comboRect.x + comboRect.w && m.y >= comboRect.y && m.y <= comboRect.y + comboRect.h) return false;
     // POPUP PREEMPTION: open popups own their screen rect (known from the
     // previous frame) — widgets beneath, drawn or hit-tested outside popup
     // content, must not hover or click there (e.g. a color-picker popup
