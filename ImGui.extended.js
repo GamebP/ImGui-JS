@@ -526,10 +526,17 @@ function popupBoxBegin(id, modal) {
   const box = {
     x: bx, y: by, w: bw, key, modal, win: w,
     savedCursor: { ...dc.cursorPos }, savedPrev: { ...dc.cursorPosPrevLine },
+    savedStart: { ...dc.cursorStartPos },
     savedLine: { currH: dc.currLineHeight, used: dc._lineUsed, same: dc.isSameLine, sp: dc.sameLineSpacing, lw: dc.lastItemWidth },
   };
   c._popupBoxStack.push(box);
   c._popupBox = box; // legacy alias = top of stack
+  w.drawList.push({ t: "_popupMark", key });
+  dc.cursorPos.x = bx + 8; dc.cursorPos.y = by + 8; dc.cursorPosPrevLine = { x: bx + 8, y: by + 8 };
+  // Popup is its own layout origin: feeds wrap inside the box, never back
+  // to the parent window's left margin (that stranded Close/OK outside).
+  dc.cursorStartPos = { x: bx + 8, y: by + 8 };
+  dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
   w.drawList.push({ t: "_popupMark", key });
   dc.cursorPos.x = bx + 8; dc.cursorPos.y = by + 8; dc.cursorPosPrevLine = { x: bx + 8, y: by + 8 };
   dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
@@ -566,6 +573,7 @@ function popupBoxEnd(modal) {
   // Restore outer line state; continue below the popup anchor region.
   dc.cursorPos.x = b.savedCursor.x; dc.cursorPos.y = Math.max(b.savedCursor.y, b.y + h + 8);
   dc.cursorPosPrevLine = { ...dc.cursorPos };
+  dc.cursorStartPos = { ...b.savedStart };
   dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
   dc.cursorMaxPos.y = Math.max(dc.cursorMaxPos.y, b.y + h);
   const m = c.io.MousePos;
@@ -631,9 +639,11 @@ function BeginMenu(label) {
     // row for sibling menus instead of pushing them under the dropdown.
     c._menuStack.push({
       label, outerCursor: { ...w.dc.cursorPos }, outerPrev: { ...w.dc.cursorPosPrevLine },
+      outerStart: { ...w.dc.cursorStartPos },
       outerLine: { currH: w.dc.currLineHeight, used: w.dc._lineUsed, lw: w.dc.lastItemWidth },
     });
     w.dc.cursorPos.x = x; w.dc.cursorPos.y = y + 26; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.cursorStartPos = { x, y: y + 26 }; // dropdown items wrap in-column
     w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc.lastItemWidth = 0;
     PushID("menu:" + label);
   } else if (c._menuBar) {
@@ -649,6 +659,7 @@ function EndMenu() {
     // Restore the menubar row (dropdown was an overlay, not document flow).
     w.dc.cursorPos.x = saved.outerCursor.x; w.dc.cursorPos.y = saved.outerCursor.y;
     w.dc.cursorPosPrevLine = { ...saved.outerPrev };
+    w.dc.cursorStartPos = { ...saved.outerStart };
     w.dc.currLineHeight = saved.outerLine.currH; w.dc._lineUsed = saved.outerLine.used;
     w.dc.lastItemWidth = saved.outerLine.lw;
     if (c._menuBar) w.dc._lockFeed = true;
@@ -859,6 +870,7 @@ function TableNextRow() {
   if (rowBg && t.row % 2 === 1) emit({ t: "rectFilled", x: t.x, y, w: t.avail, h: t.rowH, r: 0, col: c.style.Colors[ImGui.Col.TableRowBgAlt] });
   t.rowY = y;
   w.dc.cursorPos.x = t.x; w.dc.cursorPos.y = y; w.dc.cursorPosPrevLine = { x: t.x, y };
+  w.dc._cellStartX = undefined;
   w.dc._lockFeed = true;
   w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, y + t.rowH);
 }
@@ -868,8 +880,10 @@ function TableSetColumnIndex(n) {
   tableLayout(t);
   t.col = n;
   // Explicit x offset from stored widths + cell padding (never arbitrary).
+  // _cellStartX lets multi-widget cells wrap in-column instead of to margin.
   w.dc.cursorPos.x = t.x + t.offsets[n] + c.style.CellPadding.x; w.dc.cursorPos.y = t.rowY || t.y;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc._lockFeed = true;
   return true;
 }
@@ -909,6 +923,7 @@ function EndTable() {
   w.dc.cursorPos.y = t.startY + (t.row + 1) * t.rowH + 6;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc.lastItemWidth = 0;
+  w.dc._cellStartX = undefined;
   w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, w.dc.cursorPos.y);
   PopID();
   c._table = null;

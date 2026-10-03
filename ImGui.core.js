@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.4";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.5";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -415,7 +415,9 @@ class ImGuiContext {
       dc.cursorPos.x += sp;
       dc.cursorPos.y = dc.cursorPosPrevLine.y;
     } else if (dc._lineUsed) {
-      dc.cursorPos.x = dc.cursorStartPos.x + (w._indent || 0);
+      // Multi-widget table cells wrap to the CELL origin, never the window.
+      // (Single-widget cells skip this via _lockFeed set by SetColumnIndex.)
+      dc.cursorPos.x = (dc._cellStartX !== undefined) ? dc._cellStartX : dc.cursorStartPos.x + (w._indent || 0);
       dc.cursorPos.y += dc.currLineHeight + st.ItemSpacing.y;
       dc.cursorPosPrevLine = { ...dc.cursorPos };
       dc.prevLineHeight = dc.currLineHeight;
