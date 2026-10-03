@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Main Menu
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.6
+// @version      1.0.7
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey (Canvas2D). Drag the demo windows, edit MY_MENU below to build your own menu.
 // @match        *://*/*
 // @exclude-match *://*.google.com/*
@@ -10,23 +10,24 @@
 // @run-at       document-idle
 // @downloadURL   https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
 // @updateURL     https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.6
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.6
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.6
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.6
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.6
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.6
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.6
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.7
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.7
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.7
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.7
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.7
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.7
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.7
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.7
 // ==/UserScript==
 
 /* ============================================================================
  * ImGui.main.js — MAIN FILE (all includes + example menu live here)
  * ----------------------------------------------------------------------------
  * HOW THE LIBS ARE INCLUDED (https:// as requested):
- *   1. Static (preferred, Violentmonkey-native): the 7x `// @require https://...`
+ *   1. Static (preferred, Violentmonkey-native): the 8x `// @require https://...`
  *      lines in the header above point at GamebP/ImGui-JS (raw.githubusercontent,
  *      with `?v=LIB_VERSION` cache-buster). On every update: bump `@version`,
- *      `LIB_VERSION`, and the `?v=` in all 7 @require lines — new URL = new
+ *      `LIB_VERSION`, and the `?v=` in all 8 @require lines — new URL = new
  *      cache entry, so clients drop the old cached libs. Push this Build/
  *      folder to GitHub, reinstall the script — Violentmonkey
  *      downloads each lib ONCE at install time and runs them before this file.
@@ -37,6 +38,7 @@
  *      and set CDN_BASE = "http://127.0.0.1:8000/" temporarily.
  * FILES:
  *   ImGui.core.js    — context, IO, style, window Begin/End, dragging/resize
+  *   ImGui.animate.js — HImGuiAnimation port: tweens, keyframe sequencer
  *   ImGui.draw.js    — Canvas2D renderer (draw lists -> overlay canvas)
  *   ImGui.widgets.js  — Button/Text/Checkbox/Slider/Input/Combo/... + layout
  *   ImGui.widgets2.js — Arrow/CheckboxFlags/SliderN/VSlider/Drag/InputFloat-Int/
@@ -53,14 +55,14 @@
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.6"; // bump on every update: also bump @version + ?v= in @require lines
-const LIBS = ["ImGui.core.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.backend.js"];
+const LIB_VERSION = "1.0.7"; // bump on every update: also bump @version + ?v= in @require lines
+const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.backend.js"];
 
 function libsPresent() {
   try {
     return typeof window.ImGui !== "undefined"
       && window.__IMGUI_CORE__ && window.__IMGUI_DRAW__
-      && window.__IMGUI_WIDGETS__ && window.__IMGUI_WIDGETS2__
+      && window.__IMGUI_ANIMATE__ && window.__IMGUI_WIDGETS__ && window.__IMGUI_WIDGETS2__
       && window.__IMGUI_EXTENDED__ && window.__IMGUI_DEMO__ && window.__IMGUI_BACKEND__;
   } catch { return false; }
 }

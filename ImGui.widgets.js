@@ -101,7 +101,14 @@ function Button(label, wArg = 0, hArg = 0) {
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
   const bb = c.buttonBehavior(id, x, y, wd, ht);
-  emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.FrameRounding, col: frameCol(ImGui.Col.Button, ImGui.Col.ButtonHovered, ImGui.Col.ButtonActive, bb.hovered, bb.held) });
+  // Smooth hover/active color transition (HImGuiAnimation tween layer).
+  const targetCol = bb.held ? st.Colors[ImGui.Col.ButtonActive]
+    : bb.hovered ? st.Colors[ImGui.Col.ButtonHovered]
+    : st.Colors[ImGui.Col.Button];
+  const btnCol = (ImGui.Animation && ImGui.Animation.Color)
+    ? ImGui.Animation.Color("btn:" + id, targetCol, 0.12)
+    : targetCol;
+  emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.FrameRounding, col: btnCol });
   emit({ t: "text", str: shown, x: x + (wd - tw) / 2, y: y + (ht - st.FontSize) / 2 - 1, col: st.Colors[ImGui.Col.Text] });
   return bb.pressed;
 }

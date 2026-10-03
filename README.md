@@ -28,6 +28,7 @@
 | File | What |
 |---|---|
 | `ImGui.core.js` | Context, IO, style, `Begin/End`, move/resize/collapse, ID hash, layout |
+| `ImGui.animate.js` | HImGuiAnimation port: keyframe sequencer, tweens (`ImGui.Animation`) |
 | `ImGui.draw.js` | `ImGui.CanvasRenderer` — windows + widgets + polyline/polygon/image on canvas |
 | `ImGui.widgets.js` | Base: Text/Button/Checkbox/Slider/Drag/Input/Color/Combo/Selectable/... |
 | `ImGui.widgets2.js` | Arrow/CheckboxFlags/RadioInt/SliderN-Angle-VSlider/DragN/InputFloat-Int-Double/Hint/ColorButton-Picker/Image/Plot/LabelText/Value/SeparatorText/... |
@@ -47,9 +48,9 @@
 ## Use the split `ImGui.main.js` with `https://` includes
 1. Pushed to `GamebP/ImGui-JS` — `@require` ×7 + `CDN_BASE` already point at
    `https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/`
-   with `?v=<version>` cache-buster (currently `?v=1.0.6`) (files live at repo root, no `Build/` prefix).
+   with `?v=<version>` cache-buster (currently `?v=1.0.7`) (files live at repo root, no `Build/` prefix).
 2. Next update: bump `@version`, `LIB_VERSION`, and the `?v=` in all 7 `@require`
-   lines (e.g. `?v=1.0.6` → `?v=1.0.6`). New URL = cache miss, old cached libs are dropped.
+   lines (e.g. `?v=1.0.7` → `?v=1.0.7`). New URL = cache miss, old cached libs are dropped.
 3. New userscript ← paste `ImGui.main.js` only. Violentmonkey fetches the 7 libs
    via `https://raw.githubusercontent.com/...` at install. If a lib 404s, the runtime
    fallback in `ensureLibs()` loads them from `CDN_BASE` + `?v=` via `<script src>`.

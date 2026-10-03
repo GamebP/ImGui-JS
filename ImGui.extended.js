@@ -495,8 +495,10 @@ function OpenPopup(id, ax, ay) {
   const c = ensure(), m = c.io.MousePos;
   const key = String(id);
   c._popupPending = key;
-  // Explicit anchor (e.g. swatch bottom-left) wins; else mouse pos.
-  c._popupAnchor[key] = (ax !== undefined && ay !== undefined) ? { x: ax, y: ay } : { x: m.x, y: m.y };
+  // "center" (or ("center","center")) pins the popup to the viewport center;
+  // explicit (x, y) wins; otherwise the mouse pos is the anchor.
+  if (ax === "center" || ay === "center") c._popupAnchor[key] = { center: true };
+  else c._popupAnchor[key] = (ax !== undefined && ay !== undefined) ? { x: ax, y: ay } : { x: m.x, y: m.y };
 }
 function OpenPopupOnItemClick(id) { if (IsItemClicked(1)) OpenPopup(id); }
 function IsPopupOpen(id) { const c = ensure(); return c._popupStack.includes(String(id)); }
@@ -519,8 +521,25 @@ function popupBoxBegin(id, modal) {
   c._popupPending = null;
   if (!c._popupStack.includes(key)) return false;
   const a = c._popupAnchor[key] || { x: w.dc.cursorPos.x, y: w.dc.cursorPos.y };
-  const bw = Math.min(300, Math.max(120, w.sizeFull.x - 20));
-  const { bx, by } = popupBestPos(a, bw, 260);
+  const dw = c.io.DisplaySize.x, dh = c.io.DisplaySize.y;
+  let bw, bx, by;
+  if (modal) {
+    // Modals always center on the viewport (Dear ImGui centers modal popups).
+    bw = Math.min(320, dw - 40);
+    const estH = 140;
+    bx = Math.round((dw - bw) / 2);
+    by = Math.round((dh - estH) / 2);
+  } else if (a && a.center) {
+    // Explicit center anchor: OpenPopup(id, "center").
+    bw = Math.min(300, Math.max(120, w.sizeFull.x - 20));
+    const estH = 140;
+    bx = Math.round((dw - bw) / 2);
+    by = Math.round((dh - estH) / 2);
+  } else {
+    bw = Math.min(300, Math.max(120, w.sizeFull.x - 20));
+    const best = popupBestPos(a, bw, 260);
+    bx = best.bx; by = best.by;
+  }
   // NOTE: modal dim is drawn fullscreen into the overlay at End (top Z),
   // not here — an in-window emit would be clipped to the parent window.
   // Save outer line state; popup content gets a fresh line context.
