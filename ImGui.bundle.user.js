@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.21
+// @version      1.0.22
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.21";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.22";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -209,6 +209,8 @@ class ImGuiWindow {
     this.collapsed = false;
     this.open = null; // bound bool or null
     this.z = __winSeq++;
+    this._userResizedX = false;
+    this._userResizedY = false;
     // Draw-context layout state (imgui.cpp ImGuiWindowTempData / DC).
     // All coordinates are absolute screen space, relative to w.pos.
     this.dc = {
@@ -420,6 +422,8 @@ class ImGuiContext {
         // otherwise End() immediately restores the content height each frame.
         w.size.x = w.sizeFull.x;
         w.size.y = w.sizeFull.y;
+        w._userResizedX = true;
+        w._userResizedY = true;
       } else { this.activeId = 0; this.activeKind = null; this.activePayload = null; }
     }
     // setup cursor (work area origin = pos + title + padding)
@@ -447,7 +451,7 @@ class ImGuiContext {
     const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
     if (w.collapsed) {
       w.sizeFull.y = w.titleH + 2;
-    } else if (w.size.y === 0 || (w.flags & WindowFlags.AlwaysAutoResize)) {
+    } else if (!w._userResizedY && (w.size.y === 0 || (w.flags & WindowFlags.AlwaysAutoResize))) {
       w.sizeFull.y = Math.max(60, w.titleH + w.padding.y * 2 + contentH);
     } else if (w.size.y > 0) {
       w.sizeFull.y = w.size.y;
@@ -2177,7 +2181,7 @@ function wrapBeginEnd() {
       const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
       // wheel scroll when hovered (content taller than view); content renders
       // translated by -scrollY in draw.js and is clipped to the viewport.
-      if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && this.activeId === 0) {
+      if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && (this.activeKind !== "slider" && this.activeKind !== "drag" && this.activeKind !== "scroll" && this.activeKind !== "move" && this.activeKind !== "resize")) {
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY - this.io.MouseWheel * (this.style.FontSize * 2)));
       }
       // scrollbar grip drag (uses raw viewport coordinates)
@@ -3127,8 +3131,11 @@ function Columns(count = 1) {
   }
   const startPos = { ...w.dc.cursorStartPos };
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count, startPos };
-  w.dc.cursorPos.x = c._columns.x;
+  // Legacy columns always anchor at the content origin; a preceding
+  // SeparatorText/SameLine must not leak its trailing cursorPos into it.
+  const startX = w.pos.x + w.padding.x + (w._indent || 0);
+  c._columns = { n: count, i: 0, x: startX, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count, startPos };
+  w.dc.cursorPos.x = startX;
   w.dc.cursorStartPos = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
@@ -3151,6 +3158,7 @@ function NextColumn() {
   w.dc.cursorStartPos = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, cc.rowY + 20);
   w.dc._lockFeed = true;
 }
 
@@ -3966,7 +3974,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.21"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.22"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -4017,7 +4025,7 @@ const S = {
 function MY_MENU() {
   const ImGui = window.ImGui;
   // Window #1 — your custom menu. Rename "My Menu" to anything.
-  ImGui.SetNextWindowSize(340, 0); // width 340, height 0 = auto-fit
+  ImGui.SetNextWindowSize(340, 0, ImGui.Cond.FirstUseEver); // width 340, height 0 = auto-fit (once; lets user resize after)
   const w = ImGui.Begin("My Menu ❤", S.showMine ? true : false);
   S.showMine = w.open !== false;
   if (w.visible) {

@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.21";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.22";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -194,6 +194,8 @@ class ImGuiWindow {
     this.collapsed = false;
     this.open = null; // bound bool or null
     this.z = __winSeq++;
+    this._userResizedX = false;
+    this._userResizedY = false;
     // Draw-context layout state (imgui.cpp ImGuiWindowTempData / DC).
     // All coordinates are absolute screen space, relative to w.pos.
     this.dc = {
@@ -405,6 +407,8 @@ class ImGuiContext {
         // otherwise End() immediately restores the content height each frame.
         w.size.x = w.sizeFull.x;
         w.size.y = w.sizeFull.y;
+        w._userResizedX = true;
+        w._userResizedY = true;
       } else { this.activeId = 0; this.activeKind = null; this.activePayload = null; }
     }
     // setup cursor (work area origin = pos + title + padding)
@@ -432,7 +436,7 @@ class ImGuiContext {
     const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
     if (w.collapsed) {
       w.sizeFull.y = w.titleH + 2;
-    } else if (w.size.y === 0 || (w.flags & WindowFlags.AlwaysAutoResize)) {
+    } else if (!w._userResizedY && (w.size.y === 0 || (w.flags & WindowFlags.AlwaysAutoResize))) {
       w.sizeFull.y = Math.max(60, w.titleH + w.padding.y * 2 + contentH);
     } else if (w.size.y > 0) {
       w.sizeFull.y = w.size.y;

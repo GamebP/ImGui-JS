@@ -111,7 +111,7 @@ function wrapBeginEnd() {
       const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
       // wheel scroll when hovered (content taller than view); content renders
       // translated by -scrollY in draw.js and is clipped to the viewport.
-      if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && this.activeId === 0) {
+      if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && (this.activeKind !== "slider" && this.activeKind !== "drag" && this.activeKind !== "scroll" && this.activeKind !== "move" && this.activeKind !== "resize")) {
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY - this.io.MouseWheel * (this.style.FontSize * 2)));
       }
       // scrollbar grip drag (uses raw viewport coordinates)
@@ -1061,8 +1061,11 @@ function Columns(count = 1) {
   }
   const startPos = { ...w.dc.cursorStartPos };
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count, startPos };
-  w.dc.cursorPos.x = c._columns.x;
+  // Legacy columns always anchor at the content origin; a preceding
+  // SeparatorText/SameLine must not leak its trailing cursorPos into it.
+  const startX = w.pos.x + w.padding.x + (w._indent || 0);
+  c._columns = { n: count, i: 0, x: startX, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count, startPos };
+  w.dc.cursorPos.x = startX;
   w.dc.cursorStartPos = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
@@ -1085,6 +1088,7 @@ function NextColumn() {
   w.dc.cursorStartPos = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, cc.rowY + 20);
   w.dc._lockFeed = true;
 }
 
