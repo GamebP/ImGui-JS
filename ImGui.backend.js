@@ -117,6 +117,13 @@ const Backend = {
       c.newFrame(dt);
       try { this.userFn(c); } catch (err) { console.error("[ImGui] frame error:", err); }
       c.endFrame();
+      // OS cursor follows interaction state (no canvas-drawn ghost ring).
+      if (this.canvas) {
+        this.canvas.style.cursor =
+          (c.activeKind === "resize") ? "nwse-resize" :
+          (c.activeKind === "move") ? "move" :
+          (c.anyWindowHovered ? "default" : "auto");
+      }
       this.renderer.renderFrame(c);
       this.raf = requestAnimationFrame(loop);
     };

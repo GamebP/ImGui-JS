@@ -17,11 +17,13 @@ function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
 // ---------- ArrowButton ----------
 function ArrowButton(id, dir) { // dir: 0=left 1=right 2=up 3=down
   const c = ctx(), w = cur(); if (!w) return false;
-  const st = c.style, sz = 24, x = w.cursor.x, y = w.cursor.y;
+  const st = c.style, sz = 24;
+  c.beforeItemPlacement(sz, sz);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(sz, sz);
   const hid = w.getID(id + "##arrow");
   c.itemAdd(x, y, sz, sz, hid);
-  if (dis()) { emit({ t: "rectFilled", x, y, w: sz, h: sz, r: st.FrameRounding, col: st.Colors[ImGui.Col.FrameBg] }); c.nextLine(sz); return false; }
+  if (dis()) { emit({ t: "rectFilled", x, y, w: sz, h: sz, r: st.FrameRounding, col: st.Colors[ImGui.Col.FrameBg] }); return false; }
   const bb = c.buttonBehavior(hid, x, y, sz, sz);
   emit({ t: "rectFilled", x, y, w: sz, h: sz, r: st.FrameRounding, col: st.Colors[bb.hovered ? (bb.held ? ImGui.Col.ButtonActive : ImGui.Col.ButtonHovered) : ImGui.Col.Button] });
   const cx = x + sz / 2, cy = y + sz / 2, r = 6;
@@ -30,7 +32,6 @@ function ArrowButton(id, dir) { // dir: 0=left 1=right 2=up 3=down
     : dir === 2 ? [{ x: cx - r, y: cy + 3 }, { x: cx + r, y: cy + 3 }, { x: cx, y: cy - 5 }]
     : [{ x: cx - r, y: cy - 3 }, { x: cx + r, y: cy - 3 }, { x: cx, y: cy + 5 }];
   emit({ t: "polygon", pts: tri, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(sz);
   return bb.pressed;
 }
 
@@ -78,7 +79,8 @@ function SliderAngle(label, rad, vmin = -Math.PI, vmax = Math.PI) {
 function VSliderFloat(label, wArg, hArg, value, vmin, vmax) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, value };
   const st = c.style, bw = Math.max(24, wArg || 28), ht = hArg || 120;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(bw + 46, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw + 46, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, bw, ht, id);
@@ -97,7 +99,6 @@ function VSliderFloat(label, wArg, hArg, value, vmin, vmax) {
   const gh = 14, gy = y + (1 - ft) * (ht - gh);
   emit({ t: "rectFilled", x: x + 2, y: gy, w: bw - 4, h: gh, r: 5, col: st.Colors[h ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)} ${Number(v).toFixed(2)}`, x: x + bw + 6, y: y + ht / 2 - 7, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
   return { changed, value: v, hovered: h };
 }
 function VSliderInt(label, wArg, hArg, value, vmin, vmax) {
@@ -181,7 +182,8 @@ function InputTextWithHint(label, hint, text) {
 function ColorButton(id, color, wArg = 0, hArg = 0) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style, bw = wArg || 28, ht = hArg || 22;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(bw, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw, ht);
   const hid = w.getID(id + "##cbtn");
   c.itemAdd(x, y, bw, ht, hid);
@@ -189,7 +191,6 @@ function ColorButton(id, color, wArg = 0, hArg = 0) {
   emit({ t: "rectFilled", x, y, w: bw, h: ht, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
   const cssC = `rgba(${Math.round(color[0] * 255)},${Math.round(color[1] * 255)},${Math.round(color[2] * 255)},${color[3] === undefined ? 1 : color[3]})`;
   w.drawList.push({ t: "rectFilled", x: x + 2, y: y + 2, w: bw - 4, h: ht - 4, r: 3, css: cssC });
-  c.nextLine(ht);
   return bb.pressed;
 }
 function hsv2rgb(h, s, v) {
@@ -211,15 +212,14 @@ function ColorPicker4(label, color) {
   const availW = Math.max(60, w.sizeFull.x - w.padding.x * 2 - (w._indent || 0));
   const S = Math.min(150, Math.max(80, availW - 18 - 60));
   const HB = 18;
-  // Absolute anchor = window-relative cursor (cursor is already absolute).
-  let x = w.cursor.x, y = w.cursor.y;
-  const needW = S + HB + 14;
-  // Clamp horizontally inside window content area.
+  const needW = S + HB + 14, ht = S + 26;
+  c.beforeItemPlacement(needW, ht);
+  // Absolute anchor = window-relative cursor; clamp inside content area.
+  let x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   const minX = w.pos.x + w.padding.x + (w._indent || 0);
   const maxX = w.pos.x + w.sizeFull.x - w.padding.x - needW;
   if (maxX > minX) x = Math.max(minX, Math.min(maxX, x));
-  const ht = S + 26;
-  c.itemSize(needW + 46, ht);
+  c.itemSize(needW, ht);
   const id = w.getID(label + "##picker");
   c.itemAdd(x, y, needW, S, id);
   let [h, s, v] = rgb2hsv(color[0], color[1], color[2]);
@@ -253,7 +253,6 @@ function ColorPicker4(label, color) {
   const rgb = hsv2rgb(h, s, v);
   const out = [rgb[0], rgb[1], rgb[2], color[3] === undefined ? 1 : color[3]];
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x, y: y + S + 6, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
   c.anyWindowHovered = c.anyWindowHovered || inSV || inH;
   return { changed, color: out };
 }
@@ -265,21 +264,23 @@ function ColorPicker3(label, color) {
 // ---------- Image / ImageButton ----------
 function Image(el, wArg, hArg) {
   const c = ctx(), w = cur(); if (!w) return;
-  const bw = wArg || 64, ht = hArg || 64, x = w.cursor.x, y = w.cursor.y;
+  const bw = wArg || 64, ht = hArg || 64;
+  c.beforeItemPlacement(bw, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw, ht); c.itemAdd(x, y, bw, ht, 0);
   emit({ t: "image", el, x, y, w: bw, h: ht, border: true });
-  c.nextLine(ht);
 }
 function ImageButton(id, el, wArg, hArg) {
   const c = ctx(), w = cur(); if (!w) return false;
-  const bw = wArg || 64, ht = hArg || 64, x = w.cursor.x, y = w.cursor.y;
+  const bw = wArg || 64, ht = hArg || 64;
+  c.beforeItemPlacement(bw, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw, ht);
   const hid = w.getID(id + "##imgbtn");
   c.itemAdd(x, y, bw, ht, hid);
   const bb = c.buttonBehavior(hid, x, y, bw, ht);
   emit({ t: "image", el, x, y, w: bw, h: ht, border: true });
   if (bb.hovered) emit({ t: "rect", x, y, w: bw, h: ht, r: 4, col: c.style.Colors[ImGui.Col.ButtonHovered], th: 2 });
-  c.nextLine(ht);
   return bb.pressed;
 }
 
@@ -288,7 +289,8 @@ function plotFrame(label, values, overlay, ht, isHist, scaleMin, scaleMax) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
   const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(bw, ht + 18);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw, ht + 18);
   const vals = Array.isArray(values) ? values : [];
   let mn = scaleMin, mx = scaleMax;
@@ -313,7 +315,6 @@ function plotFrame(label, values, overlay, ht, isHist, scaleMin, scaleMax) {
     }
   }
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)}${overlay ? " " + overlay : ""}`, x, y: y + ht + 3, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht + 18);
 }
 function PlotLines(label, values, overlay = "", scaleMin, scaleMax, ht = 60) {
   plotFrame(label, values, overlay, ht, false, scaleMin, scaleMax);
@@ -325,11 +326,11 @@ function PlotHistogram(label, values, overlay = "", scaleMin, scaleMax, ht = 60)
 // ---------- LabelText / Value / misc text ----------
 function LabelText(label, text) {
   const c = ctx(), w = cur(); if (!w) return;
-  const x = w.cursor.x, y = w.cursor.y;
   const str = `${ImGui.findRenderedTextEnd(label)}: ${text}`;
+  c.beforeItemPlacement(measure(str), 16);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(measure(str), 16);
   emit({ t: "text", str, x, y, col: c.style.Colors[ImGui.Col.Text] });
-  c.nextLine(16);
 }
 function Value(label, v) {
   if (typeof v === "boolean") LabelText(label, v ? "true" : "false");
@@ -338,24 +339,26 @@ function Value(label, v) {
 }
 function TextDisabled(str) {
   const c = ctx(), w = cur(); if (!w) return;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(measure(str), 16);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(measure(str), 16);
   emit({ t: "text", str, x, y, col: c.style.Colors[ImGui.Col.TextDisabled] });
-  c.nextLine(16);
 }
 function SeparatorText(label) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
   const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const x = w.cursor.x, y = w.cursor.y + 2;
+  c.beforeItemPlacement(bw, 20);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y + 2;
   const tw = measure(label);
   emit({ t: "text", str: label, x: x + 4, y, col: st.Colors[ImGui.Col.Text] });
   emit({ t: "line", x1: x + tw + 12, y1: y + 8, x2: x + bw, y2: y + 8, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  c.itemSize(bw, 20); c.nextLine(20);
+  c.itemSize(bw, 20);
 }
 function Bullet() {
   const c = ctx(), w = cur(); if (!w) return;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(12, 16);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   emit({ t: "circleFilled", x: x + 4, y: y + 8, r: 2.5, col: c.style.Colors[ImGui.Col.Text] });
   c.itemSize(12, 16);
 }

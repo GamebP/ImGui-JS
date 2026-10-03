@@ -71,7 +71,7 @@ function colToCss(c, alphaMul = 1) {
   return `rgba(${r},${g},${b},${a})`;
 }
 
-// ---- style (defaults from imgui_draw.cpp:187 StyleColorsDark) ----
+// ---- style (exact defaults, imgui.cpp:1507-1592) ----
 function lerpCol(a, b, t) {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t];
 }
@@ -141,14 +141,16 @@ function applyStyleDark(C) {
 function makeStyleDark() {
   const s = {
     Alpha: 1.0, DisabledAlpha: 0.6,
-    WindowPadding: { x: 8, y: 8 }, WindowRounding: 6, WindowBorderSize: 1,
+    FontSize: 13,
+    WindowPadding: { x: 8, y: 8 }, WindowRounding: 0, WindowBorderSize: 1,
     WindowMinSize: { x: 32, y: 32 }, WindowTitleAlign: { x: 0.0, y: 0.5 },
-    ChildRounding: 4, ChildBorderSize: 1, PopupRounding: 4, PopupBorderSize: 1,
-    FramePadding: { x: 6, y: 4 }, FrameRounding: 4, FrameBorderSize: 0,
-    ItemSpacing: { x: 8, y: 5 }, ItemInnerSpacing: { x: 4, y: 4 },
+    ChildRounding: 0, ChildBorderSize: 1, PopupRounding: 0, PopupBorderSize: 1,
+    FramePadding: { x: 4, y: 3 }, FrameRounding: 0, FrameBorderSize: 0,
+    ItemSpacing: { x: 8, y: 4 }, ItemInnerSpacing: { x: 4, y: 4 },
+    CellPadding: { x: 4, y: 2 },
     IndentSpacing: 21, ScrollbarSize: 14, ScrollbarRounding: 9,
-    GrabMinSize: 14, GrabRounding: 4, FrameBorderShadow: 0,
-    TitleBarHeight: 24,
+    GrabMinSize: 12, GrabRounding: 0, FrameBorderShadow: 0,
+    TitleBarHeight: 13 + 3 * 2, // FontSize + FramePadding.y * 2 (imgui.cpp)
     Colors: [],
   };
   const C = s.Colors;
@@ -190,10 +192,22 @@ class ImGuiWindow {
     this.collapsed = false;
     this.open = null; // bound bool or null
     this.z = __winSeq++;
-    this.cursor = { x: 0, y: 0 };
-    this.cursorPrevLine = { x: 0, y: 0 };
-    this._lastWd = 0; this._lastHt = 0;
-    this.maxPos = { x: 0, y: 0 };
+    // Draw-context layout state (imgui.cpp ImGuiWindowTempData / DC).
+    // All coordinates are absolute screen space, relative to w.pos.
+    this.dc = {
+      cursorPos: { x: 0, y: 0 },         // current placement cursor
+      cursorPosPrevLine: { x: 0, y: 0 }, // origin of the current line
+      cursorStartPos: { x: 0, y: 0 },    // top-left of work area (pos+padding)
+      cursorMaxPos: { x: 0, y: 0 },      // widest/tallest extents touched
+      lastItemWidth: 0,
+      lastItemHeight: 0,
+      prevLineHeight: 0,
+      currLineHeight: 0,
+      isSameLine: false,
+      sameLineSpacing: -1,
+      _lineUsed: false,  // a widget was placed on the current line
+      _lockFeed: false,  // next widget is explicitly positioned: skip feed
+    };
     this.idStack = [this.id];
     this.drawList = [];
     this.contentHover = false;
@@ -355,11 +369,15 @@ class ImGuiContext {
         if (w.size.y > 0) w.size.y = w.sizeFull.y;
       } else { this.activeId = 0; this.activeKind = null; this.activePayload = null; }
     }
-    // setup cursor
-    w.cursor.x = w.pos.x + w.padding.x;
-    w.cursor.y = w.pos.y + barH + w.padding.y;
-    w.cursorPrevLine = { ...w.cursor };
-    w.maxPos = { x: w.cursor.x, y: w.cursor.y };
+    // setup cursor (work area origin = pos + title + padding)
+    w.dc.cursorPos = { x: w.pos.x + w.padding.x, y: w.pos.y + barH + w.padding.y };
+    w.dc.cursorStartPos = { ...w.dc.cursorPos };
+    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.cursorMaxPos = { ...w.dc.cursorPos };
+    w.dc.currLineHeight = 0; w.dc.prevLineHeight = 0;
+    w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
+    w.dc.isSameLine = false; w.dc.sameLineSpacing = -1;
+    w.dc._lineUsed = false; w.dc._lockFeed = false;
     w.appearing = false;
     const skip = w.collapsed || w.open === false;
     return { visible: !skip, open: w.open === undefined ? null : w.open, window: w };
@@ -369,7 +387,7 @@ class ImGuiContext {
     if (!w) return;
     const st = this.style;
     // auto-fit height if size.y==0 or AlwaysAutoResize
-    const needH = (w.maxPos.y - (w.pos.y + w.titleH + w.padding.y)) + w.padding.y;
+    const needH = (w.dc.cursorMaxPos.y - (w.pos.y + w.titleH + w.padding.y)) + w.padding.y;
     if (w.collapsed) {
       w.sizeFull.y = w.titleH + 2;
     } else if (w.size.y === 0 || (w.flags & WindowFlags.AlwaysAutoResize)) {
@@ -383,35 +401,67 @@ class ImGuiContext {
     w.pos.y = Math.max(0, Math.min(this.io.DisplaySize.y - 30, w.pos.y));
     this.current = this.windowStack[this.windowStack.length - 1] || null;
   }
-  // -- layout / items (cf. imgui.cpp ItemSize/ItemAdd/ButtonBehavior) --
-  // Standardized cursor advance: every widget must go through itemSize()
-  // (reserves Wd x Ht + updates maxPos) followed by nextLine() OR sameLine()
-  // for horizontal flow. Coordinates are absolute screen space, always
-  // relative to w.pos (window position) + padding + indent.
-  advanceCursor(wd, ht) { this.itemSize(wd, ht); this.nextLine(ht); }
-  itemSize(wd, ht) {
+  // -- layout engine (imgui.cpp: ItemSize 11400, SameLine 11520) --
+  // Widgets call beforeItemPlacement(wd, ht) FIRST (auto line-feed unless
+  // SameLine/locked), draw at dc.cursorPos, then itemSize(wd, ht). Widgets
+  // MUST NOT call nextLine() themselves; the feed happens implicitly.
+  beforeItemPlacement(wd, ht) {
     const w = this.current; if (!w) return;
-    const st = this.style;
-    w.cursorPrevLine = { x: w.cursor.x, y: w.cursor.y };
-    w._lastWd = wd; w._lastHt = ht;
-    w.cursor.x += wd + st.ItemSpacing.x;
-    w.maxPos.x = Math.max(w.maxPos.x, w.cursorPrevLine.x + wd);
-    w.maxPos.y = Math.max(w.maxPos.y, w.cursorPrevLine.y + ht);
+    const st = this.style, dc = w.dc;
+    if (dc._lockFeed) {
+      dc._lockFeed = false; // explicitly positioned: place exactly at cursor
+    } else if (dc.isSameLine) {
+      const sp = (dc.sameLineSpacing >= 0) ? dc.sameLineSpacing : st.ItemSpacing.x;
+      dc.cursorPos.x += sp;
+      dc.cursorPos.y = dc.cursorPosPrevLine.y;
+    } else if (dc._lineUsed) {
+      dc.cursorPos.x = dc.cursorStartPos.x + (w._indent || 0);
+      dc.cursorPos.y += dc.currLineHeight + st.ItemSpacing.y;
+      dc.cursorPosPrevLine = { ...dc.cursorPos };
+      dc.prevLineHeight = dc.currLineHeight;
+      dc.currLineHeight = 0;
+    }
+    dc.isSameLine = false; dc.sameLineSpacing = -1;
+    dc._lineUsed = true;
+  }
+  itemSize(wd, ht, text_baseline_y = 0) {
+    const w = this.current; if (!w) return;
+    const dc = w.dc;
+    dc.currLineHeight = Math.max(dc.currLineHeight, ht);
+    dc.lastItemWidth = wd; dc.lastItemHeight = ht;
+    dc.cursorPos.x += wd;
+    dc.cursorMaxPos.x = Math.max(dc.cursorMaxPos.x, dc.cursorPos.x);
+    dc.cursorMaxPos.y = Math.max(dc.cursorMaxPos.y, dc.cursorPos.y + ht);
+    void text_baseline_y;
   }
   nextLine(ht) {
+    // Explicit break (NewLine/Dummy/Spacing internals only).
     const w = this.current; if (!w) return;
-    const st = this.style;
-    w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
-    w.cursor.y = Math.max(w.cursor.y, w.cursorPrevLine.y + ht + st.ItemSpacing.y);
+    const st = this.style, dc = w.dc;
+    dc.cursorPos.x = dc.cursorStartPos.x + (w._indent || 0);
+    dc.cursorPos.y = Math.max(dc.cursorPos.y, dc.cursorPosPrevLine.y + Math.max(ht, dc.currLineHeight) + st.ItemSpacing.y);
+    dc.cursorPosPrevLine = { ...dc.cursorPos };
+    dc.prevLineHeight = dc.currLineHeight; dc.currLineHeight = 0;
+    dc._lineUsed = false; dc.lastItemWidth = 0;
   }
-  sameLine(offX = 0, spacing = -1) {
+  newLineBreak() {
     const w = this.current; if (!w) return;
-    const st = this.style;
-    const sp = spacing < 0 ? st.ItemSpacing.x : spacing;
-    // Continue from END of previous item, not its start (fixes overlap).
-    const prevWd = (w._lastWd || 0);
-    w.cursor.x = w.cursorPrevLine.x + prevWd + sp + offX;
-    w.cursor.y = w.cursorPrevLine.y;
+    const st = this.style, dc = w.dc;
+    dc.cursorPos.x = dc.cursorStartPos.x + (w._indent || 0);
+    dc.cursorPos.y += dc.currLineHeight + st.ItemSpacing.y;
+    dc.cursorPosPrevLine = { ...dc.cursorPos };
+    dc.prevLineHeight = dc.currLineHeight; dc.currLineHeight = 0;
+    dc._lineUsed = false; dc.lastItemWidth = 0;
+  }
+  sameLine(offset_from_start_x = 0, spacing = -1) {
+    const w = this.current; if (!w) return;
+    const dc = w.dc;
+    dc.isSameLine = true;
+    dc.sameLineSpacing = spacing;
+    if (offset_from_start_x !== 0) {
+      dc.cursorPos.x = dc.cursorPosPrevLine.x + offset_from_start_x;
+    }
+    dc.cursorPos.y = dc.cursorPosPrevLine.y;
   }
   itemAdd(x, y, wd, ht, id = 0) {
     const io = this.io;

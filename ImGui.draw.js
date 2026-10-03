@@ -42,6 +42,17 @@ class CanvasRenderer {
       .filter((w) => w.open !== false)
       .sort((a, b) => a.z - b.z);
     for (const w of wins) this.drawWindow(imguiCtx, w);
+    // Popup overlay layer: top Z, viewport-clipped only (never parent-clipped).
+    if (imguiCtx._overlayOps && imguiCtx._overlayOps.length) {
+      const st = imguiCtx.style;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, W, H);
+      ctx.clip();
+      for (const op of imguiCtx._overlayOps) this.drawOp(ctx, st, op);
+      ctx.restore();
+      imguiCtx._overlayOps.length = 0;
+    }
     // NOTE: no software cursor ring — the OS pointer is already visible and a
     // canvas-drawn ring lags one frame behind, rendering as a ghost artifact.
   }
@@ -111,10 +122,12 @@ class CanvasRenderer {
     // border
     ctx.strokeStyle = css(st.Colors[ImGui.Col.Border]); ctx.lineWidth = st.WindowBorderSize;
     roundRectPath(ctx, x + 0.5, y + 0.5, ww - 1, hh - 1, st.WindowRounding); ctx.stroke();
-    // content ops clipped to inner rect (Begin/End clipping cycle)
+    // content ops clipped to the window interior (Begin/End clipping cycle);
+    // when a scrollbar is present the clip shrinks by ScrollbarSize.
+    const clipW = ww - (w.padding.x - 2) * 2 - ((w.scrollMax > 0) ? st.ScrollbarSize : 0);
     ctx.save();
     ctx.beginPath();
-    ctx.rect(x + w.padding.x - 2, y + w.titleH, ww - (w.padding.x - 2) * 2, hh - w.titleH - 4);
+    ctx.rect(x + w.padding.x - 2, y + w.titleH, clipW, hh - w.titleH - 4);
     ctx.clip();
     for (const op of w.drawList) this.drawOp(ctx, st, op);
     // visual debug: outline every item rect pushed this frame via itemAdd()
@@ -173,6 +186,20 @@ class CanvasRenderer {
           else { ctx.fillStyle = op.css || "#3a3a5a"; ctx.fillRect(op.x, op.y, op.w, op.h); }
         } catch { ctx.fillStyle = "#3a3a5a"; ctx.fillRect(op.x, op.y, op.w, op.h); }
         if (op.border) { ctx.strokeStyle = css(st.Colors[ImGui.Col.Border]); ctx.lineWidth = 1; ctx.strokeRect(op.x + .5, op.y + .5, op.w - 1, op.h - 1); }
+        break;
+      }
+      case "rectTop": {
+        // Tab shape: rounded top corners, flat bottom (merges with baseline).
+        const rr = Math.max(0, Math.min(op.r || 0, op.w / 2, op.h));
+        ctx.fillStyle = op.css || css(op.col);
+        ctx.beginPath();
+        ctx.moveTo(op.x, op.y + op.h);
+        ctx.lineTo(op.x, op.y + rr);
+        ctx.arcTo(op.x, op.y, op.x + rr, op.y, rr);
+        ctx.lineTo(op.x + op.w - rr, op.y);
+        ctx.arcTo(op.x + op.w, op.y, op.x + op.w, op.y + rr, rr);
+        ctx.lineTo(op.x + op.w, op.y + op.h);
+        ctx.closePath(); ctx.fill();
         break;
       }
       case "rectFilled":

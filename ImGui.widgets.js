@@ -25,19 +25,20 @@ function frameCol(base, hov, act, h, held) {
 
 // ---------- layout ----------
 function SameLine(offX = 0, spacing = -1) { ctx().sameLine(offX, spacing); }
-function NewLine() { const w = cur(); if (w) { ctx().nextLine(0); } }
-function Spacing() { const w = cur(); if (!w) return; const c = ctx(); c.itemSize(0, 4); c.nextLine(4); }
+function NewLine() { const w = cur(); if (w) { ctx().newLineBreak(); } }
+function Spacing() { const w = cur(); if (!w) return; const c = ctx(); c.beforeItemPlacement(0, 4); c.itemSize(0, 4); }
 function Separator() {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  const x = w.pos.x + w.padding.x, y = w.cursor.y + 2;
   const ww = w.sizeFull.x - w.padding.x * 2;
+  c.beforeItemPlacement(ww, 6);
+  const x = w.pos.x + w.padding.x, y = w.dc.cursorPos.y + 2;
   emit({ t: "line", x1: x, y1: y, x2: x + ww, y2: y, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  c.itemSize(ww, 6); c.nextLine(6);
+  c.itemSize(ww, 6);
 }
 function Indent(wd = 0) { const w = cur(); if (w) w._indent = (w._indent || 0) + (wd || ctx().style.IndentSpacing); }
 function Unindent(wd = 0) { const w = cur(); if (w) w._indent = Math.max(0, (w._indent || 0) - (wd || ctx().style.IndentSpacing)); }
-function Dummy(wd, ht) { const c = ctx(); c.itemSize(wd, ht); c.nextLine(ht); }
+function Dummy(wd, ht) { const c = ctx(); c.beforeItemPlacement(wd, ht); c.itemSize(wd, ht); }
 
 // ---------- text ----------
 function Text(str, ...args) {
@@ -47,34 +48,37 @@ function Text(str, ...args) {
   const st = c.style;
   const label = s;
   const tw = textW(label), th = 16;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(tw, th);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(tw, th); c.itemAdd(x, y, tw, th, 0);
   emit({ t: "text", str: label, x, y, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(th);
 }
 function TextColored(col, str) {
   const c = ctx(), w = cur(); if (!w) return;
-  const tw = textW(str), th = 16, x = w.cursor.x, y = w.cursor.y;
+  const tw = textW(str), th = 16;
+  c.beforeItemPlacement(tw, th);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(tw, th); c.itemAdd(x, y, tw, th, 0);
   emit({ t: "text", str, x, y, col });
-  c.nextLine(th);
 }
 function TextWrapped(str) {
   const c = ctx(), w = cur(); if (!w) return;
   const maxW = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const x = w.cursor.x, y = w.cursor.y;
-  emit({ t: "text", str, x, y, col: c.style.Colors[ImGui.Col.Text], wrap: true, maxW });
   const lines = Math.max(1, Math.ceil(textW(str) / Math.max(40, maxW)));
-  c.itemSize(maxW, lines * 16); c.nextLine(lines * 16);
+  c.beforeItemPlacement(maxW, lines * 16);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  emit({ t: "text", str, x, y, col: c.style.Colors[ImGui.Col.Text], wrap: true, maxW });
+  c.itemSize(maxW, lines * 16);
 }
 function BulletText(str) {
   const c = ctx(), w = cur(); if (!w) return;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(textW(str) + 14, 16);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   emit({ t: "circleFilled", x: x + 4, y: y + 8, r: 2.5, col: c.style.Colors[ImGui.Col.Text] });
   const tx = x + 14;
   emit({ t: "text", str, x: tx, y, col: c.style.Colors[ImGui.Col.Text] });
   const wd = textW(str) + 14;
-  c.itemSize(wd, 16); c.nextLine(16);
+  c.itemSize(wd, 16);
 }
 
 // ---------- button ----------
@@ -84,26 +88,26 @@ function Button(label, wArg = 0, hArg = 0) {
   const shown = ImGui.findRenderedTextEnd(label);
   const tw = textW(shown);
   const wd = wArg > 0 ? wArg : tw + st.FramePadding.x * 2;
-  const ht = hArg > 0 ? hArg : 16 + st.FramePadding.y * 2;
-  const x = w.cursor.x, y = w.cursor.y;
+  const ht = hArg > 0 ? hArg : st.FontSize + st.FramePadding.y * 2;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
   const bb = c.buttonBehavior(id, x, y, wd, ht);
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.FrameRounding, col: frameCol(ImGui.Col.Button, ImGui.Col.ButtonHovered, ImGui.Col.ButtonActive, bb.hovered, bb.held) });
-  emit({ t: "text", str: shown, x: x + (wd - tw) / 2, y: y + (ht - 13) / 2 - 1, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
+  emit({ t: "text", str: shown, x: x + (wd - tw) / 2, y: y + (ht - st.FontSize) / 2 - 1, col: st.Colors[ImGui.Col.Text] });
   return bb.pressed;
 }
 function SmallButton(label) { return Button(label, 0, 20); }
 function InvisibleButton(id, wd, ht) {
   const c = ctx(), w = cur(); if (!w) return false;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const hid = w.getID(id);
   c.itemAdd(x, y, wd, ht, hid);
   const bb = c.buttonBehavior(hid, x, y, wd, ht);
-  c.nextLine(ht);
   return bb.pressed;
 }
 
@@ -114,7 +118,8 @@ function Checkbox(label, checked) {
   const box = 16, gap = 6;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   const wd = box + gap + tw, ht = 18;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
@@ -128,7 +133,6 @@ function Checkbox(label, checked) {
     emit({ t: "line", x1: x + 7, y1: y + 13, x2: x + 13, y2: y + 4, col: st.Colors[ImGui.Col.CheckMark], th: 2.5 });
   }
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + box + gap, y: y + 1, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
   return { changed, checked: ch };
 }
 function RadioButton(label, active) {
@@ -161,7 +165,8 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   const tw = textW(ImGui.findRenderedTextEnd(label));
   const sliderW = Math.max(80, w.sizeFull.x - w.padding.x * 2 - tw - 70);
   const wd = sliderW + 8 + tw + 56, ht = 20;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
@@ -171,7 +176,6 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   emit({ t: "rectFilled", x: x + grabT * (sliderW - 12), y: y + 3, w: 12, h: 14, r: 4, col: st.Colors[r.hovered || c.activeId === id ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
   const valStr = Number(r.value).toFixed(3);
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)}: ${valStr}`, x: x + sliderW + 10, y: y + 2, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
   return r;
 }
 function SliderInt(label, value, vmin, vmax) {
@@ -182,7 +186,9 @@ function SliderInt(label, value, vmin, vmax) {
 function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, value };
   const st = c.style;
-  const wd = 200, ht = 22, x = w.cursor.x, y = w.cursor.y;
+  const wd = 200, ht = 22;
+  c.beforeItemPlacement(wd + textW(label) + 10, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd + textW(label) + 10, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
@@ -199,7 +205,6 @@ function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
   }
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.FrameRounding, col: st.Colors[h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg] });
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)} ${Number(v).toFixed(3)} (drag)`, x: x + 6, y: y + 4, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
   return { changed, value: v };
 }
 
@@ -209,8 +214,9 @@ function InputText(label, text, flags = 0) {
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   const bw = Math.max(120, w.sizeFull.x - w.padding.x * 2 - tw - 16);
-  const wd = bw + tw + 12, ht = 24;
-  const x = w.cursor.x, y = w.cursor.y;
+  const wd = bw + tw + 12, ht = st.FontSize + st.FramePadding.y * 2 + 2;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
@@ -228,7 +234,6 @@ function InputText(label, text, flags = 0) {
     text = c.activePayload ? c.activePayload.value : text;
     c.activeId = 0; c.activeKind = null;
     if (ImGui._backendBlurText) ImGui._backendBlurText();
-    c.nextLine(ht);
     return { changed: true, text };
   }
   let shown = isActive && c.activePayload ? c.activePayload.value : text;
@@ -242,7 +247,6 @@ function InputText(label, text, flags = 0) {
   const display = shown.length > 24 ? "…" + shown.slice(-23) : (shown || (isActive ? "" : "(empty)"));
   emit({ t: "text", str: display + (isActive ? "▌" : ""), x: x + 6, y: y + 5, col: st.Colors[ImGui.Col.Text] });
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 5, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
   const changed = isActive && shown !== text;
   return { changed, text: shown };
 }
@@ -252,73 +256,32 @@ function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
   return r;
 }
 
-// ---------- color ----------
+// ---------- color (native canvas picker via popup — no detached DOM) ----------
 function ColorEdit3(label, color) { return ColorEdit4(label, [color[0], color[1], color[2], 1]); }
-// Shared native picker input, reused across clicks so cancelled dialogs never
-// pile up orphan <input> elements. It is laid out EXACTLY over the swatch
-// (real width/height, near-opaque instead of opacity:0) because Chromium and
-// Firefox anchor the native popup at the element's layout box — a 0x0 or
-// opacity:0 element detached from layout opens the dialog at (0,0).
-let _colorInput = null;
-function colorInput() {
-  if (_colorInput && _colorInput.isConnected) return _colorInput;
-  const inp = document.createElement("input");
-  inp.type = "color";
-  inp.style.position = "fixed";
-  inp.style.zIndex = 2147483647;
-  inp.style.opacity = "0.01";
-  inp.style.padding = "0"; inp.style.border = "0"; inp.style.margin = "0";
-  inp.style.fontSize = "16px"; // avoid mobile zoom stealing the popup
-  inp.style.pointerEvents = "auto";
-  document.documentElement.appendChild(inp);
-  _colorInput = inp;
-  return inp;
-}
 function ColorEdit4(label, color) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
-  const ht = 22, x = w.cursor.x, y = w.cursor.y;
-  const bw = 28;
+  const ht = st.FontSize + st.FramePadding.y * 2, bw = 20;
   const tw = textW(ImGui.findRenderedTextEnd(label));
+  c.beforeItemPlacement(bw + tw + 40, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw + tw + 40, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, bw, ht, id);
   const bb = c.buttonBehavior(id, x, y, bw, ht);
   let col = [...color], changed = false;
-  if (bb.pressed) {
-    // Anchor the picker over the swatch in client coords. The overlay canvas
-    // is position:fixed at (0,0) with no CSS transform, so canvas layout px
-    // == viewport client px (no scroll/transform correction needed).
-    const inp = colorInput();
-    const toHex = (v) => "#" + v.slice(0, 3).map((n) => Math.round(Math.max(0, Math.min(1, n)) * 255).toString(16).padStart(2, "0")).join("");
-    inp.value = toHex(col);
-    inp.style.display = "block";
-    inp.style.left = Math.round(x) + "px";
-    inp.style.top = Math.round(y) + "px";
-    inp.style.width = bw + "px";
-    inp.style.height = ht + "px";
-    inp.oninput = () => {
-      const hv = inp.value;
-      col = [parseInt(hv.slice(1, 3), 16) / 255, parseInt(hv.slice(3, 5), 16) / 255, parseInt(hv.slice(5, 7), 16) / 255, col[3]];
-      changed = true;
-    };
-    inp.onchange = () => { inp.style.display = "none"; inp.blur(); };
-    inp.onblur = () => { inp.style.display = "none"; };
-    inp.focus();
-    inp.click();
-  }
   const cssC = `rgba(${Math.round(col[0] * 255)},${Math.round(col[1] * 255)},${Math.round(col[2] * 255)},${col[3]})`;
-  emit({ t: "rectFilled", x, y, w: bw, h: ht - 2, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
-  w.drawList.push({ t: "rectFilled", x: x + 2, y: y + 2, w: bw - 4, h: ht - 6, r: 3, css: cssC });
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.FrameBg] });
+  w.drawList.push({ t: "rectFilled", x: x + 2, y: y + 2, w: bw - 4, h: ht - 4, r: Math.max(0, st.FrameRounding - 1), css: cssC });
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 3, col: st.Colors[ImGui.Col.Text] });
-  // store back for click->color picker async: expose via payload
-  if (changed) { /* consumed next frame via state assignment in user code is manual */ }
-  c.nextLine(ht);
-  // NOTE: native picker writes async; poll helper below
-  ColorEdit4._pending = ColorEdit4._pending || new Map();
-  if (bb.pressed) ColorEdit4._pending.set(id, { get: () => col, changed: () => changed });
-  const p = ColorEdit4._pending.get(id);
-  if (p && p.changed()) return { changed: true, color: p.get() };
+  // Swatch click opens the canvas picker popup anchored under the swatch.
+  if (bb.pressed) ImGui.OpenPopup("##picker_" + id, x, y + ht + 2);
+  if (ImGui.BeginPopup("##picker_" + id)) {
+    const cp = ImGui.ColorPicker4(label + "##popup", col);
+    if (cp.changed) { col = cp.color; changed = true; }
+    ImGui.EndPopup();
+  }
+  if (changed) return { changed: true, color: col };
   return { changed: false, color };
 }
 
@@ -327,7 +290,9 @@ function BeginCombo(label, preview) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
   const bw = Math.max(140, w.sizeFull.x - w.padding.x * 2 - textW(label) - 20);
-  const ht = 24, x = w.cursor.x, y = w.cursor.y;
+  const ht = st.FontSize + st.FramePadding.y * 2 + 2;
+  c.beforeItemPlacement(bw + textW(label) + 12, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw + textW(label) + 12, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, bw, ht, id);
@@ -339,7 +304,6 @@ function BeginCombo(label, preview) {
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 5, col: st.Colors[ImGui.Col.Text] });
   // stash popup anchor for EndCombo items
   c._comboAnchor = { x, y: y + ht + 2, w: bw, id };
-  c.nextLine(ht);
   return c.comboOpen === id;
 }
 function EndCombo() { const c = ctx(); c._comboAnchor = null; }
@@ -373,7 +337,9 @@ function Selectable(label, selected = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
   const wd = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const ht = 20, x = w.cursor.x, y = w.cursor.y;
+  const ht = 20;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
@@ -381,7 +347,6 @@ function Selectable(label, selected = false) {
   if (selected) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.Header] });
   else if (bb.hovered) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.HeaderHovered] });
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + 8, y: y + 3, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
   return bb.pressed;
 }
 function ListBox(label, current, items, hItems = 4) {
@@ -401,12 +366,13 @@ function ProgressBar(frac, label = "") {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
   const wd = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const ht = 18, x = w.cursor.x, y = w.cursor.y;
+  const ht = 18;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 6, col: st.Colors[ImGui.Col.FrameBg] });
   emit({ t: "rectFilled", x, y, w: Math.max(6, wd * Math.max(0, Math.min(1, frac))), h: ht, r: 6, col: st.Colors[ImGui.Col.ButtonHovered] });
   if (label) emit({ t: "text", str: label, x: x + 8, y: y + 2, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
 }
 
 // ---------- collapsing / tree ----------
@@ -414,7 +380,9 @@ function CollapsingHeader(label, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
   const wd = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const ht = 22, x = w.cursor.x, y = w.cursor.y;
+  const ht = 22;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
@@ -425,7 +393,6 @@ function CollapsingHeader(label, flags = 0) {
   const open = c.headerOpen.get(key);
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[bb.hovered ? ImGui.Col.HeaderHovered : ImGui.Col.Header] });
   emit({ t: "text", str: (open ? "▼ " : "▶ ") + ImGui.findRenderedTextEnd(label), x: x + 8, y: y + 4, col: st.Colors[ImGui.Col.Text] });
-  c.nextLine(ht);
   return open;
 }
 function TreeNode(label) {
@@ -442,20 +409,22 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const st = c.style;
   const wd = wArg > 0 ? wArg : w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const ht = hArg > 0 ? hArg : 120;
-  const x = w.cursor.x, y = w.cursor.y;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   c.itemAdd(x, y, wd, ht, 0);
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.ChildBg][3] === 0 ? [1, 1, 1, 0.03] : st.Colors[ImGui.Col.ChildBg] });
   if (border) emit({ t: "rect", x, y, w: wd, h: ht, r: st.ChildRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
   _childStack.push({ x: x + 6, y: y + 6, maxW: wd - 12 });
   // shift cursor into child
-  w.cursor.x = x + 6; w.cursor.y = y + 6;
+  w.dc.cursorPos.x = x + 6; w.dc.cursorPos.y = y + 6;
   w._childBounds = { x, y, w: wd, h: ht };
   c.nextLine(0);
   // reset cursor to child origin (nextLine moved it; pull back) and sync the
   // line tracker so SameLine as the first child widget starts at the origin
-  w.cursor.x = x + 6; w.cursor.y = y + 6; w.cursorPrevLine = { x: x + 6, y: y + 6 };
-  w._lastWd = 0; w._lastHt = 0;
+  w.dc.cursorPos.x = x + 6; w.dc.cursorPos.y = y + 6; w.dc.cursorPosPrevLine = { x: x + 6, y: y + 6 };
+  w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
+  w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc._lockFeed = true;
   return true;
 }
 function EndChild() {
@@ -463,13 +432,14 @@ function EndChild() {
   const b = w._childBounds;
   _childStack.pop();
   if (b) {
-    w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
-    w.cursor.y = Math.max(w.cursor.y, b.y + b.h + c.style.ItemSpacing.y);
+    w.dc.cursorPos.x = w.pos.x + w.padding.x + (w._indent || 0);
+    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, b.y + b.h + c.style.ItemSpacing.y);
     // sync line tracker: the next widget (and any SameLine after it) must
     // continue from the post-child origin, not the pre-child coordinates
-    w.cursorPrevLine = { ...w.cursor };
-    w._lastWd = 0; w._lastHt = 0;
-    w.maxPos.y = Math.max(w.maxPos.y, b.y + b.h);
+    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, b.y + b.h);
   }
   w._childBounds = null;
 }

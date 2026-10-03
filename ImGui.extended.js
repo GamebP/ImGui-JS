@@ -28,6 +28,8 @@ function ensure() {
   c._popupPending = null;      // id requested this frame via OpenPopup
   c._popupAnchor = {};         // id -> {x,y}
   c._menuOpen = {};            // menu label -> bool
+  c._menuStack = [];           // open menu labels (for cursor restore)
+  c._overlayOps = [];          // popup overlay ops (drawn last, unclipped)
   c._menuBarActive = false;
   c._tabs = {};                // barId -> activeTabId
   c._table = null;             // active table ctx
@@ -59,7 +61,7 @@ function wrapBeginEnd() {
       const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
       // wheel scroll when hovered (content taller than view); clipped via draw.js clip rect
       if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && this.activeId === 0) {
-        w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY - this.io.MouseWheel * 30));
+        w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY - this.io.MouseWheel * (this.style.FontSize * 2)));
       }
       // scrollbar grip drag
       if (!noScroll && w.scrollMax > 0 && !w.collapsed && w._scrollGrip) {
@@ -72,7 +74,7 @@ function wrapBeginEnd() {
         }
       }
       // Apply scroll offset as coordinate transform for all later ops in this window.
-      w.cursor.y -= w.scrollY;
+      w.dc.cursorPos.y -= w.scrollY;
     }
     return r;
   };
@@ -81,7 +83,7 @@ function wrapBeginEnd() {
     // compute scrollable overflow BEFORE origEnd auto-fit (only when fixed height)
     if (w && w.size && w.size.y > 0 && !w.collapsed) {
       const contentTop = w.pos.y + w.titleH + w.padding.y - (w.scrollY || 0);
-      const contentH = (w.maxPos.y - contentTop) + w.padding.y;
+      const contentH = (w.dc.cursorMaxPos.y - contentTop) + w.padding.y;
       const visibleH = w.sizeFull.y - w.titleH - w.padding.y * 2;
       w.scrollMax = Math.max(0, contentH - visibleH);
       w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
@@ -91,10 +93,11 @@ function wrapBeginEnd() {
     // viewport so content can never flow off-screen: the excess becomes
     // scrollable instead of overflowing past the taskbar.
     if (w && !w.collapsed && (w.size.y === 0 || (w.flags & ImGui.WindowFlags.AlwaysAutoResize))) {
-      const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y - 8);
+      const margin = 20; // keep 20px above the browser edge/taskbar
+      const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y - margin);
       if (w.sizeFull.y > maxH) {
         const contentTop = w.pos.y + w.titleH + w.padding.y - (w.scrollY || 0);
-        const contentH = (w.maxPos.y - contentTop) + w.padding.y;
+        const contentH = (w.dc.cursorMaxPos.y - contentTop) + w.padding.y;
         w.sizeFull.y = maxH;
         w.scrollMax = Math.max(0, contentH - (maxH - w.titleH - w.padding.y * 2));
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
@@ -103,10 +106,10 @@ function wrapBeginEnd() {
     // draw scrollbar when needed (clipped content stays inside window via draw.js)
     if (w && w.scrollMax > 0 && !w.collapsed && !(w.flags & ImGui.WindowFlags.NoScrollbar)) {
       const st = this.style;
-      const bx = w.pos.x + w.sizeFull.x - st.ScrollbarSize - 3;
-      const by = w.pos.y + w.titleH + 4, bh = w.sizeFull.y - w.titleH - 8;
+      const bx = w.pos.x + w.sizeFull.x - st.ScrollbarSize - 1;
+      const by = w.pos.y + w.titleH, bh = w.sizeFull.y - w.titleH - 1;
       w.drawList.push({ t: "rectFilled", x: bx, y: by, w: st.ScrollbarSize, h: bh, r: 7, col: st.Colors[ImGui.Col.ScrollbarBg] });
-      const gripH = Math.max(20, bh * (bh / (bh + w.scrollMax)));
+      const gripH = Math.max(st.GrabMinSize, bh * (bh / (bh + w.scrollMax)));
       const gy = by + (bh - gripH) * (w.scrollMax > 0 ? w.scrollY / w.scrollMax : 0);
       const gid = (w.id ^ 0x5c4011) >>> 0;
       const hov = this.hovered(bx, gy, st.ScrollbarSize, gripH);
@@ -211,14 +214,16 @@ function GetID(str) { const w = W(); return w ? w.getID(str) : 0; }
 // ---------- groups / disabled / item width ----------
 function BeginGroup() {
   const c = ensure(), w = W(); if (!w) return;
-  c._groupStack.push({ cursor: { ...w.cursor }, max: { ...w.maxPos } });
+  c._groupStack.push({ cursor: { ...w.dc.cursorPos }, max: { ...w.dc.cursorMaxPos } });
 }
 function EndGroup() {
   const c = ensure(), w = W(); if (!w) return;
   const g = c._groupStack.pop(); if (!g) return;
-  const wd = Math.max(0, w.maxPos.x - g.cursor.x), ht = Math.max(0, w.maxPos.y - g.cursor.y);
-  w.cursor.x = g.cursor.x; w.cursor.y = g.cursor.y; w.cursorPrevLine = { ...g.cursor };
-  c.itemSize(wd, ht); c.nextLine(ht);
+  const wd = Math.max(0, w.dc.cursorMaxPos.x - g.cursor.x), ht = Math.max(0, w.dc.cursorMaxPos.y - g.cursor.y);
+  w.dc.cursorPos.x = g.cursor.x; w.dc.cursorPos.y = g.cursor.y; w.dc.cursorPosPrevLine = { ...g.cursor };
+  w.dc._lockFeed = true;
+  c.beforeItemPlacement(wd, ht);
+  c.itemSize(wd, ht);
 }
 function BeginDisabled(disabled = true) { const c = ensure(); if (disabled) c._disabledDepth++; c._disabledStack = c._disabledStack || []; c._disabledStack.push(!!disabled); }
 function EndDisabled() { const c = ensure(); const d = (c._disabledStack || []).pop(); if (d) c._disabledDepth = Math.max(0, c._disabledDepth - 1); }
@@ -326,18 +331,18 @@ function StyleColorsLight() {
 }
 
 // ---------- cursor / layout queries ----------
-function SetCursorPos(x, y) { const w = W(); if (w) { w.cursor.x = w.pos.x + w.padding.x + x; w.cursor.y = w.pos.y + w.titleH + w.padding.y + y - (w.scrollY || 0); } }
-function SetCursorPosX(x) { const w = W(); if (w) w.cursor.x = w.pos.x + w.padding.x + x; }
-function SetCursorPosY(y) { const w = W(); if (w) w.cursor.y = w.pos.y + w.titleH + w.padding.y + y - (w.scrollY || 0); }
-function GetCursorPos() { const w = W(); if (!w) return { x: 0, y: 0 }; return { x: w.cursor.x - w.pos.x - w.padding.x, y: w.cursor.y - (w.pos.y + w.titleH + w.padding.y) + (w.scrollY || 0) }; }
-function GetCursorScreenPos() { const w = W(); return w ? { ...w.cursor } : { x: 0, y: 0 }; }
-function SetCursorScreenPos(x, y) { const w = W(); if (w) { w.cursor.x = x; w.cursor.y = y; } }
+function SetCursorPos(x, y) { const w = W(); if (w) { w.dc.cursorPos.x = w.pos.x + w.padding.x + x; w.dc.cursorPos.y = w.pos.y + w.titleH + w.padding.y + y - (w.scrollY || 0); w.dc._lockFeed = true; } }
+function SetCursorPosX(x) { const w = W(); if (w) { w.dc.cursorPos.x = w.pos.x + w.padding.x + x; w.dc._lockFeed = true; } }
+function SetCursorPosY(y) { const w = W(); if (w) { w.dc.cursorPos.y = w.pos.y + w.titleH + w.padding.y + y - (w.scrollY || 0); w.dc._lockFeed = true; } }
+function GetCursorPos() { const w = W(); if (!w) return { x: 0, y: 0 }; return { x: w.dc.cursorPos.x - w.pos.x - w.padding.x, y: w.dc.cursorPos.y - (w.pos.y + w.titleH + w.padding.y) + (w.scrollY || 0) }; }
+function GetCursorScreenPos() { const w = W(); return w ? { ...w.dc.cursorPos } : { x: 0, y: 0 }; }
+function SetCursorScreenPos(x, y) { const w = W(); if (w) { w.dc.cursorPos.x = x; w.dc.cursorPos.y = y; w.dc._lockFeed = true; } }
 function GetContentRegionAvail() {
   const w = W(); if (!w) return { x: 0, y: 0 };
-  return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.cursor.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.maxPos.y + 200) - w.cursor.y) };
+  return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
 }
 function CalcTextSize(text) { return { x: measure(text), y: 16 }; }
-function AlignTextToFramePadding() { const w = W(); if (w) w.cursor.y += 4; }
+function AlignTextToFramePadding() { const w = W(); if (w) w.dc.cursorPos.y += 4; }
 function GetWindowPos() { const w = W(); return w ? { ...w.pos } : { x: 0, y: 0 }; }
 function GetWindowSize() { const w = W(); return w ? { ...w.sizeFull } : { x: 0, y: 0 }; }
 function GetWindowWidth() { return GetWindowSize().x; }
@@ -424,46 +429,74 @@ function SetTooltip(text) {
 }
 function SetItemTooltip(text) { if (IsItemHovered()) SetTooltip(text); }
 
-// ---------- popups / modals ----------
-function OpenPopup(id) {
+// ---------- popups / modals (overlay layer, FindBestWindowPosForPopup flip) ----------
+function OpenPopup(id, ax, ay) {
   const c = ensure(), m = c.io.MousePos;
   const key = String(id);
   c._popupPending = key;
-  c._popupAnchor[key] = { x: m.x, y: m.y };
+  // Explicit anchor (e.g. swatch bottom-left) wins; else mouse pos.
+  c._popupAnchor[key] = (ax !== undefined && ay !== undefined) ? { x: ax, y: ay } : { x: m.x, y: m.y };
 }
 function OpenPopupOnItemClick(id) { if (IsItemClicked(1)) OpenPopup(id); }
 function IsPopupOpen(id) { const c = ensure(); return c._popupStack.includes(String(id)); }
 function CloseCurrentPopup() { const c = ensure(); c._popupStack.pop(); }
 function ClosePopup(id) { const c = ensure(); c._popupStack = c._popupStack.filter((p) => p !== String(id)); }
+function popupBestPos(a, bw, estH) {
+  // imgui.cpp FindBestWindowPosForPopup: prefer below-left, flip on overflow.
+  const c = ensure();
+  const dw = c.io.DisplaySize.x, dh = c.io.DisplaySize.y;
+  let bx = Math.max(4, Math.min(dw - bw - 4, a.x));
+  let by = a.y;
+  if (by + estH > dh - 4) by = a.y - estH - 4; // flip above
+  if (by < 4) by = 4;
+  return { bx, by };
+}
 function popupBoxBegin(id, modal) {
   const c = ensure(), w = W(); if (!w) return false;
   const key = String(id);
   if (c._popupPending === key && !c._popupStack.includes(key)) c._popupStack.push(key);
   c._popupPending = null;
   if (!c._popupStack.includes(key)) return false;
-  const a = c._popupAnchor[key] || { x: w.cursor.x, y: w.cursor.y };
-  const bw = Math.min(300, w.sizeFull.x - 20);
-  const bx = Math.max(4, Math.min(c.io.DisplaySize.x - bw - 4, a.x));
-  const by = Math.max(4, Math.min(c.io.DisplaySize.y - 120, a.y));
+  const a = c._popupAnchor[key] || { x: w.dc.cursorPos.x, y: w.dc.cursorPos.y };
+  const bw = Math.min(300, Math.max(120, w.sizeFull.x - 20));
+  const { bx, by } = popupBestPos(a, bw, 260);
   if (modal) emit({ t: "rectFilled", x: w.pos.x, y: w.pos.y, w: w.sizeFull.x, h: w.sizeFull.y, r: 0, css: "rgba(0,0,0,0.45)" });
-  c._popupBox = { x: bx, y: by, w: bw, key, savedCursor: { ...w.cursor }, savedPrev: { ...w.cursorPrevLine } };
-  emit({ t: "rectFilled", x: bx, y: by, w: bw, h: 8, r: 6, col: c.style.Colors[ImGui.Col.PopupBg] }); // placeholder, EndPopup resizes
-  w.cursor.x = bx + 8; w.cursor.y = by + 8; w.cursorPrevLine = { x: bx + 8, y: by + 8 };
+  // Save outer line state; popup content gets a fresh line context.
+  const dc = w.dc;
+  c._popupBox = {
+    x: bx, y: by, w: bw, key, modal,
+    savedCursor: { ...dc.cursorPos }, savedPrev: { ...dc.cursorPosPrevLine },
+    savedLine: { currH: dc.currLineHeight, used: dc._lineUsed, same: dc.isSameLine, sp: dc.sameLineSpacing, lw: dc.lastItemWidth },
+    markIndex: w.drawList.length,
+  };
+  w.drawList.push({ t: "_popupMark", key });
+  dc.cursorPos.x = bx + 8; dc.cursorPos.y = by + 8; dc.cursorPosPrevLine = { x: bx + 8, y: by + 8 };
+  dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
   PushID("popup:" + key);
   return true;
 }
 function popupBoxEnd(modal) {
   const c = ensure(), w = W(); if (!w || !c._popupBox) return;
-  const b = c._popupBox;
-  const h = Math.max(30, w.cursor.y - b.y + 8);
-  // redraw box behind: push box rect + border at bottom of new ops is wrong order; instead emit full box now and rely on later draw order
-  // (acceptable: content already emitted; box border drawn over edges only)
-  w.drawList.push({ t: "_noop" });
-  // insert box behind by splicing: find index where popup content started is complex; instead draw frame now (overdraw edges)
-  emit({ t: "rect", x: b.x, y: b.y, w: b.w, h, r: 6, col: c.style.Colors[ImGui.Col.Border], th: 1 });
+  const b = c._popupBox, dc = w.dc;
+  const h = Math.max(30, dc.cursorPos.y - b.y + 8);
   PopID();
-  w.cursor.x = b.savedCursor.x; w.cursor.y = Math.max(w.cursor.y, b.y + h + 8);
-  w.maxPos.y = Math.max(w.maxPos.y, b.y + h);
+  // Move popup ops (mark..end) to the context overlay: drawn after ALL
+  // windows, unclipped, top Z — a top-level layer within the canvas model.
+  // Box frame goes first so content paints over it.
+  const frame = [
+    { t: "rectFilled", x: b.x, y: b.y, w: b.w, h, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.PopupBg] },
+    { t: "rect", x: b.x, y: b.y, w: b.w, h, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.Border], th: 1 },
+  ];
+  let start = w.drawList.findIndex((op) => op.t === "_popupMark" && op.key === b.key);
+  if (start < 0) start = b.markIndex;
+  const content = w.drawList.splice(start);
+  const inner = content.filter((op) => op.t !== "_popupMark");
+  c._overlayOps.push(...frame, ...inner);
+  // Restore outer line state; continue below the popup anchor region.
+  dc.cursorPos.x = b.savedCursor.x; dc.cursorPos.y = Math.max(b.savedCursor.y, b.y + h + 8);
+  dc.cursorPosPrevLine = { ...dc.cursorPos };
+  dc.currLineHeight = 0; dc._lineUsed = false; dc.isSameLine = false; dc.lastItemWidth = 0;
+  dc.cursorMaxPos.y = Math.max(dc.cursorMaxPos.y, b.y + h);
   const m = c.io.MousePos;
   const inside = m.x >= b.x && m.x <= b.x + b.w && m.y >= b.y && m.y <= b.y + h;
   if (c.io.MouseClicked[0] && !inside && !modal) ClosePopup(b.key);
@@ -483,16 +516,19 @@ function BeginMenuBar() {
   // reserve strip under title bar
   const x = w.pos.x + 2, y = w.pos.y + w.titleH + 2;
   emit({ t: "rectFilled", x, y, w: w.sizeFull.x - 4, h: 24, r: 4, col: c.style.Colors[ImGui.Col.MenuBarBg] });
-  w.cursor.x = x + 6; w.cursor.y = y + 4; w.cursorPrevLine = { ...w.cursor };
+  w.dc.cursorPos.x = x + 6; w.dc.cursorPos.y = y + 4; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  w.dc._lockFeed = true; // first menu sits exactly at the strip origin
   c._menuBar = { x, y };
   // consume vertical space
-  w.maxPos.y = Math.max(w.maxPos.y, y + 24);
+  w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, y + 24);
   return true;
 }
 function EndMenuBar() {
   const c = ensure(), w = W(); if (!w) return;
-  w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
-  w.cursor.y = Math.max(w.cursor.y, (c._menuBar ? c._menuBar.y + 26 : w.cursor.y));
+  w.dc.cursorPos.x = w.pos.x + w.padding.x + (w._indent || 0);
+  w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, (c._menuBar ? c._menuBar.y + 26 : w.dc.cursorPos.y));
+  w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc.lastItemWidth = 0;
   c._menuBar = null;
 }
 function BeginMainMenuBar() {
@@ -500,14 +536,16 @@ function BeginMainMenuBar() {
   let w = W();
   if (!w) { c.begin("##MainMenuBar", null, ImGui.WindowFlags.NoTitleBar | ImGui.WindowFlags.NoResize | ImGui.WindowFlags.NoMove); w = W(); }
   const bw = c.io.DisplaySize.x;
-  emit({ t: "rectFilled", x: w.cursor.x - 8, y: w.cursor.y - 8, w: bw, h: 26, r: 0, col: c.style.Colors[ImGui.Col.MenuBarBg] });
+  emit({ t: "rectFilled", x: w.dc.cursorPos.x - 8, y: w.dc.cursorPos.y - 8, w: bw, h: 26, r: 0, col: c.style.Colors[ImGui.Col.MenuBarBg] });
   return true;
 }
 function EndMainMenuBar() {}
 function BeginMenu(label) {
   const c = ensure(), w = W(); if (!w) return false;
   const shown = ImGui.findRenderedTextEnd(label);
-  const tw = measure(shown) + 16, x = w.cursor.x, y = w.cursor.y - 2;
+  const tw = measure(shown) + 16;
+  c.beforeItemPlacement(tw, 22);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y - 2;
   c.itemSize(tw, 22);
   const id = w.getID("menu:" + label);
   c.itemAdd(x, y, tw, 22, id);
@@ -517,27 +555,45 @@ function BeginMenu(label) {
   const open = !!c._menuOpen[label];
   emit({ t: "rectFilled", x, y, w: tw, h: 22, r: 4, col: open || h ? c.style.Colors[ImGui.Col.HeaderHovered] : [0, 0, 0, 0] });
   emit({ t: "text", str: shown, x: x + 8, y: y + 4, col: c.style.Colors[ImGui.Col.Text] });
-  w.cursor.x += 4;
+  w.dc.cursorPos.x += 4;
   if (open) {
-    c._menuBox = c._menuBox || {};
-    c._menuBox[label] = { x, y: y + 24, saved: { ...w.cursor } };
-    w.cursor.x = x; w.cursor.y = y + 26; w.cursorPrevLine = { ...w.cursor };
+    // Dropdown overlays: save the row cursor so EndMenu restores the menubar
+    // row for sibling menus instead of pushing them under the dropdown.
+    c._menuStack.push({
+      label, outerCursor: { ...w.dc.cursorPos }, outerPrev: { ...w.dc.cursorPosPrevLine },
+      outerLine: { currH: w.dc.currLineHeight, used: w.dc._lineUsed, lw: w.dc.lastItemWidth },
+    });
+    w.dc.cursorPos.x = x; w.dc.cursorPos.y = y + 26; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc.lastItemWidth = 0;
     PushID("menu:" + label);
+  } else if (c._menuBar) {
+    w.dc._lockFeed = true; // chain next sibling menu on the same row
   }
   return open;
 }
 function EndMenu() {
   const c = ensure(), w = W(); if (!w) return;
   PopID();
+  const saved = c._menuStack.pop();
+  if (saved) {
+    // Restore the menubar row (dropdown was an overlay, not document flow).
+    w.dc.cursorPos.x = saved.outerCursor.x; w.dc.cursorPos.y = saved.outerCursor.y;
+    w.dc.cursorPosPrevLine = { ...saved.outerPrev };
+    w.dc.currLineHeight = saved.outerLine.currH; w.dc._lineUsed = saved.outerLine.used;
+    w.dc.lastItemWidth = saved.outerLine.lw;
+    if (c._menuBar) w.dc._lockFeed = true;
+  }
   const m = c.io.MousePos;
-  if (c.io.MouseClicked[0] && (Math.abs(m.x - w.cursor.x) > 160 || Math.abs(m.y - w.cursor.y) > 200)) {
+  if (c.io.MouseClicked[0] && (Math.abs(m.x - w.dc.cursorPos.x) > 160 || Math.abs(m.y - w.dc.cursorPos.y) > 200)) {
     for (const k of Object.keys(c._menuOpen)) c._menuOpen[k] = false;
   }
 }
 function MenuItem(label, shortcut = "", selected = false, enabled = true) {
   const c = ensure(), w = W(); if (!w) return false;
   const shown = ImGui.findRenderedTextEnd(label);
-  const wd = 170, ht = 22, x = w.cursor.x, y = w.cursor.y;
+  const wd = 170, ht = 22;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID("mi:" + label);
   c.itemAdd(x, y, wd, ht, id);
@@ -545,19 +601,20 @@ function MenuItem(label, shortcut = "", selected = false, enabled = true) {
   if (h) { emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] }); c.anyWindowHovered = true; }
   emit({ t: "text", str: (selected ? "● " : "") + shown, x: x + 8, y: y + 3, col: enabled ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled] });
   if (shortcut) emit({ t: "text", str: shortcut, x: x + wd - measure(shortcut) - 8, y: y + 3, col: c.style.Colors[ImGui.Col.TextDisabled] });
-  c.nextLine(ht);
   return enabled && h && c.io.MouseClicked[0];
 }
 
-// ---------- tab bar (cohesive horizontal row, fixed height, single active) ----------
-const TAB_H = 24, TAB_GAP = 4, TAB_CONTENT_GAP = 6;
+// ---------- tab bar (imgui_widgets.cpp BeginTabBar/BeginTabItem) ----------
+// Fixed height 24; advance = width + 2; top-rounded only, flat bottom;
+// active tab overlaps the baseline by 1px and masks it.
+const TAB_H = 24, TAB_CONTENT_GAP = 1;
 function BeginTabBar(id) {
   const c = ensure(), w = W(); if (!w) return false;
   const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const x = w.cursor.x, y = w.cursor.y;
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   // Reserve the full bar strip so following widgets never overlap tabs.
   c.itemSize(bw, TAB_H);
-  c._tabBar = { id: String(id), x, y, w: bw, n: 0, offsetX: 0, contentY: y + TAB_H + TAB_CONTENT_GAP };
+  c._tabBar = { id: String(id), x, y, w: bw, n: 0, offsetX: 0, contentY: y + TAB_H + TAB_CONTENT_GAP + c.style.ItemSpacing.y };
   PushID("tabbar:" + id);
   return true;
 }
@@ -565,20 +622,20 @@ function BeginTabItem(label) {
   const c = ensure(), w = W(); if (!w || !c._tabBar) return false;
   const full = ImGui.findRenderedTextEnd(label);
   const t = c._tabBar;
-  // Shrink-to-fit: never wrap (wrapping overdraws earlier tabs). Truncate
-  // with ellipsis when the row is full; the renderer clips the rest.
-  const wantW = measure(full) + 24;
+  // Width = text + FramePadding.x * 2 + 8 (explicit row placement, never wrap).
+  const wantW = measure(full) + c.style.FramePadding.x * 2 + 8;
   const remain = Math.max(0, t.x + t.w - (t.x + t.offsetX));
   let tw = wantW, shown = full;
   if (wantW > remain) {
+    // Shrink-to-fit with ellipsis; renderer clips any remainder.
     tw = Math.max(28, remain);
-    const maxT = Math.max(0, tw - 24 - 8);
+    const maxT = Math.max(0, tw - c.style.FramePadding.x * 2 - 8 - 8);
     let s = full;
     while (s.length > 1 && measure(s + "…") > maxT) s = s.slice(0, -1);
     shown = s.length < full.length ? s + "…" : s;
   }
   const x = t.x + t.offsetX, y = t.y;
-  t.offsetX += tw + TAB_GAP; t.n++;
+  t.offsetX += tw + 2; t.n++;
   if (c._tabs[t.id] === undefined) c._tabs[t.id] = full;
   const active = c._tabs[t.id] === full;
   const id = w.getID("tab:" + label);
@@ -589,17 +646,20 @@ function BeginTabItem(label) {
   const col = active ? c.style.Colors[ImGui.Col.TabSelected]
     : h ? c.style.Colors[ImGui.Col.TabHovered]
     : c.style.Colors[ImGui.Col.Tab];
-  emit({ t: "rectFilled", x, y, w: tw, h: TAB_H, r: 4, col });
+  emit({ t: "rectTop", x, y, w: tw, h: TAB_H + 1, r: c.style.FrameRounding || 4, col });
   if (active) {
     emit({ t: "rectFilled", x, y, w: tw, h: 2, r: 1, col: c.style.Colors[ImGui.Col.TabSelectedOverline] });
     t.activeRect = { x, w: tw };
   }
-  emit({ t: "text", str: shown, x: x + 12, y: y + 5, col: c.style.Colors[ImGui.Col.Text] });
+  // Inactive tabs use disabled text per C++ (dimmed, cohesive bar).
+  const tcol = active ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled];
+  emit({ t: "text", str: shown, x: x + c.style.FramePadding.x + 8, y: y + 5, col: tcol });
   if (active) {
     // Snap content area immediately below the tab strip (no overlap).
-    w.cursor.x = t.x; w.cursor.y = t.contentY; w.cursorPrevLine = { ...w.cursor };
-    w._lastWd = 0; w._lastHt = 0;
-    w.maxPos.y = Math.max(w.maxPos.y, t.contentY);
+    w.dc.cursorPos.x = t.x; w.dc.cursorPos.y = t.contentY; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
+    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, t.contentY);
   }
   return active;
 }
@@ -615,10 +675,11 @@ function EndTabBar() {
   }
   PopID();
   if (w && c._tabBar) {
-    w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
-    w.cursor.y = Math.max(w.cursor.y, c._tabBar.contentY);
-    w.cursorPrevLine = { ...w.cursor };
-    w._lastWd = 0; w._lastHt = 0;
+    w.dc.cursorPos.x = w.pos.x + w.padding.x + (w._indent || 0);
+    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, c._tabBar.contentY);
+    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
   }
   c._tabBar = null;
 }
@@ -627,17 +688,18 @@ function TabItemButton(label) {
   return pressed;
 }
 
-// ---------- tables (fixed-width distribution on outerWidth, cf. imgui_tables.cpp) ----------
-const TABLE_CELL_PAD = 4; // text inset inside each cell; widths reserve it
+// ---------- tables (imgui_tables.cpp: fixed distribution, cell grid) ----------
 function BeginTable(id, columns, flags = 0, outerW = 0, outerH = 0) {
   const c = ensure(), w = W(); if (!w) return false;
-  const avail = outerW > 0 ? outerW : w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const x = w.cursor.x;
+  // outerWidth defaults to the available content width at the cursor.
+  const avail = outerW > 0 ? outerW : GetContentRegionAvail().x;
+  const x = w.dc.cursorPos.x;
+  c.beforeItemPlacement(avail, 4);
   c.itemSize(avail, 4);
   c._table = {
-    id: String(id), cols: columns, flags, x, y: w.cursor.y, row: -1, col: -1,
+    id: String(id), cols: columns, flags, x, y: w.dc.cursorPos.y, row: -1, col: -1,
     avail, colW: avail / columns, widths: null, offsets: null,
-    names: [], rowH: 22, startY: w.cursor.y,
+    names: [], rowH: 22, startY: w.dc.cursorPos.y,
   };
   PushID("table:" + id);
   return true;
@@ -647,19 +709,19 @@ function TableSetupColumn(label, widthOrWeight = 0) {
   if (c._table) { c._table.names.push(label); c._table._widths = c._table._widths || []; c._table._widths.push(widthOrWeight); }
 }
 function tableLayout(t) {
-  // Fixed-width distribution: explicit widths win, remainder split equally.
-  // Every column reserves TABLE_CELL_PAD on both sides so text never clips.
+  // Column pitch reserves CellPadding.x on both sides so text never clips.
   if (t.widths) return;
+  const c = ensure(), pad = c.style.CellPadding.x;
   const n = t.cols;
   t.widths = new Array(n); t.offsets = new Array(n);
   const explicit = (t._widths || []).slice(0, n);
   let fixed = 0, auto = 0;
   for (let i = 0; i < n; i++) {
     const v = explicit[i] || 0;
-    if (v > 0) { t.widths[i] = Math.max(v, TABLE_CELL_PAD * 2 + 10); fixed += t.widths[i]; } else auto++;
+    if (v > 0) { t.widths[i] = Math.max(v, pad * 2 + 10); fixed += t.widths[i]; } else auto++;
   }
   const rest = Math.max(0, t.avail - fixed);
-  const each = auto > 0 ? Math.max(TABLE_CELL_PAD * 2 + 10, rest / auto) : 0;
+  const each = auto > 0 ? Math.max(pad * 2 + 10, rest / auto) : 0;
   for (let i = 0; i < n; i++) if (!t.widths[i]) t.widths[i] = each;
   t.colW = t.avail / n;
   let acc = 0;
@@ -677,8 +739,9 @@ function TableHeadersRow() {
     TableSetColumnIndex(i);
     const nm = c._table.names[i] || ("C" + i);
     const cw = c._table.widths[i];
-    emit({ t: "rectFilled", x: w.cursor.x - 2, y: w.cursor.y - 2, w: cw - 2, h: 20, r: 3, col: c.style.Colors[ImGui.Col.TableHeaderBg] });
-    emit({ t: "text", str: nm, x: w.cursor.x + TABLE_CELL_PAD, y: w.cursor.y, col: c.style.Colors[ImGui.Col.Text] });
+    const hh = c.style.FontSize + c.style.FramePadding.y * 2;
+    emit({ t: "rectFilled", x: w.dc.cursorPos.x - 2, y: w.dc.cursorPos.y - 2, w: cw - 2, h: hh, r: 3, col: c.style.Colors[ImGui.Col.TableHeaderBg] });
+    emit({ t: "text", str: nm, x: w.dc.cursorPos.x + c.style.CellPadding.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.Text] });
   }
   // bottom separator splitting headers from data rows
   if (tableHasInnerH(c._table)) {
@@ -705,10 +768,11 @@ function TableNextRow() {
   const y = t.startY + (t.row * t.rowH);
   // row bg (accept real RowBg bit and legacy lite value 1)
   const rowBg = (t.flags & TableFlags.RowBg) || (t.flags & 1);
-  if (rowBg && t.row % 2 === 1) emit({ t: "rectFilled", x: t.x, y, w: t.avail, h: t.rowH, r: 0, css: "rgba(255,255,255,0.03)" });
+  if (rowBg && t.row % 2 === 1) emit({ t: "rectFilled", x: t.x, y, w: t.avail, h: t.rowH, r: 0, col: c.style.Colors[ImGui.Col.TableRowBgAlt] });
   t.rowY = y;
-  w.cursor.x = t.x; w.cursor.y = y; w.cursorPrevLine = { x: t.x, y };
-  w.maxPos.y = Math.max(w.maxPos.y, y + t.rowH);
+  w.dc.cursorPos.x = t.x; w.dc.cursorPos.y = y; w.dc.cursorPosPrevLine = { x: t.x, y };
+  w.dc._lockFeed = true;
+  w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, y + t.rowH);
 }
 function TableSetColumnIndex(n) {
   const c = ensure(), w = W(); if (!w || !c._table) return false;
@@ -716,15 +780,16 @@ function TableSetColumnIndex(n) {
   tableLayout(t);
   t.col = n;
   // Explicit x offset from stored widths + cell padding (never arbitrary).
-  w.cursor.x = t.x + t.offsets[n] + TABLE_CELL_PAD; w.cursor.y = t.rowY || t.y;
-  w.cursorPrevLine = { ...w.cursor };
+  w.dc.cursorPos.x = t.x + t.offsets[n] + c.style.CellPadding.x; w.dc.cursorPos.y = t.rowY || t.y;
+  w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  w.dc._lockFeed = true;
   return true;
 }
 function TableNextColumn() { const c = ensure(); return TableSetColumnIndex((c._table ? c._table.col : -1) + 1); }
 function TableHeader(label) {
   const c = ensure(); if (!c._table) return;
   const w = W();
-  emit({ t: "text", str: label, x: w.cursor.x + 4, y: w.cursor.y, col: c.style.Colors[ImGui.Col.Text] });
+  emit({ t: "text", str: label, x: w.dc.cursorPos.x + c.style.CellPadding.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.Text] });
 }
 function TableGetColumnIndex() { const c = ensure(); return c._table ? c._table.col : 0; }
 function TableGetRowIndex() { const c = ensure(); return c._table ? c._table.row : 0; }
@@ -750,14 +815,13 @@ function EndTable() {
       }
     }
   }
-  // borders: any real border bit, or legacy lite Borders=2
-  const borderMask = TableFlags.Borders | TableFlags.BordersInner | TableFlags.BordersOuter |
-    TableFlags.BordersH | TableFlags.BordersV | TableFlags.BordersInnerH |
-    TableFlags.BordersOuterH | TableFlags.BordersInnerV | TableFlags.BordersOuterV;
-  if ((t.flags & borderMask) || (t.flags & 2)) emit({ t: "rect", x: t.x, y: t.startY - 2, w: t.avail, h: (t.row + 1) * t.rowH + 4, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
-  w.cursor.x = w.pos.x + w.padding.x + (w._indent || 0);
-  w.cursor.y = t.startY + (t.row + 1) * t.rowH + 6;
-  w.maxPos.y = Math.max(w.maxPos.y, w.cursor.y);
+  // Outer border only for BordersOuter (the Borders composite includes it).
+  if ((t.flags & TableFlags.BordersOuter) || (t.flags & 2)) emit({ t: "rect", x: t.x, y: t.startY - 2, w: t.avail, h: (t.row + 1) * t.rowH + 4, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
+  w.dc.cursorPos.x = w.pos.x + w.padding.x + (w._indent || 0);
+  w.dc.cursorPos.y = t.startY + (t.row + 1) * t.rowH + 6;
+  w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc.lastItemWidth = 0;
+  w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, w.dc.cursorPos.y);
   PopID();
   c._table = null;
 }
@@ -779,16 +843,18 @@ function Columns(count = 1) {
   const c = ensure(), w = W(); if (!w) return;
   if (count <= 1) { c._columns = null; return; }
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c._columns = { n: count, i: 0, x: w.cursor.x, y: w.cursor.y, w: avail / count };
-  w.cursor.x = c._columns.x; w.cursorPrevLine = { ...w.cursor };
+  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, w: avail / count };
+  w.dc.cursorPos.x = c._columns.x; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  w.dc._lockFeed = true;
 }
 function NextColumn() {
   const c = ensure(), w = W(); if (!w || !c._columns) return;
   const cc = c._columns;
   cc.i = (cc.i + 1) % cc.n;
-  if (cc.i === 0) { w.cursor.x = cc.x; w.cursor.y = Math.max(w.cursor.y, w.cursorPrevLine.y + 22); }
-  else { w.cursor.x = cc.x + cc.i * cc.w; w.cursor.y = cc.y; }
-  w.cursorPrevLine = { ...w.cursor };
+  if (cc.i === 0) { w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, w.dc.cursorPosPrevLine.y + 22); }
+  else { w.dc.cursorPos.x = cc.x + cc.i * cc.w; w.dc.cursorPos.y = cc.y; }
+  w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  w.dc._lockFeed = true;
 }
 
 // ---------- tree ex ----------

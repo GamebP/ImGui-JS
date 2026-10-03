@@ -47,9 +47,9 @@
 ## Use the split `ImGui.main.js` with `https://` includes
 1. Pushed to `GamebP/ImGui-JS` — `@require` ×7 + `CDN_BASE` already point at
    `https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/`
-   with `?v=1.0.0` cache-buster (files live at repo root, no `Build/` prefix).
+   with `?v=<version>` cache-buster (currently `?v=1.0.2`) (files live at repo root, no `Build/` prefix).
 2. Next update: bump `@version`, `LIB_VERSION`, and the `?v=` in all 7 `@require`
-   lines (e.g. `?v=1.0.1`). New URL = cache miss, old cached libs are dropped.
+   lines (e.g. `?v=1.0.2` → `?v=1.0.3`). New URL = cache miss, old cached libs are dropped.
 3. New userscript ← paste `ImGui.main.js` only. Violentmonkey fetches the 7 libs
    via `https://raw.githubusercontent.com/...` at install. If a lib 404s, the runtime
    fallback in `ensureLibs()` loads them from `CDN_BASE` + `?v=` via `<script src>`.
@@ -95,3 +95,6 @@ Verified: `node --check` on all 8 files + headless test calling every new API
 - Complex table features (sorting, resizing, reordering, persistence, frozen rows, clipper): `BeginTable` is an equal-width grid with headers/row-bg/borders.
 - Multi-select + `ImGuiSelectionBasicStorage`, text filter `ImGuiTextFilter` (use plain JS arrays).
 - Canvas-clipped popups: popups/menus render inside the parent window's clip rect (may cut near edges); fine for menus, not pixel-perfect vs C++.
+
+## Release a new version
+`python3 bump_version.py 1.0.3` — bumps `@version`, all 7 `?v=`, `LIB_VERSION`, and rebuilds the bundle in one step.
