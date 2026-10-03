@@ -1,16 +1,16 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.14
+// @version      1.0.16
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
-// @match        *://*/*
+// @match        *://example.com/*
 // @noframes
 // @grant        none
 // @run-at       document-idle
 // @downloadURL   https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.bundle.user.js
 // @updateURL     https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.bundle.user.js
 // ==/UserScript==
-/* BUNDLE: ImGui.core.js + ImGui.draw.js + ImGui.widgets.js + ImGui.backend.js + ImGui.main.js body.
+/* BUNDLE: ImGui.core.js + animate + draw + widgets + widgets2 + extended + demo + notify + backend + main.js body.
  * Built from Build/. Edit the split files, then rebuild with: python3 build_bundle.py */
 ;(function(){/*__CORE__*/
 /* ImGui Browser Port — Core (ported from imgui-1.92.9b)
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.14";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.16";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1025,14 +1025,19 @@ function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
 // Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
 function contentAvail() {
   const w = cur(); if (!w) return 0;
+  const c = ctx();
+  // Deduct scrollbar width whenever a vertical scrollbar is active, exactly
+  // like GetContentRegionAvail().x in C++ (ScrollbarSize eats into the work rect).
+  const hasScrollbar = (w.scrollMax > 0) && !(w.flags & ImGui.WindowFlags.NoScrollbar);
+  const scrollbarReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
   // Inside a child panel, the wrapping boundary is the child's inner right
   // edge, NOT the parent window's right edge (which would overflow the panel).
-  const stack = ctx()._childStack;
+  const stack = c._childStack;
   if (stack && stack.length > 0) {
     const t = stack[stack.length - 1];
     return Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
   }
-  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x);
+  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
 }
 // Popup input preemption: while a popup owns the left click, underlying
 // widgets (empty popup-box stack) must not start interactions.
@@ -1561,14 +1566,19 @@ function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
 // Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
 function contentAvail() {
   const w = cur(); if (!w) return 0;
+  const c = ctx();
+  // Deduct scrollbar width whenever a vertical scrollbar is active, exactly
+  // like GetContentRegionAvail().x in C++ (ScrollbarSize eats into the work rect).
+  const hasScrollbar = (w.scrollMax > 0) && !(w.flags & ImGui.WindowFlags.NoScrollbar);
+  const scrollbarReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
   // Inside a child panel, the wrapping boundary is the child's inner right
   // edge, NOT the parent window's right edge (which would overflow the panel).
-  const stack = ctx()._childStack;
+  const stack = c._childStack;
   if (stack && stack.length > 0) {
     const t = stack[stack.length - 1];
     return Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
   }
-  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x);
+  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
 }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
 function clickSuppressed() {
@@ -1650,8 +1660,10 @@ function VSliderFloat(label, wArg, hArg, value, vmin, vmax) {
   if (h) c.anyWindowHovered = true;
   let v = value, changed = false;
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) { c.activeId = id; c.activeKind = "vslider"; }
+  // Mouse Y is in screen space; slider bounds are in scrolled content space.
+  const curMouseY = (w && w.scrollY && !w.dc._inPopup) ? (c.io.MousePos.y + w.scrollY) : c.io.MousePos.y;
   if (c.activeId === id && c.activeKind === "vslider") {
-    const t = 1 - (c.io.MousePos.y - y) / Math.max(1, ht);
+    const t = 1 - (curMouseY - y) / Math.max(1, ht);
     v = vmin + Math.max(0, Math.min(1, t)) * (vmax - vmin);
     changed = v !== value;
     if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
@@ -1786,6 +1798,9 @@ function ColorPicker4(label, color) {
   c.itemAdd(x, y, needW, S, id);
   let [h, s, v] = rgb2hsv(color[0], color[1], color[2]);
   let changed = false;
+  // Mouse Y is in screen space; the picker rect lives in scrolled content
+  // space (cursorPos already carries the -scrollY offset from Draw).
+  const curMouseY = (w && w.scrollY && !w.dc._inPopup) ? (c.io.MousePos.y + w.scrollY) : c.io.MousePos.y;
   const setSV = (mx, my) => {
     s = Math.max(0, Math.min(1, (mx - x) / S)); v = Math.max(0, Math.min(1, 1 - (my - y) / S)); changed = true;
   };
@@ -1793,10 +1808,10 @@ function ColorPicker4(label, color) {
   const inSV = c.hovered(x, y, S, S), inH = c.hovered(x + S + 6, y, HB, S);
   if ((inSV || inH) && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
     c.activeId = id; c.activeKind = "picker"; c.activePayload = { zone: inH ? "h" : "sv" };
-    if (inH) setH(c.io.MousePos.y); else setSV(c.io.MousePos.x, c.io.MousePos.y);
+    if (inH) setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
   }
   if (c.activeId === id && c.activeKind === "picker") {
-    if (c.activePayload.zone === "h") setH(c.io.MousePos.y); else setSV(c.io.MousePos.x, c.io.MousePos.y);
+    if (c.activePayload.zone === "h") setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
     if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
   }
   // draw SV square as 16x16 cells (cheap gradient approx)
@@ -2354,7 +2369,10 @@ function GetCursorScreenPos() { const w = W(); return w ? { ...w.dc.cursorPos } 
 function SetCursorScreenPos(x, y) { const w = W(); if (w) { w.dc.cursorPos.x = x; w.dc.cursorPos.y = y; w.dc._lockFeed = true; } }
 function GetContentRegionAvail() {
   const w = W(); if (!w) return { x: 0, y: 0 };
-  return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
+  const c = ensure();
+  const hasScrollbar = (w.scrollMax > 0) && !(w.flags & ImGui.WindowFlags.NoScrollbar);
+  const scrollbarReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
+  return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
 }
 function CalcTextSize(text) { return { x: measure(text), y: 16 }; }
 function AlignTextToFramePadding() { const w = W(); if (w) w.dc.cursorPos.y += 4; }
@@ -3750,7 +3768,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.14"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.16"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

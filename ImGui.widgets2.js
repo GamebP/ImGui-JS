@@ -16,14 +16,19 @@ function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
 // Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
 function contentAvail() {
   const w = cur(); if (!w) return 0;
+  const c = ctx();
+  // Deduct scrollbar width whenever a vertical scrollbar is active, exactly
+  // like GetContentRegionAvail().x in C++ (ScrollbarSize eats into the work rect).
+  const hasScrollbar = (w.scrollMax > 0) && !(w.flags & ImGui.WindowFlags.NoScrollbar);
+  const scrollbarReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
   // Inside a child panel, the wrapping boundary is the child's inner right
   // edge, NOT the parent window's right edge (which would overflow the panel).
-  const stack = ctx()._childStack;
+  const stack = c._childStack;
   if (stack && stack.length > 0) {
     const t = stack[stack.length - 1];
     return Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
   }
-  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x);
+  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
 }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
 function clickSuppressed() {
@@ -105,8 +110,10 @@ function VSliderFloat(label, wArg, hArg, value, vmin, vmax) {
   if (h) c.anyWindowHovered = true;
   let v = value, changed = false;
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) { c.activeId = id; c.activeKind = "vslider"; }
+  // Mouse Y is in screen space; slider bounds are in scrolled content space.
+  const curMouseY = (w && w.scrollY && !w.dc._inPopup) ? (c.io.MousePos.y + w.scrollY) : c.io.MousePos.y;
   if (c.activeId === id && c.activeKind === "vslider") {
-    const t = 1 - (c.io.MousePos.y - y) / Math.max(1, ht);
+    const t = 1 - (curMouseY - y) / Math.max(1, ht);
     v = vmin + Math.max(0, Math.min(1, t)) * (vmax - vmin);
     changed = v !== value;
     if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
@@ -241,6 +248,9 @@ function ColorPicker4(label, color) {
   c.itemAdd(x, y, needW, S, id);
   let [h, s, v] = rgb2hsv(color[0], color[1], color[2]);
   let changed = false;
+  // Mouse Y is in screen space; the picker rect lives in scrolled content
+  // space (cursorPos already carries the -scrollY offset from Draw).
+  const curMouseY = (w && w.scrollY && !w.dc._inPopup) ? (c.io.MousePos.y + w.scrollY) : c.io.MousePos.y;
   const setSV = (mx, my) => {
     s = Math.max(0, Math.min(1, (mx - x) / S)); v = Math.max(0, Math.min(1, 1 - (my - y) / S)); changed = true;
   };
@@ -248,10 +258,10 @@ function ColorPicker4(label, color) {
   const inSV = c.hovered(x, y, S, S), inH = c.hovered(x + S + 6, y, HB, S);
   if ((inSV || inH) && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
     c.activeId = id; c.activeKind = "picker"; c.activePayload = { zone: inH ? "h" : "sv" };
-    if (inH) setH(c.io.MousePos.y); else setSV(c.io.MousePos.x, c.io.MousePos.y);
+    if (inH) setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
   }
   if (c.activeId === id && c.activeKind === "picker") {
-    if (c.activePayload.zone === "h") setH(c.io.MousePos.y); else setSV(c.io.MousePos.x, c.io.MousePos.y);
+    if (c.activePayload.zone === "h") setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
     if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
   }
   // draw SV square as 16x16 cells (cheap gradient approx)

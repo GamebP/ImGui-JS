@@ -408,7 +408,10 @@ function GetCursorScreenPos() { const w = W(); return w ? { ...w.dc.cursorPos } 
 function SetCursorScreenPos(x, y) { const w = W(); if (w) { w.dc.cursorPos.x = x; w.dc.cursorPos.y = y; w.dc._lockFeed = true; } }
 function GetContentRegionAvail() {
   const w = W(); if (!w) return { x: 0, y: 0 };
-  return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
+  const c = ensure();
+  const hasScrollbar = (w.scrollMax > 0) && !(w.flags & ImGui.WindowFlags.NoScrollbar);
+  const scrollbarReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
+  return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
 }
 function CalcTextSize(text) { return { x: measure(text), y: 16 }; }
 function AlignTextToFramePadding() { const w = W(); if (w) w.dc.cursorPos.y += 4; }
