@@ -372,7 +372,7 @@ function BeginCombo(label, preview) {
   emit({ t: "text", str: c.comboOpen === id ? "▲" : "▼", x: x + bw - 20, y: y + 5, col: st.Colors[ImGui.Col.Text] });
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 5, col: st.Colors[ImGui.Col.Text] });
   // stash popup anchor for EndCombo items
-  c._comboAnchor = { x, y: y + ht + 2, w: bw, id };
+  c._comboAnchor = { x, y: y + ht + 2, w: bw, id, triggerY: y, triggerH: ht };
   return c.comboOpen === id;
 }
 function EndCombo() { const c = ctx(); c._comboAnchor = null; }
@@ -388,8 +388,10 @@ function Combo(label, current, items) {
     let py = screenAnchorY;
     if (py + ph > c.io.DisplaySize.y - 4) py = screenAnchorY - ph - 4;
     py = Math.max(4, Math.min(c.io.DisplaySize.y - ph - 4, py));
+    const popupBg = [...c.style.Colors[ImGui.Col.PopupBg]];
+    popupBg[3] = 1;
     const ops = [
-      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.PopupBg] },
+      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: 6, col: popupBg },
       { t: "rect", x: a.x, y: py, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.Border], th: 1 },
     ];
     // Do not let underlying controls claim the pointer while choices are open.
@@ -404,7 +406,11 @@ function Combo(label, current, items) {
       if (h && c.io.MouseClicked[0]) { index = i; changed = true; c.comboOpen = 0; }
     }
     const inside = m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph;
-    if (c.io.MouseClicked[0] && !inside) c.comboOpen = 0;
+    const onTrigger = m.x >= a.x && m.x <= a.x + a.w &&
+      m.y >= a.triggerY && m.y <= a.triggerY + a.triggerH;
+    // Let the combo button process its normal release click so clicking it
+    // again closes the list instead of dismissing then immediately reopening.
+    if (c.io.MouseClicked[0] && !inside && !onTrigger) c.comboOpen = 0;
     c._overlayOps = c._overlayOps || [];
     c._overlayOps.push(...ops);
     EndCombo();
