@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.9
+// @version      1.0.11
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://*/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.9";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.11";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -291,7 +291,16 @@ class ImGuiContext {
     if (!n) return;
     const condOnce = (c) => c === Cond.Always || c === Cond.Once || (c === Cond.FirstUseEver && first) || (c === Cond.Appearing && w.appearing);
     if (n.pos && condOnce(n.posCond)) w.pos = { ...n.pos };
-    if (n.size && condOnce(n.sizeCond)) { w.size = { ...n.size }; w.sizeFull = { ...n.size }; }
+    // Auto (0) dims keep the live sizeFull: copying a 0 height/width into
+    // sizeFull collapses the window for the rest of the frame (dead hover,
+    // dead wheel scroll, 0-height hit area) until End() recomputes it.
+    if (n.size && condOnce(n.sizeCond)) {
+      w.size = { ...n.size };
+      w.sizeFull = {
+        x: n.size.x > 0 ? n.size.x : w.sizeFull.x,
+        y: n.size.y > 0 ? n.size.y : w.sizeFull.y,
+      };
+    }
     if (n.collapsed !== undefined && condOnce(n.collapsedCond)) w.collapsed = n.collapsed;
   }
   setNextWindowPos(x, y, cond = Cond.Once) {
@@ -401,8 +410,10 @@ class ImGuiContext {
     const w = this.windowStack.pop();
     if (!w) return;
     const st = this.style;
-    // auto-fit height if size.y==0 or AlwaysAutoResize
-    const needH = (w.dc.cursorMaxPos.y - (w.pos.y + w.titleH + w.padding.y)) + w.padding.y;
+    // Auto-fit height if size.y==0 or AlwaysAutoResize. Layout coordinates
+    // carry the -scrollY offset, so add it back: measurements must be
+    // scroll-invariant or scrolling shrinks the window and rubber-bands.
+    const needH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - (w.pos.y + w.titleH + w.padding.y)) + w.padding.y;
     if (w.collapsed) {
       w.sizeFull.y = w.titleH + 2;
     } else if (w.size.y === 0 || (w.flags & WindowFlags.AlwaysAutoResize)) {
@@ -981,6 +992,12 @@ function textW(s, font = "13px -apple-system,Segoe UI,Roboto,Arial,sans-serif") 
   return _mc.measureText(s).width;
 }
 function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
+// Remaining content width from the cursor (child/indent/cell aware).
+// Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
+function contentAvail() {
+  const w = cur(); if (!w) return 0;
+  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x);
+}
 // Popup input preemption: while a popup owns the left click, underlying
 // widgets (empty popup-box stack) must not start interactions.
 function clickSuppressed() {
@@ -999,9 +1016,9 @@ function Spacing() { const w = cur(); if (!w) return; const c = ctx(); c.beforeI
 function Separator() {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  const ww = w.sizeFull.x - w.padding.x * 2;
-  c.beforeItemPlacement(ww, 6);
-  const x = w.pos.x + w.padding.x, y = w.dc.cursorPos.y + 2;
+  c.beforeItemPlacement(0, 6);
+  const ww = contentAvail();
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y + 2;
   emit({ t: "line", x1: x, y1: y, x2: x + ww, y2: y, col: st.Colors[ImGui.Col.Separator], th: 1 });
   c.itemSize(ww, 6);
 }
@@ -1032,9 +1049,9 @@ function TextColored(col, str) {
 }
 function TextWrapped(str) {
   const c = ctx(), w = cur(); if (!w) return;
-  const maxW = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const lines = Math.max(1, Math.ceil(textW(str) / Math.max(40, maxW)));
-  c.beforeItemPlacement(maxW, lines * 16);
+  c.beforeItemPlacement(0, 16);
+  const maxW = Math.max(40, contentAvail());
+  const lines = Math.max(1, Math.ceil(textW(str) / maxW));
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   emit({ t: "text", str, x, y, col: c.style.Colors[ImGui.Col.Text], wrap: true, maxW });
   c.itemSize(maxW, lines * 16);
@@ -1139,9 +1156,9 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   const c = ctx(), w = cur(); if (!w) return { changed: false, value };
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
-  const sliderW = Math.max(80, w.sizeFull.x - w.padding.x * 2 - tw - 70);
+  c.beforeItemPlacement(0, 20);
+  const sliderW = Math.max(80, contentAvail() - tw - 70);
   const wd = sliderW + 8 + tw + 56, ht = 20;
-  c.beforeItemPlacement(wd, ht);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
@@ -1189,9 +1206,10 @@ function InputText(label, text, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
-  const bw = Math.max(120, w.sizeFull.x - w.padding.x * 2 - tw - 16);
-  const wd = bw + tw + 12, ht = st.FontSize + st.FramePadding.y * 2 + 2;
-  c.beforeItemPlacement(wd, ht);
+  const ht = st.FontSize + st.FramePadding.y * 2 + 2;
+  c.beforeItemPlacement(0, ht);
+  const bw = Math.max(120, contentAvail() - tw - 16);
+  const wd = bw + tw + 12;
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
@@ -1265,9 +1283,9 @@ function ColorEdit4(label, color) {
 function BeginCombo(label, preview) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const bw = Math.max(140, w.sizeFull.x - w.padding.x * 2 - textW(label) - 20);
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
-  c.beforeItemPlacement(bw + textW(label) + 12, ht);
+  c.beforeItemPlacement(0, ht);
+  const bw = Math.max(140, contentAvail() - textW(label) - 20);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw + textW(label) + 12, ht);
   const id = w.getID(label);
@@ -1312,9 +1330,9 @@ function Combo(label, current, items) {
 function Selectable(label, selected = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const wd = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const ht = 20;
-  c.beforeItemPlacement(wd, ht);
+  c.beforeItemPlacement(0, ht);
+  const wd = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
@@ -1341,9 +1359,9 @@ function ListBox(label, current, items, hItems = 4) {
 function ProgressBar(frac, label = "") {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  const wd = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const ht = 18;
-  c.beforeItemPlacement(wd, ht);
+  c.beforeItemPlacement(0, ht);
+  const wd = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 6, col: st.Colors[ImGui.Col.FrameBg] });
@@ -1355,9 +1373,9 @@ function ProgressBar(frac, label = "") {
 function CollapsingHeader(label, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const wd = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const ht = 22;
-  c.beforeItemPlacement(wd, ht);
+  c.beforeItemPlacement(0, ht);
+  const wd = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
@@ -1383,9 +1401,9 @@ const _childStack = [];
 function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const wd = wArg > 0 ? wArg : w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const ht = hArg > 0 ? hArg : 120;
-  c.beforeItemPlacement(wd, ht);
+  c.beforeItemPlacement(0, ht);
+  const wd = wArg > 0 ? wArg : contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   c.itemAdd(x, y, wd, ht, 0);
@@ -1473,6 +1491,12 @@ const ctx = () => ImGui.GetContext();
 const cur = () => ctx().current;
 const measure = (s) => (ImGui._measure ? ImGui._measure(s) : s.length * 7);
 function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
+// Remaining content width from the cursor (child/indent/cell aware).
+// Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
+function contentAvail() {
+  const w = cur(); if (!w) return 0;
+  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x);
+}
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
 function clickSuppressed() {
   const cc = ctx();
@@ -1674,11 +1698,11 @@ function ColorPicker4(label, color) {
   // window's clip rect so it never renders "on the other side of the world".
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
-  const availW = Math.max(60, w.sizeFull.x - w.padding.x * 2 - (w._indent || 0));
+  c.beforeItemPlacement(0, 26);
+  const availW = Math.max(60, contentAvail());
   const S = Math.min(150, Math.max(80, availW - 18 - 60));
   const HB = 18;
   const needW = S + HB + 14, ht = S + 26;
-  c.beforeItemPlacement(needW, ht);
   // Absolute anchor = window-relative cursor; clamp inside content area.
   let x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   const minX = w.pos.x + w.padding.x + (w._indent || 0);
@@ -1753,8 +1777,8 @@ function ImageButton(id, el, wArg, hArg) {
 function plotFrame(label, values, overlay, ht, isHist, scaleMin, scaleMax) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c.beforeItemPlacement(bw, ht + 18);
+  c.beforeItemPlacement(0, ht + 18);
+  const bw = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw, ht + 18);
   const vals = Array.isArray(values) ? values : [];
@@ -1812,8 +1836,8 @@ function TextDisabled(str) {
 function SeparatorText(label) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c.beforeItemPlacement(bw, 20);
+  c.beforeItemPlacement(0, 20);
+  const bw = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y + 2;
   const tw = measure(label);
   emit({ t: "text", str: label, x: x + 4, y, col: st.Colors[ImGui.Col.Text] });
@@ -1971,8 +1995,8 @@ function wrapBeginEnd() {
     const w = this.current;
     // compute scrollable overflow BEFORE origEnd auto-fit (only when fixed height)
     if (w && w.size && w.size.y > 0 && !w.collapsed) {
-      const contentTop = w.pos.y + w.titleH + w.padding.y - (w.scrollY || 0);
-      const contentH = (w.dc.cursorMaxPos.y - contentTop) + w.padding.y;
+      const contentTop = w.pos.y + w.titleH + w.padding.y;
+      const contentH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - contentTop) + w.padding.y;
       const visibleH = w.sizeFull.y - w.titleH - w.padding.y * 2;
       w.scrollMax = Math.max(0, contentH - visibleH);
       w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
@@ -1998,8 +2022,8 @@ function wrapBeginEnd() {
       const margin = 20; // keep 20px above the browser edge/taskbar
       const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y - margin);
       if (w.sizeFull.y > maxH) {
-        const contentTop = w.pos.y + w.titleH + w.padding.y - (w.scrollY || 0);
-        const contentH = (w.dc.cursorMaxPos.y - contentTop) + w.padding.y;
+        const contentTop = w.pos.y + w.titleH + w.padding.y;
+        const contentH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - contentTop) + w.padding.y;
         w.sizeFull.y = maxH;
         w.scrollMax = Math.max(0, contentH - (maxH - w.titleH - w.padding.y * 2));
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
@@ -3635,7 +3659,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.9"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.11"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

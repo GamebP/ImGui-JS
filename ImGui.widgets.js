@@ -18,6 +18,12 @@ function textW(s, font = "13px -apple-system,Segoe UI,Roboto,Arial,sans-serif") 
   return _mc.measureText(s).width;
 }
 function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
+// Remaining content width from the cursor (child/indent/cell aware).
+// Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
+function contentAvail() {
+  const w = cur(); if (!w) return 0;
+  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x);
+}
 // Popup input preemption: while a popup owns the left click, underlying
 // widgets (empty popup-box stack) must not start interactions.
 function clickSuppressed() {
@@ -36,9 +42,9 @@ function Spacing() { const w = cur(); if (!w) return; const c = ctx(); c.beforeI
 function Separator() {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  const ww = w.sizeFull.x - w.padding.x * 2;
-  c.beforeItemPlacement(ww, 6);
-  const x = w.pos.x + w.padding.x, y = w.dc.cursorPos.y + 2;
+  c.beforeItemPlacement(0, 6);
+  const ww = contentAvail();
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y + 2;
   emit({ t: "line", x1: x, y1: y, x2: x + ww, y2: y, col: st.Colors[ImGui.Col.Separator], th: 1 });
   c.itemSize(ww, 6);
 }
@@ -69,9 +75,9 @@ function TextColored(col, str) {
 }
 function TextWrapped(str) {
   const c = ctx(), w = cur(); if (!w) return;
-  const maxW = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  const lines = Math.max(1, Math.ceil(textW(str) / Math.max(40, maxW)));
-  c.beforeItemPlacement(maxW, lines * 16);
+  c.beforeItemPlacement(0, 16);
+  const maxW = Math.max(40, contentAvail());
+  const lines = Math.max(1, Math.ceil(textW(str) / maxW));
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   emit({ t: "text", str, x, y, col: c.style.Colors[ImGui.Col.Text], wrap: true, maxW });
   c.itemSize(maxW, lines * 16);
@@ -176,9 +182,9 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   const c = ctx(), w = cur(); if (!w) return { changed: false, value };
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
-  const sliderW = Math.max(80, w.sizeFull.x - w.padding.x * 2 - tw - 70);
+  c.beforeItemPlacement(0, 20);
+  const sliderW = Math.max(80, contentAvail() - tw - 70);
   const wd = sliderW + 8 + tw + 56, ht = 20;
-  c.beforeItemPlacement(wd, ht);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
@@ -226,9 +232,10 @@ function InputText(label, text, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
-  const bw = Math.max(120, w.sizeFull.x - w.padding.x * 2 - tw - 16);
-  const wd = bw + tw + 12, ht = st.FontSize + st.FramePadding.y * 2 + 2;
-  c.beforeItemPlacement(wd, ht);
+  const ht = st.FontSize + st.FramePadding.y * 2 + 2;
+  c.beforeItemPlacement(0, ht);
+  const bw = Math.max(120, contentAvail() - tw - 16);
+  const wd = bw + tw + 12;
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
@@ -302,9 +309,9 @@ function ColorEdit4(label, color) {
 function BeginCombo(label, preview) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const bw = Math.max(140, w.sizeFull.x - w.padding.x * 2 - textW(label) - 20);
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
-  c.beforeItemPlacement(bw + textW(label) + 12, ht);
+  c.beforeItemPlacement(0, ht);
+  const bw = Math.max(140, contentAvail() - textW(label) - 20);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw + textW(label) + 12, ht);
   const id = w.getID(label);
@@ -349,9 +356,9 @@ function Combo(label, current, items) {
 function Selectable(label, selected = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const wd = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const ht = 20;
-  c.beforeItemPlacement(wd, ht);
+  c.beforeItemPlacement(0, ht);
+  const wd = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
@@ -378,9 +385,9 @@ function ListBox(label, current, items, hItems = 4) {
 function ProgressBar(frac, label = "") {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  const wd = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const ht = 18;
-  c.beforeItemPlacement(wd, ht);
+  c.beforeItemPlacement(0, ht);
+  const wd = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 6, col: st.Colors[ImGui.Col.FrameBg] });
@@ -392,9 +399,9 @@ function ProgressBar(frac, label = "") {
 function CollapsingHeader(label, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const wd = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const ht = 22;
-  c.beforeItemPlacement(wd, ht);
+  c.beforeItemPlacement(0, ht);
+  const wd = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
@@ -420,9 +427,9 @@ const _childStack = [];
 function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const wd = wArg > 0 ? wArg : w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const ht = hArg > 0 ? hArg : 120;
-  c.beforeItemPlacement(wd, ht);
+  c.beforeItemPlacement(0, ht);
+  const wd = wArg > 0 ? wArg : contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   c.itemAdd(x, y, wd, ht, 0);

@@ -12,6 +12,12 @@ const ctx = () => ImGui.GetContext();
 const cur = () => ctx().current;
 const measure = (s) => (ImGui._measure ? ImGui._measure(s) : s.length * 7);
 function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
+// Remaining content width from the cursor (child/indent/cell aware).
+// Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
+function contentAvail() {
+  const w = cur(); if (!w) return 0;
+  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - w.dc.cursorPos.x);
+}
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
 function clickSuppressed() {
   const cc = ctx();
@@ -213,11 +219,11 @@ function ColorPicker4(label, color) {
   // window's clip rect so it never renders "on the other side of the world".
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
-  const availW = Math.max(60, w.sizeFull.x - w.padding.x * 2 - (w._indent || 0));
+  c.beforeItemPlacement(0, 26);
+  const availW = Math.max(60, contentAvail());
   const S = Math.min(150, Math.max(80, availW - 18 - 60));
   const HB = 18;
   const needW = S + HB + 14, ht = S + 26;
-  c.beforeItemPlacement(needW, ht);
   // Absolute anchor = window-relative cursor; clamp inside content area.
   let x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   const minX = w.pos.x + w.padding.x + (w._indent || 0);
@@ -292,8 +298,8 @@ function ImageButton(id, el, wArg, hArg) {
 function plotFrame(label, values, overlay, ht, isHist, scaleMin, scaleMax) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c.beforeItemPlacement(bw, ht + 18);
+  c.beforeItemPlacement(0, ht + 18);
+  const bw = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw, ht + 18);
   const vals = Array.isArray(values) ? values : [];
@@ -351,8 +357,8 @@ function TextDisabled(str) {
 function SeparatorText(label) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  const bw = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c.beforeItemPlacement(bw, 20);
+  c.beforeItemPlacement(0, 20);
+  const bw = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y + 2;
   const tw = measure(label);
   emit({ t: "text", str: label, x: x + 4, y, col: st.Colors[ImGui.Col.Text] });

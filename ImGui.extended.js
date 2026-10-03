@@ -122,8 +122,8 @@ function wrapBeginEnd() {
     const w = this.current;
     // compute scrollable overflow BEFORE origEnd auto-fit (only when fixed height)
     if (w && w.size && w.size.y > 0 && !w.collapsed) {
-      const contentTop = w.pos.y + w.titleH + w.padding.y - (w.scrollY || 0);
-      const contentH = (w.dc.cursorMaxPos.y - contentTop) + w.padding.y;
+      const contentTop = w.pos.y + w.titleH + w.padding.y;
+      const contentH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - contentTop) + w.padding.y;
       const visibleH = w.sizeFull.y - w.titleH - w.padding.y * 2;
       w.scrollMax = Math.max(0, contentH - visibleH);
       w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
@@ -149,8 +149,8 @@ function wrapBeginEnd() {
       const margin = 20; // keep 20px above the browser edge/taskbar
       const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y - margin);
       if (w.sizeFull.y > maxH) {
-        const contentTop = w.pos.y + w.titleH + w.padding.y - (w.scrollY || 0);
-        const contentH = (w.dc.cursorMaxPos.y - contentTop) + w.padding.y;
+        const contentTop = w.pos.y + w.titleH + w.padding.y;
+        const contentH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - contentTop) + w.padding.y;
         w.sizeFull.y = maxH;
         w.scrollMax = Math.max(0, contentH - (maxH - w.titleH - w.padding.y * 2));
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));

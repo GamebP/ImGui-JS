@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.9";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.11";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -276,7 +276,16 @@ class ImGuiContext {
     if (!n) return;
     const condOnce = (c) => c === Cond.Always || c === Cond.Once || (c === Cond.FirstUseEver && first) || (c === Cond.Appearing && w.appearing);
     if (n.pos && condOnce(n.posCond)) w.pos = { ...n.pos };
-    if (n.size && condOnce(n.sizeCond)) { w.size = { ...n.size }; w.sizeFull = { ...n.size }; }
+    // Auto (0) dims keep the live sizeFull: copying a 0 height/width into
+    // sizeFull collapses the window for the rest of the frame (dead hover,
+    // dead wheel scroll, 0-height hit area) until End() recomputes it.
+    if (n.size && condOnce(n.sizeCond)) {
+      w.size = { ...n.size };
+      w.sizeFull = {
+        x: n.size.x > 0 ? n.size.x : w.sizeFull.x,
+        y: n.size.y > 0 ? n.size.y : w.sizeFull.y,
+      };
+    }
     if (n.collapsed !== undefined && condOnce(n.collapsedCond)) w.collapsed = n.collapsed;
   }
   setNextWindowPos(x, y, cond = Cond.Once) {
@@ -386,8 +395,10 @@ class ImGuiContext {
     const w = this.windowStack.pop();
     if (!w) return;
     const st = this.style;
-    // auto-fit height if size.y==0 or AlwaysAutoResize
-    const needH = (w.dc.cursorMaxPos.y - (w.pos.y + w.titleH + w.padding.y)) + w.padding.y;
+    // Auto-fit height if size.y==0 or AlwaysAutoResize. Layout coordinates
+    // carry the -scrollY offset, so add it back: measurements must be
+    // scroll-invariant or scrolling shrinks the window and rubber-bands.
+    const needH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - (w.pos.y + w.titleH + w.padding.y)) + w.padding.y;
     if (w.collapsed) {
       w.sizeFull.y = w.titleH + 2;
     } else if (w.size.y === 0 || (w.flags & WindowFlags.AlwaysAutoResize)) {
