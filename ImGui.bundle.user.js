@@ -93,7 +93,9 @@ function lerpCol(a, b, t) {
 function applyStyleDark(C) {
   C[Col.Text] = colF(1, 1, 1, 1);
   C[Col.TextDisabled] = colF(0.5, 0.5, 0.5, 1);
-  C[Col.WindowBg] = colF(0.06, 0.06, 0.06, 0.94);
+  // Canvas overlays sit above arbitrary webpage content; fully opaque window
+  // fills prevent high-contrast page text from bleeding through the demo UI.
+  C[Col.WindowBg] = colF(0.06, 0.06, 0.06, 1);
   C[Col.ChildBg] = colF(0, 0, 0, 0);
   C[Col.PopupBg] = colF(0.08, 0.08, 0.08, 0.94);
   C[Col.Border] = colF(0.43, 0.43, 0.50, 0.50);
@@ -301,19 +303,30 @@ class ImGuiContext {
   applyNext(w, first) {
     const n = this.nextData;
     if (!n) return;
-    const condOnce = (c) => c === Cond.Always || c === Cond.Once || (c === Cond.FirstUseEver && first) || (c === Cond.Appearing && w.appearing);
-    if (n.pos && condOnce(n.posCond)) w.pos = { ...n.pos };
+    w._nextApplied = w._nextApplied || { pos: false, size: false, collapsed: false };
+    const applies = (cond, field) => cond === Cond.Always ||
+      (cond === Cond.Once && !w._nextApplied[field]) ||
+      (cond === Cond.FirstUseEver && first) ||
+      (cond === Cond.Appearing && w.appearing);
+    if (n.pos && applies(n.posCond, "pos")) {
+      w.pos = { ...n.pos };
+      if (n.posCond === Cond.Once) w._nextApplied.pos = true;
+    }
     // Auto (0) dims keep the live sizeFull: copying a 0 height/width into
     // sizeFull collapses the window for the rest of the frame (dead hover,
     // dead wheel scroll, 0-height hit area) until End() recomputes it.
-    if (n.size && condOnce(n.sizeCond)) {
+    if (n.size && applies(n.sizeCond, "size")) {
       w.size = { ...n.size };
       w.sizeFull = {
         x: n.size.x > 0 ? n.size.x : w.sizeFull.x,
         y: n.size.y > 0 ? n.size.y : w.sizeFull.y,
       };
+      if (n.sizeCond === Cond.Once) w._nextApplied.size = true;
     }
-    if (n.collapsed !== undefined && condOnce(n.collapsedCond)) w.collapsed = n.collapsed;
+    if (n.collapsed !== undefined && applies(n.collapsedCond, "collapsed")) {
+      w.collapsed = n.collapsed;
+      if (n.collapsedCond === Cond.Once) w._nextApplied.collapsed = true;
+    }
   }
   setNextWindowPos(x, y, cond = Cond.Once) {
     this.nextData = this.nextData || {};
@@ -1417,34 +1430,39 @@ function Combo(label, current, items) {
   const preview = items[current] !== undefined ? items[current] : "";
   let changed = false, index = current;
   if (BeginCombo(label, preview)) {
-    const c = ctx();
-    const a = c._comboAnchor;
-    const w = cur(), drawStart = w.drawList.length;
-    // The combo owns hover inside its list; allow its own item hit tests before
-    // blocking the controls that are painted underneath it.
-    c._comboRect = null;
+    const c = ctx(), w = cur(), a = c._comboAnchor;
     const itemH = 22, ph = items.length * itemH + 8;
-    emit({ t: "rectFilled", x: a.x, y: a.y, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.PopupBg] });
-    emit({ t: "rect", x: a.x, y: a.y, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.Border], th: 1 });
+    const screenAnchorY = a.y - (w.scrollY || 0);
+    // Combo choices live in the top overlay, in viewport coordinates. This
+    // keeps them above later widgets and anchored to a scrolled control.
+    let py = screenAnchorY;
+    if (py + ph > c.io.DisplaySize.y - 4) py = screenAnchorY - ph - 4;
+    py = Math.max(4, Math.min(c.io.DisplaySize.y - ph - 4, py));
+    const ops = [
+      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.PopupBg] },
+      { t: "rect", x: a.x, y: py, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.Border], th: 1 },
+    ];
+    // Do not let underlying controls claim the pointer while choices are open.
+    c._comboRect = { x: a.x, y: py, w: a.w, h: ph };
+    const m = c.io.MousePos;
     for (let i = 0; i < items.length; i++) {
-      const iy = a.y + 4 + i * itemH;
-      const h = c.hovered(a.x + 4, iy, a.w - 8, itemH - 2);
-      if (h) emit({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] });
-      else if (i === current) emit({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.Header] });
-      emit({ t: "text", str: items[i], x: a.x + 12, y: iy + 3, col: c.style.Colors[ImGui.Col.Text] });
+      const iy = py + 4 + i * itemH;
+      const h = m.x >= a.x + 4 && m.x <= a.x + a.w - 4 && m.y >= iy && m.y <= iy + itemH - 2;
+      if (h) ops.push({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] });
+      else if (i === current) ops.push({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.Header] });
+      ops.push({ t: "text", str: items[i], x: a.x + 12, y: iy + 3, col: c.style.Colors[ImGui.Col.Text] });
       if (h && c.io.MouseClicked[0]) { index = i; changed = true; c.comboOpen = 0; }
     }
-    // click elsewhere closes
-    const m = c.io.MousePos;
-    const inside = m.x >= a.x && m.x <= a.x + a.w && m.y >= a.y && m.y <= a.y + ph;
+    const inside = m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph;
     if (c.io.MouseClicked[0] && !inside) c.comboOpen = 0;
-    // Draw above later controls and neighboring windows, and prevent those
-    // controls from receiving clicks through the open list.
     c._overlayOps = c._overlayOps || [];
-    c._overlayOps.push(...w.drawList.splice(drawStart));
-    c._comboRect = c.comboOpen ? { x: a.x, y: a.y, w: a.w, h: ph } : null;
+    c._overlayOps.push(...ops);
     EndCombo();
-  } else ctx()._comboRect = null;
+  } else {
+    const c = ctx();
+    // A click outside an open list remains consumed for the rest of that frame.
+    if (!c.io.MouseClicked[0]) c._comboRect = null;
+  }
   return { changed, index };
 }
 function Selectable(label, selected = false) {
@@ -3088,16 +3106,26 @@ function Columns(count = 1) {
   if (count <= 1) {
     if (c._columns) {
       const cc = c._columns;
+      // Finish a partially filled row. A caller that used NextColumn() after
+      // the final cell is already positioned at the next row and adds none.
+      cc.rowHeight = Math.max(cc.rowHeight, w.dc.currLineHeight);
+      if (cc.i !== 0 || w.dc._lineUsed) cc.rowY += cc.rowHeight + C().style.ItemSpacing.y;
       w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
       w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+      w.dc.cursorStartPos = { ...cc.startPos };
+      delete w.dc._cellStartX;
       w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc._lockFeed = true;
       c._columns = null;
     }
     return;
   }
+  const startPos = { ...w.dc.cursorStartPos };
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count };
-  w.dc.cursorPos.x = c._columns.x; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count, startPos };
+  w.dc.cursorPos.x = c._columns.x;
+  w.dc.cursorStartPos = { ...w.dc.cursorPos };
+  w.dc._cellStartX = w.dc.cursorPos.x;
+  w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._lockFeed = true;
 }
 function NextColumn() {
@@ -3114,6 +3142,8 @@ function NextColumn() {
     cc.rowHeight = 0;
     w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
   } else { w.dc.cursorPos.x = cc.x + cc.i * cc.w; w.dc.cursorPos.y = cc.rowY; }
+  w.dc.cursorStartPos = { ...w.dc.cursorPos };
+  w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._lockFeed = true;
 }
@@ -4057,14 +4087,15 @@ function DEMO_WINDOW(dt) {
       ImGui.SameLine(); if (ImGui.Button("B")) console.log("B");
       ImGui.SameLine(); if (ImGui.Button("C")) console.log("C");
       ImGui.Separator();
-      if (ImGui.TreeNode("Child window")) {
+      // A collapsing header has no tree indentation, so the child panel and
+      // the following Help section stay aligned when this section is toggled.
+      if (ImGui.CollapsingHeader("Child window")) {
         if (ImGui.BeginChild("log", 0, 80, true)) {
           ImGui.TextWrapped("BeginChild/EndChild gives you a bordered sub-panel. Put logs, player lists, console output here.");
           ImGui.BulletText("line 1: hello");
           ImGui.BulletText("line 2: world");
         }
         ImGui.EndChild();
-        ImGui.TreePop();
       }
     }
     if (ImGui.CollapsingHeader("Help: change the menu live")) {

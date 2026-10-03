@@ -183,14 +183,15 @@ function DEMO_WINDOW(dt) {
       ImGui.SameLine(); if (ImGui.Button("B")) console.log("B");
       ImGui.SameLine(); if (ImGui.Button("C")) console.log("C");
       ImGui.Separator();
-      if (ImGui.TreeNode("Child window")) {
+      // A collapsing header has no tree indentation, so the child panel and
+      // the following Help section stay aligned when this section is toggled.
+      if (ImGui.CollapsingHeader("Child window")) {
         if (ImGui.BeginChild("log", 0, 80, true)) {
           ImGui.TextWrapped("BeginChild/EndChild gives you a bordered sub-panel. Put logs, player lists, console output here.");
           ImGui.BulletText("line 1: hello");
           ImGui.BulletText("line 2: world");
         }
         ImGui.EndChild();
-        ImGui.TreePop();
       }
     }
     if (ImGui.CollapsingHeader("Help: change the menu live")) {

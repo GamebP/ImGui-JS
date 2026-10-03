@@ -1046,16 +1046,26 @@ function Columns(count = 1) {
   if (count <= 1) {
     if (c._columns) {
       const cc = c._columns;
+      // Finish a partially filled row. A caller that used NextColumn() after
+      // the final cell is already positioned at the next row and adds none.
+      cc.rowHeight = Math.max(cc.rowHeight, w.dc.currLineHeight);
+      if (cc.i !== 0 || w.dc._lineUsed) cc.rowY += cc.rowHeight + C().style.ItemSpacing.y;
       w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
       w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+      w.dc.cursorStartPos = { ...cc.startPos };
+      delete w.dc._cellStartX;
       w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc._lockFeed = true;
       c._columns = null;
     }
     return;
   }
+  const startPos = { ...w.dc.cursorStartPos };
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count };
-  w.dc.cursorPos.x = c._columns.x; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+  c._columns = { n: count, i: 0, x: w.dc.cursorPos.x, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count, startPos };
+  w.dc.cursorPos.x = c._columns.x;
+  w.dc.cursorStartPos = { ...w.dc.cursorPos };
+  w.dc._cellStartX = w.dc.cursorPos.x;
+  w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._lockFeed = true;
 }
 function NextColumn() {
@@ -1072,6 +1082,8 @@ function NextColumn() {
     cc.rowHeight = 0;
     w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
   } else { w.dc.cursorPos.x = cc.x + cc.i * cc.w; w.dc.cursorPos.y = cc.rowY; }
+  w.dc.cursorStartPos = { ...w.dc.cursorPos };
+  w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._lockFeed = true;
 }

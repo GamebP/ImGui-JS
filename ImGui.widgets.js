@@ -380,34 +380,39 @@ function Combo(label, current, items) {
   const preview = items[current] !== undefined ? items[current] : "";
   let changed = false, index = current;
   if (BeginCombo(label, preview)) {
-    const c = ctx();
-    const a = c._comboAnchor;
-    const w = cur(), drawStart = w.drawList.length;
-    // The combo owns hover inside its list; allow its own item hit tests before
-    // blocking the controls that are painted underneath it.
-    c._comboRect = null;
+    const c = ctx(), w = cur(), a = c._comboAnchor;
     const itemH = 22, ph = items.length * itemH + 8;
-    emit({ t: "rectFilled", x: a.x, y: a.y, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.PopupBg] });
-    emit({ t: "rect", x: a.x, y: a.y, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.Border], th: 1 });
+    const screenAnchorY = a.y - (w.scrollY || 0);
+    // Combo choices live in the top overlay, in viewport coordinates. This
+    // keeps them above later widgets and anchored to a scrolled control.
+    let py = screenAnchorY;
+    if (py + ph > c.io.DisplaySize.y - 4) py = screenAnchorY - ph - 4;
+    py = Math.max(4, Math.min(c.io.DisplaySize.y - ph - 4, py));
+    const ops = [
+      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.PopupBg] },
+      { t: "rect", x: a.x, y: py, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.Border], th: 1 },
+    ];
+    // Do not let underlying controls claim the pointer while choices are open.
+    c._comboRect = { x: a.x, y: py, w: a.w, h: ph };
+    const m = c.io.MousePos;
     for (let i = 0; i < items.length; i++) {
-      const iy = a.y + 4 + i * itemH;
-      const h = c.hovered(a.x + 4, iy, a.w - 8, itemH - 2);
-      if (h) emit({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] });
-      else if (i === current) emit({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.Header] });
-      emit({ t: "text", str: items[i], x: a.x + 12, y: iy + 3, col: c.style.Colors[ImGui.Col.Text] });
+      const iy = py + 4 + i * itemH;
+      const h = m.x >= a.x + 4 && m.x <= a.x + a.w - 4 && m.y >= iy && m.y <= iy + itemH - 2;
+      if (h) ops.push({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] });
+      else if (i === current) ops.push({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.Header] });
+      ops.push({ t: "text", str: items[i], x: a.x + 12, y: iy + 3, col: c.style.Colors[ImGui.Col.Text] });
       if (h && c.io.MouseClicked[0]) { index = i; changed = true; c.comboOpen = 0; }
     }
-    // click elsewhere closes
-    const m = c.io.MousePos;
-    const inside = m.x >= a.x && m.x <= a.x + a.w && m.y >= a.y && m.y <= a.y + ph;
+    const inside = m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph;
     if (c.io.MouseClicked[0] && !inside) c.comboOpen = 0;
-    // Draw above later controls and neighboring windows, and prevent those
-    // controls from receiving clicks through the open list.
     c._overlayOps = c._overlayOps || [];
-    c._overlayOps.push(...w.drawList.splice(drawStart));
-    c._comboRect = c.comboOpen ? { x: a.x, y: a.y, w: a.w, h: ph } : null;
+    c._overlayOps.push(...ops);
     EndCombo();
-  } else ctx()._comboRect = null;
+  } else {
+    const c = ctx();
+    // A click outside an open list remains consumed for the rest of that frame.
+    if (!c.io.MouseClicked[0]) c._comboRect = null;
+  }
   return { changed, index };
 }
 function Selectable(label, selected = false) {

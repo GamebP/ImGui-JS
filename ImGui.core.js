@@ -78,7 +78,9 @@ function lerpCol(a, b, t) {
 function applyStyleDark(C) {
   C[Col.Text] = colF(1, 1, 1, 1);
   C[Col.TextDisabled] = colF(0.5, 0.5, 0.5, 1);
-  C[Col.WindowBg] = colF(0.06, 0.06, 0.06, 0.94);
+  // Canvas overlays sit above arbitrary webpage content; fully opaque window
+  // fills prevent high-contrast page text from bleeding through the demo UI.
+  C[Col.WindowBg] = colF(0.06, 0.06, 0.06, 1);
   C[Col.ChildBg] = colF(0, 0, 0, 0);
   C[Col.PopupBg] = colF(0.08, 0.08, 0.08, 0.94);
   C[Col.Border] = colF(0.43, 0.43, 0.50, 0.50);
@@ -286,19 +288,30 @@ class ImGuiContext {
   applyNext(w, first) {
     const n = this.nextData;
     if (!n) return;
-    const condOnce = (c) => c === Cond.Always || c === Cond.Once || (c === Cond.FirstUseEver && first) || (c === Cond.Appearing && w.appearing);
-    if (n.pos && condOnce(n.posCond)) w.pos = { ...n.pos };
+    w._nextApplied = w._nextApplied || { pos: false, size: false, collapsed: false };
+    const applies = (cond, field) => cond === Cond.Always ||
+      (cond === Cond.Once && !w._nextApplied[field]) ||
+      (cond === Cond.FirstUseEver && first) ||
+      (cond === Cond.Appearing && w.appearing);
+    if (n.pos && applies(n.posCond, "pos")) {
+      w.pos = { ...n.pos };
+      if (n.posCond === Cond.Once) w._nextApplied.pos = true;
+    }
     // Auto (0) dims keep the live sizeFull: copying a 0 height/width into
     // sizeFull collapses the window for the rest of the frame (dead hover,
     // dead wheel scroll, 0-height hit area) until End() recomputes it.
-    if (n.size && condOnce(n.sizeCond)) {
+    if (n.size && applies(n.sizeCond, "size")) {
       w.size = { ...n.size };
       w.sizeFull = {
         x: n.size.x > 0 ? n.size.x : w.sizeFull.x,
         y: n.size.y > 0 ? n.size.y : w.sizeFull.y,
       };
+      if (n.sizeCond === Cond.Once) w._nextApplied.size = true;
     }
-    if (n.collapsed !== undefined && condOnce(n.collapsedCond)) w.collapsed = n.collapsed;
+    if (n.collapsed !== undefined && applies(n.collapsedCond, "collapsed")) {
+      w.collapsed = n.collapsed;
+      if (n.collapsedCond === Cond.Once) w._nextApplied.collapsed = true;
+    }
   }
   setNextWindowPos(x, y, cond = Cond.Once) {
     this.nextData = this.nextData || {};
