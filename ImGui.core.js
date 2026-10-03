@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.11";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.12";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -395,14 +395,16 @@ class ImGuiContext {
     const w = this.windowStack.pop();
     if (!w) return;
     const st = this.style;
-    // Auto-fit height if size.y==0 or AlwaysAutoResize. Layout coordinates
-    // carry the -scrollY offset, so add it back: measurements must be
-    // scroll-invariant or scrolling shrinks the window and rubber-bands.
-    const needH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - (w.pos.y + w.titleH + w.padding.y)) + w.padding.y;
+    // Layout runs in window-local content space (0..contentH); scrolling is a
+    // pure render/input translation, never a cursor offset (cf. imgui.cpp
+    // Begin/End: DC.CursorPos = WorkRect.Min - Scroll). So content height is a
+    // scroll-invariant measurement taken straight from cursorMaxPos.
+    const contentTop = w.pos.y + w.titleH + w.padding.y;
+    const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
     if (w.collapsed) {
       w.sizeFull.y = w.titleH + 2;
     } else if (w.size.y === 0 || (w.flags & WindowFlags.AlwaysAutoResize)) {
-      w.sizeFull.y = Math.max(60, w.pos.y + w.titleH + w.padding.y + needH - w.pos.y);
+      w.sizeFull.y = Math.max(60, w.titleH + w.padding.y * 2 + contentH);
     } else if (w.size.y > 0) {
       w.sizeFull.y = w.size.y;
     }
@@ -488,7 +490,19 @@ class ImGuiContext {
   }
   hovered(x, y, wd, ht) {
     const m = this.io.MousePos;
-    return m.x >= x && m.x <= x + wd && m.y >= y && m.y <= y + ht;
+    const w = this.current;
+    // Items register at natural content coordinates, but the canvas is drawn
+    // translated by -scrollY. Translate the raw mouse position into that same
+    // content space so hit-testing matches the scrolled visuals 1:1. The
+    // adjustment is only valid when the pointer is inside the window viewport
+    // (a pointer elsewhere must not hit clipped-away content).
+    let mouseY = m.y;
+    if (w && w.scrollY && !w.dc._inPopup) {
+      const top = w.pos.y + w.titleH;
+      const bot = w.pos.y + w.sizeFull.y;
+      if (m.y >= top && m.y <= bot) mouseY += w.scrollY;
+    }
+    return m.x >= x && m.x <= x + wd && mouseY >= y && mouseY <= y + ht;
   }
   buttonBehavior(id, x, y, wd, ht) {
     const io = this.io;

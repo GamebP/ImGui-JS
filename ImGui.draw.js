@@ -129,6 +129,10 @@ class CanvasRenderer {
     ctx.beginPath();
     ctx.rect(x + w.padding.x - 2, y + w.titleH, clipW, hh - w.titleH - 4);
     ctx.clip();
+    // Apply scroll translation for content rendering
+    if (w.scrollY > 0) {
+      ctx.translate(0, -Math.round(w.scrollY));
+    }
     for (const op of w.drawList) this.drawOp(ctx, st, op);
     // visual debug: outline every item rect pushed this frame via itemAdd()
     if (c._debugMode && c._debugRects && c._debugRects.length) {

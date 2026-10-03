@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.11
+// @version      1.0.12
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://*/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.11";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.12";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -410,14 +410,16 @@ class ImGuiContext {
     const w = this.windowStack.pop();
     if (!w) return;
     const st = this.style;
-    // Auto-fit height if size.y==0 or AlwaysAutoResize. Layout coordinates
-    // carry the -scrollY offset, so add it back: measurements must be
-    // scroll-invariant or scrolling shrinks the window and rubber-bands.
-    const needH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - (w.pos.y + w.titleH + w.padding.y)) + w.padding.y;
+    // Layout runs in window-local content space (0..contentH); scrolling is a
+    // pure render/input translation, never a cursor offset (cf. imgui.cpp
+    // Begin/End: DC.CursorPos = WorkRect.Min - Scroll). So content height is a
+    // scroll-invariant measurement taken straight from cursorMaxPos.
+    const contentTop = w.pos.y + w.titleH + w.padding.y;
+    const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
     if (w.collapsed) {
       w.sizeFull.y = w.titleH + 2;
     } else if (w.size.y === 0 || (w.flags & WindowFlags.AlwaysAutoResize)) {
-      w.sizeFull.y = Math.max(60, w.pos.y + w.titleH + w.padding.y + needH - w.pos.y);
+      w.sizeFull.y = Math.max(60, w.titleH + w.padding.y * 2 + contentH);
     } else if (w.size.y > 0) {
       w.sizeFull.y = w.size.y;
     }
@@ -503,7 +505,19 @@ class ImGuiContext {
   }
   hovered(x, y, wd, ht) {
     const m = this.io.MousePos;
-    return m.x >= x && m.x <= x + wd && m.y >= y && m.y <= y + ht;
+    const w = this.current;
+    // Items register at natural content coordinates, but the canvas is drawn
+    // translated by -scrollY. Translate the raw mouse position into that same
+    // content space so hit-testing matches the scrolled visuals 1:1. The
+    // adjustment is only valid when the pointer is inside the window viewport
+    // (a pointer elsewhere must not hit clipped-away content).
+    let mouseY = m.y;
+    if (w && w.scrollY && !w.dc._inPopup) {
+      const top = w.pos.y + w.titleH;
+      const bot = w.pos.y + w.sizeFull.y;
+      if (m.y >= top && m.y <= bot) mouseY += w.scrollY;
+    }
+    return m.x >= x && m.x <= x + wd && mouseY >= y && mouseY <= y + ht;
   }
   buttonBehavior(id, x, y, wd, ht) {
     const io = this.io;
@@ -851,6 +865,10 @@ class CanvasRenderer {
     ctx.beginPath();
     ctx.rect(x + w.padding.x - 2, y + w.titleH, clipW, hh - w.titleH - 4);
     ctx.clip();
+    // Apply scroll translation for content rendering
+    if (w.scrollY > 0) {
+      ctx.translate(0, -Math.round(w.scrollY));
+    }
     for (const op of w.drawList) this.drawOp(ctx, st, op);
     // visual debug: outline every item rect pushed this frame via itemAdd()
     if (c._debugMode && c._debugRects && c._debugRects.length) {
@@ -1972,40 +1990,30 @@ function wrapBeginEnd() {
       if (w.scrollY === undefined) w.scrollY = 0;
       if (w.scrollMax === undefined) w.scrollMax = 0;
       const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
-      // wheel scroll when hovered (content taller than view); clipped via draw.js clip rect
+      // wheel scroll when hovered (content taller than view); content renders
+      // translated by -scrollY in draw.js and is clipped to the viewport.
       if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && this.activeId === 0) {
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY - this.io.MouseWheel * (this.style.FontSize * 2)));
       }
-      // scrollbar grip drag
+      // scrollbar grip drag (uses raw viewport coordinates)
       if (!noScroll && w.scrollMax > 0 && !w.collapsed && w._scrollGrip) {
         const g = w._scrollGrip;
         if (this.activeId === g.id && this.activeKind === "scroll") {
           const m = this.io.MousePos;
-          const t = (m.y - g.by - g.gripH / 2) / Math.max(1, g.bh - g.gripH);
-          w.scrollY = Math.max(0, Math.min(w.scrollMax, t * w.scrollMax));
-          if (!this.io.MouseDown[0]) { this.activeId = 0; this.activeKind = null; }
+          const deltaY = m.y - (this.activePayload && this.activePayload.startMouseY || m.y);
+          const scrollDelta = deltaY * (w.scrollMax / Math.max(1, g.bh - g.gripH));
+          w.scrollY = Math.max(0, Math.min(w.scrollMax, (this.activePayload && this.activePayload.startScrollY || w.scrollY) + scrollDelta));
+          if (!this.io.MouseDown[0]) { this.activeId = 0; this.activeKind = null; this.activePayload = null; }
         }
       }
-      // Apply scroll offset as coordinate transform for all later ops in this window.
-      w.dc.cursorPos.y -= w.scrollY;
+      return r;
     }
     return r;
   };
   Proto.end = function () {
     const w = this.current;
-    // compute scrollable overflow BEFORE origEnd auto-fit (only when fixed height)
-    if (w && w.size && w.size.y > 0 && !w.collapsed) {
-      const contentTop = w.pos.y + w.titleH + w.padding.y;
-      const contentH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - contentTop) + w.padding.y;
-      const visibleH = w.sizeFull.y - w.titleH - w.padding.y * 2;
-      w.scrollMax = Math.max(0, contentH - visibleH);
-      w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
-    } else if (w && w.collapsed) { w.scrollMax = 0; w.scrollY = 0; }
     // Chrome ops (scrollbar) draw unclipped after content; reset per frame.
     if (w) w._chromeOps = [];
-    // NOTE: auto-fit windows (size.y == 0) skip the zeroing above on purpose:
-    // their scroll state survives into the viewport-clamp block below, which
-    // fully recomputes it (zeroing would rubber-band wheel scrolling to 0).
     origEnd.call(this);
     // Tab row growth (stored by EndTabBar): applied after core End so the
     // size.x reset cannot clobber it. Consumed every frame. Never grows the
@@ -2015,6 +2023,16 @@ function wrapBeginEnd() {
       if (w._tabExpandW > w.sizeFull.x) w.sizeFull.x = Math.min(w._tabExpandW, maxW);
       w._tabExpandW = 0;
     }
+    if (w && w.collapsed) { w.scrollMax = 0; w.scrollY = 0; }
+    // Fixed-height windows: overflow becomes a scrollable range (pure
+    // content-space measurement, no scroll offset involved).
+    if (w && !w.collapsed && w.size.y > 0 && !(w.flags & ImGui.WindowFlags.AlwaysAutoResize)) {
+      const contentTop = w.pos.y + w.titleH + w.padding.y;
+      const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
+      const visibleH = Math.max(0, w.sizeFull.y - w.titleH - w.padding.y * 2);
+      w.scrollMax = Math.max(0, contentH - visibleH);
+      w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
+    }
     // Auto-fit windows (size.y == 0) grow unbounded by default. Clamp to the
     // viewport so content can never flow off-screen: the excess becomes
     // scrollable instead of overflowing past the taskbar.
@@ -2023,7 +2041,7 @@ function wrapBeginEnd() {
       const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y - margin);
       if (w.sizeFull.y > maxH) {
         const contentTop = w.pos.y + w.titleH + w.padding.y;
-        const contentH = (w.dc.cursorMaxPos.y + (w.scrollY || 0) - contentTop) + w.padding.y;
+        const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
         w.sizeFull.y = maxH;
         w.scrollMax = Math.max(0, contentH - (maxH - w.titleH - w.padding.y * 2));
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
@@ -2040,10 +2058,14 @@ function wrapBeginEnd() {
       const gripH = Math.max(st.GrabMinSize, bh * (bh / (bh + w.scrollMax)));
       const gy = by + (bh - gripH) * (w.scrollMax > 0 ? w.scrollY / w.scrollMax : 0);
       const gid = (w.id ^ 0x5c4011) >>> 0;
-      const hov = this.hovered(bx, gy, st.ScrollbarSize, gripH);
+      // Grip lives in raw viewport space (never scrolled), and this.current is
+      // already the parent window here, so hit-test against raw mouse coords.
+      const mm = this.io.MousePos;
+      const hov = mm.x >= bx && mm.x <= bx + st.ScrollbarSize && mm.y >= gy && mm.y <= gy + gripH;
       if (hov) this.anyWindowHovered = true;
       if (hov && this.io.MouseClicked[0] && this.activeId === 0) {
         this.activeId = gid; this.activeKind = "scroll";
+        this.activePayload = { startMouseY: this.io.MousePos.y, startScrollY: w.scrollY };
       }
       w._scrollGrip = { id: gid, by: by, bh: bh, gripH: gripH };
       const active = this.activeId === gid;
@@ -2266,10 +2288,12 @@ function StyleColorsLight() {
 }
 
 // ---------- cursor / layout queries ----------
-function SetCursorPos(x, y) { const w = W(); if (w) { w.dc.cursorPos.x = w.pos.x + w.padding.x + x; w.dc.cursorPos.y = w.pos.y + w.titleH + w.padding.y + y - (w.scrollY || 0); w.dc._lockFeed = true; } }
+// Layout is window-local content space; scroll is a render/input translation,
+// so these take/return content coordinates with no scroll offset baked in.
+function SetCursorPos(x, y) { const w = W(); if (w) { w.dc.cursorPos.x = w.pos.x + w.padding.x + x; w.dc.cursorPos.y = w.pos.y + w.titleH + w.padding.y + y; w.dc._lockFeed = true; } }
 function SetCursorPosX(x) { const w = W(); if (w) { w.dc.cursorPos.x = w.pos.x + w.padding.x + x; w.dc._lockFeed = true; } }
-function SetCursorPosY(y) { const w = W(); if (w) { w.dc.cursorPos.y = w.pos.y + w.titleH + w.padding.y + y - (w.scrollY || 0); w.dc._lockFeed = true; } }
-function GetCursorPos() { const w = W(); if (!w) return { x: 0, y: 0 }; return { x: w.dc.cursorPos.x - w.pos.x - w.padding.x, y: w.dc.cursorPos.y - (w.pos.y + w.titleH + w.padding.y) + (w.scrollY || 0) }; }
+function SetCursorPosY(y) { const w = W(); if (w) { w.dc.cursorPos.y = w.pos.y + w.titleH + w.padding.y + y; w.dc._lockFeed = true; } }
+function GetCursorPos() { const w = W(); if (!w) return { x: 0, y: 0 }; return { x: w.dc.cursorPos.x - w.pos.x - w.padding.x, y: w.dc.cursorPos.y - (w.pos.y + w.titleH + w.padding.y) }; }
 function GetCursorScreenPos() { const w = W(); return w ? { ...w.dc.cursorPos } : { x: 0, y: 0 }; }
 function SetCursorScreenPos(x, y) { const w = W(); if (w) { w.dc.cursorPos.x = x; w.dc.cursorPos.y = y; w.dc._lockFeed = true; } }
 function GetContentRegionAvail() {
@@ -3659,7 +3683,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.11"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.12"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
