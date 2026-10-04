@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.40
+// @version      1.0.42
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.40";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.42";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1251,18 +1251,54 @@ function Text(str, ...args) {
   const st = c.style;
   const label = s;
   const tw = textW(label), th = 16;
+  // Table cell alignment: first item in a center/right cell shifts x; text
+  // draws vertically centered by default (AlignMiddle). Layout cursor stays
+  // top-padded so 20px widgets keep fitting the 22px row exactly.
+  let dy = 0;
+  const tc = c._table;
+  const tcell = (tc && tc.col >= 0 && tc._cell && tc.rowY !== undefined && tc.rowH) ? tc._cell : null;
+  if (tcell) {
+    const usableW = Math.max(0, tcell.w - st.CellPadding.x * 2);
+    const atOrigin = Math.abs(w.dc.cursorPos.x - (tcell.x0 + st.CellPadding.x)) < 1;
+    let dx = 0;
+    if (atOrigin && tcell.ax === (2 << 16)) dx = Math.max(0, (usableW - tw) / 2);
+    else if (atOrigin && tcell.ax === (3 << 16)) dx = Math.max(0, usableW - tw);
+    if (dx) { w.dc.cursorPos.x += dx; if (w.dc._cellStartX !== undefined) w.dc._cellStartX += dx; }
+  }
   c.beforeItemPlacement(tw, th);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
-  c.itemSize(tw, th); c.itemAdd(x, y, tw, th, 0);
-  emit({ t: "text", str: label, x, y, col: st.Colors[ImGui.Col.Text] });
+  if (tcell) {
+    const midY = tc.rowY + Math.round((tc.rowH - st.FontSize) / 2);
+    if (tcell.ay === (2 << 20) || tcell.ay === 0) dy = midY - y;
+    else if (tcell.ay === (3 << 20)) dy = (tc.rowY + tc.rowH - st.FontSize - (st.CellPadding.y || 0)) - y;
+  }
+  c.itemSize(tw, th); c.itemAdd(x, y + dy, tw, th, 0);
+  emit({ t: "text", str: label, x, y: y + dy, col: st.Colors[ImGui.Col.Text] });
 }
 function TextColored(col, str) {
   const c = ctx(), w = cur(); if (!w) return;
+  const st = c.style;
   const tw = textW(str), th = 16;
+  let dy = 0;
+  const tc = c._table;
+  const tcell = (tc && tc.col >= 0 && tc._cell && tc.rowY !== undefined && tc.rowH) ? tc._cell : null;
+  if (tcell) {
+    const usableW = Math.max(0, tcell.w - st.CellPadding.x * 2);
+    const atOrigin = Math.abs(w.dc.cursorPos.x - (tcell.x0 + st.CellPadding.x)) < 1;
+    let dx = 0;
+    if (atOrigin && tcell.ax === (2 << 16)) dx = Math.max(0, (usableW - tw) / 2);
+    else if (atOrigin && tcell.ax === (3 << 16)) dx = Math.max(0, usableW - tw);
+    if (dx) { w.dc.cursorPos.x += dx; if (w.dc._cellStartX !== undefined) w.dc._cellStartX += dx; }
+  }
   c.beforeItemPlacement(tw, th);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
-  c.itemSize(tw, th); c.itemAdd(x, y, tw, th, 0);
-  emit({ t: "text", str, x, y, col });
+  if (tcell) {
+    const midY = tc.rowY + Math.round((tc.rowH - st.FontSize) / 2);
+    if (tcell.ay === (2 << 20) || tcell.ay === 0) dy = midY - y;
+    else if (tcell.ay === (3 << 20)) dy = (tc.rowY + tc.rowH - st.FontSize - (st.CellPadding.y || 0)) - y;
+  }
+  c.itemSize(tw, th); c.itemAdd(x, y + dy, tw, th, 0);
+  emit({ t: "text", str, x, y: y + dy, col });
 }
 function TextWrapped(str) {
   const c = ctx(), w = cur(); if (!w) return;
@@ -3769,9 +3805,19 @@ function TableGetSortSpecs() {
   return { Specs: [{ ColumnIndex: s.col, SortOrder: 0, SortDirection: s.dir === "desc" ? 2 : 1 }], SpecsCount: 1, Dirty: false };
 }
 function TableClearSort() { const c = ensure(); if (c._table) { c._table.sort = null; tableStateSet(c._table, "sort", null); } }
-function TableSetupColumn(label, widthOrWeight = 0) {
+const TableColumnFlags = {
+  None: 0,
+  Disabled: 1 << 0, DefaultHide: 1 << 1, DefaultSort: 1 << 2,
+  WidthStretch: 1 << 3, WidthFixed: 1 << 4,
+  NoResize: 1 << 5, NoReorder: 1 << 6, NoHide: 1 << 7, NoClip: 1 << 8, NoSort: 1 << 9,
+  AlignLeft: 1 << 16, AlignCenter: 2 << 16, AlignRight: 3 << 16,
+  AlignMaskX: (1 << 16) | (2 << 16) | (3 << 16),
+  AlignTop: 1 << 20, AlignMiddle: 2 << 20, AlignBottom: 3 << 20,
+  AlignMaskY: (1 << 20) | (2 << 20) | (3 << 20),
+};
+function TableSetupColumn(label, widthOrWeight = 0, flags = 0) {
   const c = ensure();
-  if (c._table) { c._table.names.push(label); c._table._widths = c._table._widths || []; c._table._widths.push(widthOrWeight); }
+  if (c._table) { c._table.names.push(label); c._table._widths = c._table._widths || []; c._table._widths.push(widthOrWeight); c._table._colFlags = c._table._colFlags || []; c._table._colFlags.push(flags || 0); }
 }
 function tablePersistKey(t, kind) { return "imgui_table_" + t.id + "_" + kind; }
 function tableStateGet(t, kind) {
@@ -3835,7 +3881,17 @@ function TableHeadersRow() {
     const h = c.io.MousePos.x >= w.dc.cursorPos.x - c.style.CellPadding.x && c.io.MousePos.x <= w.dc.cursorPos.x - c.style.CellPadding.x + cw && c.io.MousePos.y >= hy && c.io.MousePos.y <= hy + hh;
     emit({ t: "rectFilled", x: w.dc.cursorPos.x - c.style.CellPadding.x, y: hy, w: cw, h: hh, r: 0, col: c.style.Colors[ImGui.Col.TableHeaderBg] });
     const arrow = sortDir === "asc" ? " ▲" : sortDir === "desc" ? " ▼" : "";
-    emit({ t: "text", str: nm + arrow, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.Text] });
+    // Header text: horizontal per-column flag, always vertically centered.
+    const hflags = (c._table._colFlags && c._table._colFlags[canon]) || 0;
+    const hax = hflags & ((1 << 16) | (2 << 16) | (3 << 16));
+    const hlabel = nm + arrow;
+    const htw = measure(hlabel);
+    const usableW = Math.max(0, cw - c.style.CellPadding.x * 2);
+    let htx = w.dc.cursorPos.x;
+    if (hax === (2 << 16)) htx += Math.max(0, (usableW - htw) / 2);
+    else if (hax === (3 << 16)) htx += Math.max(0, usableW - htw);
+    const hty = hy + Math.round((hh - c.style.FontSize) / 2);
+    emit({ t: "text", str: hlabel, x: htx, y: hty, col: c.style.Colors[ImGui.Col.Text] });
     if (h && c.io.MouseClicked[0] && (c._table.flags & TableFlags.Sortable)) {
       const cur = c._table.sort && c._table.sort.col === canon ? c._table.sort.dir : null;
       c._table.sort = cur === "asc" ? { col: canon, dir: "desc" } : cur === "desc" ? null : { col: canon, dir: "asc" };
@@ -3906,6 +3962,12 @@ function TableSetColumnIndex(n) {
   // Visual index n may map through a (hidden) reordered column table; the
   // canonical column supplies the width/offset used by every cell getter.
   const canon = (t._orderMap && t._orderMap[n] !== undefined) ? t._orderMap[n] : n;
+  const cflags = (t._colFlags && t._colFlags[canon]) || 0;
+  t._cell = {
+    x0: t.x + t.offsets[canon], w: t.widths[canon],
+    ax: cflags & ((1 << 16) | (2 << 16) | (3 << 16)),
+    ay: cflags & ((1 << 20) | (2 << 20) | (3 << 20)),
+  };
   w.dc.cursorPos.x = t.x + t.offsets[canon] + c.style.CellPadding.x;
   w.dc.cursorPos.y = (t.rowY || t.y) + (c.style.CellPadding.y || 0);
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
@@ -4115,7 +4177,7 @@ Object.assign(ImGui, {
   BeginTabBar, EndTabBar, BeginTabItem, EndTabItem, TabItemButton,
   BeginTable, EndTable, TableSetupColumn, TableHeadersRow, TableNextRow, TableNextColumn,
   TableSetColumnIndex, TableHeader, TableGetColumnIndex, TableGetRowIndex, TableGetColumnCount, TableFlags,
-  TableSetBgColor, TableBgTarget,
+  TableColumnFlags, TableSetBgColor, TableBgTarget,
   TableGetSortSpecs, TableClearSort, TableSetColumnOrder,
   Columns, NextColumn, TreeNodeEx, TreePush, TreePop, SetNextItemOpen, TreeNodeGetOpen,
   BeginDragDropSource, SetDragDropPayload, EndDragDropSource, BeginDragDropTarget, AcceptDragDropPayload, EndDragDropTarget,
@@ -4316,8 +4378,9 @@ function demoTables() {
     D._advRows = names.map((n, i) => ({ id: i + 1, name: n, action: actions[i], value: (i * 37) % 101, status: statuses[i % statuses.length] }));
   }
   if (ImGui.BeginTable('advanced_table', 5, flags)) {
-    ImGui.TableSetupColumn("ID"); ImGui.TableSetupColumn("Name"); ImGui.TableSetupColumn("Action");
-    ImGui.TableSetupColumn("Value"); ImGui.TableSetupColumn("Status");
+    const CF = ImGui.TableColumnFlags;
+    ImGui.TableSetupColumn("ID", 0, CF.AlignCenter); ImGui.TableSetupColumn("Name", 0, CF.AlignLeft); ImGui.TableSetupColumn("Action", 0, CF.AlignCenter);
+    ImGui.TableSetupColumn("Value", 0, CF.AlignRight); ImGui.TableSetupColumn("Status", 0, CF.AlignCenter);
     ImGui.TableHeadersRow();
     const rows = D._advRows.slice();
     const specs = ImGui.TableGetSortSpecs();
@@ -5025,7 +5088,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.40"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.42"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

@@ -187,8 +187,9 @@ function demoTables() {
     D._advRows = names.map((n, i) => ({ id: i + 1, name: n, action: actions[i], value: (i * 37) % 101, status: statuses[i % statuses.length] }));
   }
   if (ImGui.BeginTable('advanced_table', 5, flags)) {
-    ImGui.TableSetupColumn("ID"); ImGui.TableSetupColumn("Name"); ImGui.TableSetupColumn("Action");
-    ImGui.TableSetupColumn("Value"); ImGui.TableSetupColumn("Status");
+    const CF = ImGui.TableColumnFlags;
+    ImGui.TableSetupColumn("ID", 0, CF.AlignCenter); ImGui.TableSetupColumn("Name", 0, CF.AlignLeft); ImGui.TableSetupColumn("Action", 0, CF.AlignCenter);
+    ImGui.TableSetupColumn("Value", 0, CF.AlignRight); ImGui.TableSetupColumn("Status", 0, CF.AlignCenter);
     ImGui.TableHeadersRow();
     const rows = D._advRows.slice();
     const specs = ImGui.TableGetSortSpecs();

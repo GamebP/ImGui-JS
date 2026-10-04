@@ -102,18 +102,54 @@ function Text(str, ...args) {
   const st = c.style;
   const label = s;
   const tw = textW(label), th = 16;
+  // Table cell alignment: first item in a center/right cell shifts x; text
+  // draws vertically centered by default (AlignMiddle). Layout cursor stays
+  // top-padded so 20px widgets keep fitting the 22px row exactly.
+  let dy = 0;
+  const tc = c._table;
+  const tcell = (tc && tc.col >= 0 && tc._cell && tc.rowY !== undefined && tc.rowH) ? tc._cell : null;
+  if (tcell) {
+    const usableW = Math.max(0, tcell.w - st.CellPadding.x * 2);
+    const atOrigin = Math.abs(w.dc.cursorPos.x - (tcell.x0 + st.CellPadding.x)) < 1;
+    let dx = 0;
+    if (atOrigin && tcell.ax === (2 << 16)) dx = Math.max(0, (usableW - tw) / 2);
+    else if (atOrigin && tcell.ax === (3 << 16)) dx = Math.max(0, usableW - tw);
+    if (dx) { w.dc.cursorPos.x += dx; if (w.dc._cellStartX !== undefined) w.dc._cellStartX += dx; }
+  }
   c.beforeItemPlacement(tw, th);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
-  c.itemSize(tw, th); c.itemAdd(x, y, tw, th, 0);
-  emit({ t: "text", str: label, x, y, col: st.Colors[ImGui.Col.Text] });
+  if (tcell) {
+    const midY = tc.rowY + Math.round((tc.rowH - st.FontSize) / 2);
+    if (tcell.ay === (2 << 20) || tcell.ay === 0) dy = midY - y;
+    else if (tcell.ay === (3 << 20)) dy = (tc.rowY + tc.rowH - st.FontSize - (st.CellPadding.y || 0)) - y;
+  }
+  c.itemSize(tw, th); c.itemAdd(x, y + dy, tw, th, 0);
+  emit({ t: "text", str: label, x, y: y + dy, col: st.Colors[ImGui.Col.Text] });
 }
 function TextColored(col, str) {
   const c = ctx(), w = cur(); if (!w) return;
+  const st = c.style;
   const tw = textW(str), th = 16;
+  let dy = 0;
+  const tc = c._table;
+  const tcell = (tc && tc.col >= 0 && tc._cell && tc.rowY !== undefined && tc.rowH) ? tc._cell : null;
+  if (tcell) {
+    const usableW = Math.max(0, tcell.w - st.CellPadding.x * 2);
+    const atOrigin = Math.abs(w.dc.cursorPos.x - (tcell.x0 + st.CellPadding.x)) < 1;
+    let dx = 0;
+    if (atOrigin && tcell.ax === (2 << 16)) dx = Math.max(0, (usableW - tw) / 2);
+    else if (atOrigin && tcell.ax === (3 << 16)) dx = Math.max(0, usableW - tw);
+    if (dx) { w.dc.cursorPos.x += dx; if (w.dc._cellStartX !== undefined) w.dc._cellStartX += dx; }
+  }
   c.beforeItemPlacement(tw, th);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
-  c.itemSize(tw, th); c.itemAdd(x, y, tw, th, 0);
-  emit({ t: "text", str, x, y, col });
+  if (tcell) {
+    const midY = tc.rowY + Math.round((tc.rowH - st.FontSize) / 2);
+    if (tcell.ay === (2 << 20) || tcell.ay === 0) dy = midY - y;
+    else if (tcell.ay === (3 << 20)) dy = (tc.rowY + tc.rowH - st.FontSize - (st.CellPadding.y || 0)) - y;
+  }
+  c.itemSize(tw, th); c.itemAdd(x, y + dy, tw, th, 0);
+  emit({ t: "text", str, x, y: y + dy, col });
 }
 function TextWrapped(str) {
   const c = ctx(), w = cur(); if (!w) return;
