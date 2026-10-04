@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.44
+// @version      1.0.45
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.44";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.45";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -392,6 +392,12 @@ class ImGuiContext {
                   m.y >= w.pos.y && m.y <= w.pos.y + w.sizeFull.y;
     if (inWin) this.anyWindowHovered = true;
     w.contentHover = inWin && !this._activeModalRect; // modal locks wheel/right-click below it
+    // Click-to-focus (cf. imgui.cpp FocusWindow): the title-bar active color
+    // follows FOCUS, not hover — hovering a window must never light its title.
+    // First begun window starts focused; a left click inside a window (that no
+    // popup/modal consumes) moves focus there.
+    if (this.focusedWindow === undefined || (this.focusedWindow && ![...this.windows.values()].includes(this.focusedWindow))) this.focusedWindow = w;
+    if (inWin && io.MouseClicked[0] && !this._suppressChrome && !this._activeModalRect && !(flags & WindowFlags.NoMouseInputs)) this.focusedWindow = w;
     // title-bar interactions: drag-move, double-click collapse, close btn
     const barH = w.titleH;
     const inTitle = barH > 0 && m.x >= w.pos.x && m.x <= w.pos.x + w.sizeFull.x &&
@@ -922,7 +928,12 @@ class CanvasRenderer {
     }
     // title bar
     if (w.titleH > 0) {
-      const active = (c.windowStack[c.windowStack.length - 1] === w) || w.contentHover;
+      // TitleBgActive follows FOCUS (click-to-focus, or the window being
+      // dragged) — never hover. contentHover is true for every window under
+      // the cursor, so using it here flashed all hovered titles bright blue.
+      const isDragging = (c.activeKind === "move" && c.activePayload && c.activePayload.win === w);
+      const focused = (c.focusedWindow === w) || isDragging;
+      const active = focused;
       ctx.save();
       ctx.beginPath();
       ctx.rect(x, y, ww, w.titleH + st.WindowRounding);
@@ -1922,7 +1933,13 @@ function TreeNodeV(id, fmt, args) {
 function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const ht = hArg > 0 ? hArg : 120;
+  // Auto-fill height (cf. C++ size.y<=0 semantics): hArg<=0 stretches to the
+  // window's bottom edge instead of the old hardcoded 120px. Negative hArg
+  // leaves |hArg| px of padding (C++ "remaining minus N").
+  const availH = (w.sizeFull.y > 0)
+    ? Math.max(40, (w.pos.y + w.sizeFull.y - w.padding.y) - w.dc.cursorPos.y)
+    : 240;
+  const ht = hArg > 0 ? hArg : (hArg < 0 ? Math.max(40, availH + hArg) : availH);
   c.beforeItemPlacement(0, ht);
   const wd = wArg > 0 ? wArg : contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
@@ -1972,13 +1989,14 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
 function EndChild() {
   const c = ctx(), w = cur(); if (!w) return;
   const st = (c._childStack || []).pop();
-  const b = st ? st.bounds : undefined;
+  if (!st) { w._childBounds = null; return; }
+  const b = st.bounds;
   // If the content overflowed the requested box (items leak above the border),
   // grow the box + border to fit before wrapping the inner ops — otherwise
   // the overflow would clip silently and the parent cursor wouldn't advance.
-  let boxH = st ? st.bounds.h : 0;
-  if (st && !st.fixedH) {
-    const contentH = (w.dc.cursorMaxPos.y - st.bounds.y) + 6; // content + bottom padding
+  let boxH = b.h;
+  if (!st.fixedH) {
+    const contentH = (w.dc.cursorMaxPos.y - b.y) + 6; // content + bottom padding
     if (contentH > boxH) {
       boxH = contentH;
       const bg = w.drawList[st.bgIndex];
@@ -1987,33 +2005,33 @@ function EndChild() {
         const bd = w.drawList[st.borderIndex];
         if (bd && bd.t === "rect") bd.h = boxH;
       }
-      st.bounds.h = boxH;
+      b.h = boxH;
     }
   }
   // Clip the child's inner ops to its own box before popping state. This
   // replaces the items that overflowed the border with a nested clip group,
   // so nested children produce nested groups (innermost clipped first).
-  if (st && typeof st.clipMark === "number" && st.clipMark < w.drawList.length) {
+  if (typeof st.clipMark === "number" && st.clipMark < w.drawList.length) {
     const innerOps = w.drawList.splice(st.clipMark, w.drawList.length - st.clipMark);
-    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: st.bounds.x, y: st.bounds.y, w: st.bounds.w, h: boxH, ops: innerOps });
+    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: b.x, y: b.y, w: b.w, h: boxH, ops: innerOps });
   }
   // Restore the outer scope even if inner code left it unbalanced.
-  if (st) {
-    w._indent = st.indent || 0;
-    w.dc.cursorStartPos = { ...st.cursorStartPos };
-  }
-  if (b) {
-    const boxH = st.bounds.h;
-    // Snap: the parent continues exactly below the child's OUTER box.
-    // Never Math.max with the live cursor — clipped child content (or a
-    // clipper tail reservation at ~200000px) must not leak into the parent.
-    w.dc.cursorPos.x = b.x;
-    w.dc.cursorPos.y = b.y + boxH + c.style.ItemSpacing.y;
-    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
-    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
-    w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
-    w.dc.cursorMaxPos.y = Math.max(st.parentMaxPosY || 0, b.y + boxH);
-  }
+  w._indent = st.indent || 0;
+  w.dc.cursorStartPos = { ...st.cursorStartPos };
+  // Register the child box as an item on the parent line (cf. C++ ItemSize):
+  // the parent continues at the box's TOP-RIGHT with the line marked used, so
+  // SameLine() after EndChild lands beside the box instead of below it. A
+  // following widget WITHOUT SameLine takes the normal line-feed path and
+  // lands below the box exactly as before (y = top + height + spacing).
+  w.dc.cursorPos.x = b.x + b.w;
+  w.dc.cursorPos.y = b.y;
+  w.dc.cursorPosPrevLine = { x: b.x, y: b.y };
+  w.dc.currLineHeight = Math.max(st.currLineHeight || 0, boxH);
+  w.dc._lineUsed = true;
+  w.dc.lastItemWidth = b.w;
+  w.dc.lastItemHeight = boxH;
+  w.dc.cursorMaxPos.y = Math.max(st.parentMaxPosY || 0, b.y + boxH);
+  w.dc.cursorMaxPos.x = Math.max(w.dc.cursorMaxPos.x, b.x + b.w);
   w._childBounds = null;
 }
 
@@ -5525,7 +5543,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.44"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.45"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

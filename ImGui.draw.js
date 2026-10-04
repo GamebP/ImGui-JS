@@ -83,7 +83,12 @@ class CanvasRenderer {
     }
     // title bar
     if (w.titleH > 0) {
-      const active = (c.windowStack[c.windowStack.length - 1] === w) || w.contentHover;
+      // TitleBgActive follows FOCUS (click-to-focus, or the window being
+      // dragged) — never hover. contentHover is true for every window under
+      // the cursor, so using it here flashed all hovered titles bright blue.
+      const isDragging = (c.activeKind === "move" && c.activePayload && c.activePayload.win === w);
+      const focused = (c.focusedWindow === w) || isDragging;
+      const active = focused;
       ctx.save();
       ctx.beginPath();
       ctx.rect(x, y, ww, w.titleH + st.WindowRounding);

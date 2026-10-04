@@ -737,7 +737,13 @@ function TreeNodeV(id, fmt, args) {
 function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const ht = hArg > 0 ? hArg : 120;
+  // Auto-fill height (cf. C++ size.y<=0 semantics): hArg<=0 stretches to the
+  // window's bottom edge instead of the old hardcoded 120px. Negative hArg
+  // leaves |hArg| px of padding (C++ "remaining minus N").
+  const availH = (w.sizeFull.y > 0)
+    ? Math.max(40, (w.pos.y + w.sizeFull.y - w.padding.y) - w.dc.cursorPos.y)
+    : 240;
+  const ht = hArg > 0 ? hArg : (hArg < 0 ? Math.max(40, availH + hArg) : availH);
   c.beforeItemPlacement(0, ht);
   const wd = wArg > 0 ? wArg : contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
@@ -787,13 +793,14 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
 function EndChild() {
   const c = ctx(), w = cur(); if (!w) return;
   const st = (c._childStack || []).pop();
-  const b = st ? st.bounds : undefined;
+  if (!st) { w._childBounds = null; return; }
+  const b = st.bounds;
   // If the content overflowed the requested box (items leak above the border),
   // grow the box + border to fit before wrapping the inner ops — otherwise
   // the overflow would clip silently and the parent cursor wouldn't advance.
-  let boxH = st ? st.bounds.h : 0;
-  if (st && !st.fixedH) {
-    const contentH = (w.dc.cursorMaxPos.y - st.bounds.y) + 6; // content + bottom padding
+  let boxH = b.h;
+  if (!st.fixedH) {
+    const contentH = (w.dc.cursorMaxPos.y - b.y) + 6; // content + bottom padding
     if (contentH > boxH) {
       boxH = contentH;
       const bg = w.drawList[st.bgIndex];
@@ -802,33 +809,33 @@ function EndChild() {
         const bd = w.drawList[st.borderIndex];
         if (bd && bd.t === "rect") bd.h = boxH;
       }
-      st.bounds.h = boxH;
+      b.h = boxH;
     }
   }
   // Clip the child's inner ops to its own box before popping state. This
   // replaces the items that overflowed the border with a nested clip group,
   // so nested children produce nested groups (innermost clipped first).
-  if (st && typeof st.clipMark === "number" && st.clipMark < w.drawList.length) {
+  if (typeof st.clipMark === "number" && st.clipMark < w.drawList.length) {
     const innerOps = w.drawList.splice(st.clipMark, w.drawList.length - st.clipMark);
-    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: st.bounds.x, y: st.bounds.y, w: st.bounds.w, h: boxH, ops: innerOps });
+    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: b.x, y: b.y, w: b.w, h: boxH, ops: innerOps });
   }
   // Restore the outer scope even if inner code left it unbalanced.
-  if (st) {
-    w._indent = st.indent || 0;
-    w.dc.cursorStartPos = { ...st.cursorStartPos };
-  }
-  if (b) {
-    const boxH = st.bounds.h;
-    // Snap: the parent continues exactly below the child's OUTER box.
-    // Never Math.max with the live cursor — clipped child content (or a
-    // clipper tail reservation at ~200000px) must not leak into the parent.
-    w.dc.cursorPos.x = b.x;
-    w.dc.cursorPos.y = b.y + boxH + c.style.ItemSpacing.y;
-    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
-    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
-    w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
-    w.dc.cursorMaxPos.y = Math.max(st.parentMaxPosY || 0, b.y + boxH);
-  }
+  w._indent = st.indent || 0;
+  w.dc.cursorStartPos = { ...st.cursorStartPos };
+  // Register the child box as an item on the parent line (cf. C++ ItemSize):
+  // the parent continues at the box's TOP-RIGHT with the line marked used, so
+  // SameLine() after EndChild lands beside the box instead of below it. A
+  // following widget WITHOUT SameLine takes the normal line-feed path and
+  // lands below the box exactly as before (y = top + height + spacing).
+  w.dc.cursorPos.x = b.x + b.w;
+  w.dc.cursorPos.y = b.y;
+  w.dc.cursorPosPrevLine = { x: b.x, y: b.y };
+  w.dc.currLineHeight = Math.max(st.currLineHeight || 0, boxH);
+  w.dc._lineUsed = true;
+  w.dc.lastItemWidth = b.w;
+  w.dc.lastItemHeight = boxH;
+  w.dc.cursorMaxPos.y = Math.max(st.parentMaxPosY || 0, b.y + boxH);
+  w.dc.cursorMaxPos.x = Math.max(w.dc.cursorMaxPos.x, b.x + b.w);
   w._childBounds = null;
 }
 

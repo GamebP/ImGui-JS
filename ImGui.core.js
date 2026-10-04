@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.44";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.45";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -377,6 +377,12 @@ class ImGuiContext {
                   m.y >= w.pos.y && m.y <= w.pos.y + w.sizeFull.y;
     if (inWin) this.anyWindowHovered = true;
     w.contentHover = inWin && !this._activeModalRect; // modal locks wheel/right-click below it
+    // Click-to-focus (cf. imgui.cpp FocusWindow): the title-bar active color
+    // follows FOCUS, not hover — hovering a window must never light its title.
+    // First begun window starts focused; a left click inside a window (that no
+    // popup/modal consumes) moves focus there.
+    if (this.focusedWindow === undefined || (this.focusedWindow && ![...this.windows.values()].includes(this.focusedWindow))) this.focusedWindow = w;
+    if (inWin && io.MouseClicked[0] && !this._suppressChrome && !this._activeModalRect && !(flags & WindowFlags.NoMouseInputs)) this.focusedWindow = w;
     // title-bar interactions: drag-move, double-click collapse, close btn
     const barH = w.titleH;
     const inTitle = barH > 0 && m.x >= w.pos.x && m.x <= w.pos.x + w.sizeFull.x &&
