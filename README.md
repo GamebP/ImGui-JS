@@ -49,9 +49,9 @@
 ## Use the split `ImGui.main.js` with `https://` includes
 1. Pushed to `GamebP/ImGui-JS` — `@require` ×7 + `CDN_BASE` already point at
    `https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/`
-   with `?v=<version>` cache-buster (currently `?v=1.0.25`) (files live at repo root, no `Build/` prefix).
+   with `?v=<version>` cache-buster (currently `?v=1.0.26`) (files live at repo root, no `Build/` prefix).
 2. Next update: bump `@version`, `LIB_VERSION`, and the `?v=` in all 7 `@require`
-   lines (e.g. `?v=1.0.25` → `?v=1.0.25`). New URL = cache miss, old cached libs are dropped.
+   lines (e.g. `?v=1.0.26` → `?v=1.0.26`). New URL = cache miss, old cached libs are dropped.
 3. New userscript ← paste `ImGui.main.js` only. Violentmonkey fetches the 7 libs
    via `https://raw.githubusercontent.com/...` at install. If a lib 404s, the runtime
    fallback in `ensureLibs()` loads them from `CDN_BASE` + `?v=` via `<script src>`.

@@ -930,17 +930,39 @@ function BeginTable(id, columns, flags = 0, outerW = 0, outerH = 0) {
     id: String(id), cols: columns, flags, x, y: w.dc.cursorPos.y, row: -1, col: -1,
     avail, colW: avail / columns, widths: null, offsets: null,
     names: [], rowH: 22, startY: w.dc.cursorPos.y,
+    _widths: [], _customWidths: tableStateGet({ id: String(id) }, "widths"),
+    order: tableStateGet({ id: String(id) }, "order"), sort: tableStateGet({ id: String(id) }, "sort"),
   };
+  if (c._table._customWidths && !Array.isArray(c._table._customWidths)) c._table._customWidths = null;
+  if (c._table.order && !Array.isArray(c._table.order)) c._table.order = null;
   PushID("table:" + id);
   return true;
 }
+function TableSetColumnOrder(indices) {
+  const c = ensure(); if (!c._table) return;
+  c._table.order = [...indices]; tableStateSet(c._table, "order", c._table.order);
+}
+function TableGetSortSpecs() {
+  const c = ensure(); if (!c._table || !c._table.sort) return { Specs: [], SpecsCount: 0, Dirty: false };
+  const s = c._table.sort;
+  return { Specs: [{ ColumnIndex: s.col, SortOrder: 0, SortDirection: s.dir === "desc" ? 2 : 1 }], SpecsCount: 1, Dirty: false };
+}
+function TableClearSort() { const c = ensure(); if (c._table) { c._table.sort = null; tableStateSet(c._table, "sort", null); } }
 function TableSetupColumn(label, widthOrWeight = 0) {
   const c = ensure();
   if (c._table) { c._table.names.push(label); c._table._widths = c._table._widths || []; c._table._widths.push(widthOrWeight); }
 }
+function tablePersistKey(t, kind) { return "imgui_table_" + t.id + "_" + kind; }
+function tableStateGet(t, kind) {
+  try { return JSON.parse(localStorage.getItem(tablePersistKey(t, kind)) || "null"); } catch (e) { return null; }
+}
+function tableStateSet(t, kind, val) {
+  try { localStorage.setItem(tablePersistKey(t, kind), JSON.stringify(val)); return true; } catch (e) { return false; }
+}
 function tableLayout(t) {
   // Column pitch reserves CellPadding.x on both sides so text never clips.
-  if (t.widths) return;
+  // Recompute every frame so columns track window width; a column the user
+  // dragged (Resizable) keeps its explicit width via t._customWidths.
   const c = ensure(), pad = c.style.CellPadding.x;
   const n = t.cols;
   t.widths = new Array(n); t.offsets = new Array(n);
@@ -953,6 +975,17 @@ function tableLayout(t) {
   const rest = Math.max(0, t.avail - fixed);
   const each = auto > 0 ? Math.max(pad * 2 + 10, rest / auto) : 0;
   for (let i = 0; i < n; i++) if (!t.widths[i]) t.widths[i] = each;
+  // User-resized columns (Resizable drag) override the auto widths and stay
+  // fixed; the remaining space is still distributed to the auto columns.
+  if (t._customWidths) {
+    let cf = 0;
+    for (let i = 0; i < n; i++) if (typeof t._customWidths[i] === "number") cf += t._customWidths[i];
+    const rest2 = Math.max(0, t.avail - cf);
+    for (let i = 0; i < n; i++) {
+      if (typeof t._customWidths[i] === "number") t.widths[i] = t._customWidths[i];
+      else if (t.widths[i] && cf > 0) t.widths[i] = Math.max(40, rest2 / Math.max(1, n - Object.keys(t._customWidths).length));
+    }
+  }
   t.colW = t.avail / n;
   let acc = 0;
   for (let i = 0; i < n; i++) { t.offsets[i] = acc; acc += t.widths[i]; }
@@ -965,13 +998,30 @@ function TableHeadersRow() {
   const c = ensure(), w = W(); if (!w || !c._table) return;
   tableLayout(c._table);
   TableNextRow();
+  // Column order (visual -> canonical) may be persisted/remembered; widths
+  // used here are the *canonical* widths mapped through t.offsets via order.
+  const order = c._table.order && c._table.order.length === c._table.cols ? c._table.order : c._table.names.map((_, i) => i);
+  c._table._orderMap = order;
   for (let i = 0; i < c._table.cols; i++) {
+    const canon = order[i];
     TableSetColumnIndex(i);
-    const nm = c._table.names[i] || ("C" + i);
-    const cw = c._table.widths[i];
+    const nm = c._table.names[canon] || ("C" + canon);
+    const cw = c._table.widths[canon];
     const hh = c.style.FontSize + c.style.FramePadding.y * 2;
-    emit({ t: "rectFilled", x: w.dc.cursorPos.x - 2, y: w.dc.cursorPos.y - 2, w: cw - 2, h: hh, r: 3, col: c.style.Colors[ImGui.Col.TableHeaderBg] });
-    emit({ t: "text", str: nm, x: w.dc.cursorPos.x + c.style.CellPadding.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.Text] });
+    const hx = w.dc.cursorPos.x - c.style.CellPadding.x - 0;
+    // Header hover + click => cycle sort asc/desc/off (Sortable)
+    const sortDir = (c._table.sort && c._table.sort.col === canon) ? c._table.sort.dir : null;
+    const hy = w.dc.cursorPos.y - 2;
+    const h = w.dc.cursorPos.x <= c.io.MousePos.x && c.io.MousePos.x <= w.dc.cursorPos.x + cw && hy <= c.io.MousePos.y && c.io.MousePos.y <= hy + hh;
+    emit({ t: "rectFilled", x: w.dc.cursorPos.x - c.style.CellPadding.x, y: hy, w: cw, h: hh, r: 3, col: c.style.Colors[h ? ImGui.Col.TableHeaderBg : ImGui.Col.TableHeaderBg] });
+    const arrow = sortDir === "asc" ? " ▲" : sortDir === "desc" ? " ▼" : "";
+    emit({ t: "text", str: nm + arrow, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.Text] });
+    if (h && c.io.MouseClicked[0] && (c._table.flags & TableFlags.Sortable)) {
+      const cur = c._table.sort && c._table.sort.col === canon ? c._table.sort.dir : null;
+      c._table.sort = cur === "asc" ? { col: canon, dir: "desc" } : cur === "desc" ? null : { col: canon, dir: "asc" };
+      tableStateSet(c._table, "sort", c._table.sort);
+      c._table._widths = c._table._widths || [];
+    }
   }
   // bottom separator splitting headers from data rows
   if (tableHasInnerH(c._table)) {
@@ -979,6 +1029,28 @@ function TableHeadersRow() {
     emit({ t: "line", x1: t.x, y1: yb, x2: t.x + t.avail, y2: yb, col: c.style.Colors[ImGui.Col.TableBorderStrong], th: 1 });
   }
   tableInnerVerticals(c._table);
+  // Resizable columns: drag a header/cell boundary to retune widths.
+  if ((c._table.flags & TableFlags.Resizable) && c._table.offsets) {
+    const t = c._table;
+    for (let i = 1; i < t.cols; i++) {
+      const lx = t.x + t.offsets[i];
+      const m = c.io.MousePos;
+      const onLine = Math.abs(m.x - lx) <= 3 && m.y >= t.startY - 2 && m.y <= t.startY + t.rowH + 4;
+      if (onLine && c.io.MouseClicked[0]) {
+        c.activeId = (t.id.length * 131 + i) | 0; c.activeKind = "tablecol";
+        c.activePayload = { table: t, col: i, startX: m.x, origW: (t._customWidths && t._customWidths[i - 1]) || t.widths[i - 1] };
+      }
+      if (c.activeKind === "tablecol" && c.activePayload && c.activePayload.table === t && c.activePayload.col === i) {
+        const dx = m.x - c.activePayload.startX;
+        t._customWidths = t._customWidths || {};
+        t._customWidths[i - 1] = Math.max(40, c.activePayload.origW + dx);
+        if (!c.io.MouseDown[0]) {
+          tableStateSet(t, "widths", t._customWidths);
+          c.activeId = 0; c.activeKind = null; c.activePayload = null;
+        }
+      }
+    }
+  }
 }
 function tableInnerVerticals(t) {
   const c = ensure();
@@ -1010,9 +1082,10 @@ function TableSetColumnIndex(n) {
   const t = c._table;
   tableLayout(t);
   t.col = n;
-  // Explicit x offset from stored widths + cell padding (never arbitrary).
-  // _cellStartX lets multi-widget cells wrap in-column instead of to margin.
-  w.dc.cursorPos.x = t.x + t.offsets[n] + c.style.CellPadding.x; w.dc.cursorPos.y = t.rowY || t.y;
+  // Visual index n may map through a (hidden) reordered column table; the
+  // canonical column supplies the width/offset used by every cell getter.
+  const canon = (t._orderMap && t._orderMap[n] !== undefined) ? t._orderMap[n] : n;
+  w.dc.cursorPos.x = t.x + t.offsets[canon] + c.style.CellPadding.x; w.dc.cursorPos.y = t.rowY || t.y;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc._lockFeed = true;
@@ -1207,6 +1280,7 @@ Object.assign(ImGui, {
   BeginTabBar, EndTabBar, BeginTabItem, EndTabItem, TabItemButton,
   BeginTable, EndTable, TableSetupColumn, TableHeadersRow, TableNextRow, TableNextColumn,
   TableSetColumnIndex, TableHeader, TableGetColumnIndex, TableGetRowIndex, TableGetColumnCount, TableFlags,
+  TableGetSortSpecs, TableClearSort, TableSetColumnOrder,
   Columns, NextColumn, TreeNodeEx, TreePush, TreePop, SetNextItemOpen, TreeNodeGetOpen,
   BeginDragDropSource, SetDragDropPayload, EndDragDropSource, BeginDragDropTarget, AcceptDragDropPayload, EndDragDropTarget,
   SaveIniSettingsToMemory, LoadIniSettingsFromMemory,

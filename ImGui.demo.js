@@ -141,7 +141,7 @@ function demoWidgets() {
 
 function demoTables() {
   if (!ImGui.CollapsingHeader("Tables")) return;
-  if (ImGui.BeginTable("t1", 3, ImGui.TableFlags.Borders | ImGui.TableFlags.RowBg)) {
+  if (ImGui.BeginTable("t1", 3, ImGui.TableFlags.Borders | ImGui.TableFlags.RowBg | ImGui.TableFlags.Sortable | ImGui.TableFlags.Resizable)) {
     ImGui.TableSetupColumn("Name"); ImGui.TableSetupColumn("HP"); ImGui.TableSetupColumn("Ping");
     ImGui.TableHeadersRow();
     const rows = [["bot_a", "100", "12"], ["bot_b", "75", "40"], ["bot_c", "50", "88"]];
