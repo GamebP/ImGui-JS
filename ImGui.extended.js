@@ -59,6 +59,11 @@ function ensure() {
     c._popupRolloverFrame = c.frame;
     c._popupRectsPrev = c._popupRects || {};
     c._popupRects = {};
+    // Wheel trap rollover: overlay lists (combo dropdowns, list boxes) own
+    // the wheel for one frame after rendering, so the parent window beneath
+    // never scrolls while an inner list does.
+    c._wheelTrapPrev = c._wheelTrap || [];
+    c._wheelTrap = [];
     // Reset overlay ops at frame start so no stale modal dim/popup frames
     // persist after the popup closes (ghost dim artifact).
     c._overlayOps = [];
@@ -102,6 +107,16 @@ function inPopupContent() {
   const c = ensure();
   return (c._popupBoxStack && c._popupBoxStack.length > 0);
 }
+// Wheel ownership: an overlay list rendered last frame traps the wheel when
+// the pointer sits inside its rect, so the parent window skips its own step.
+function wheelTrapped(cc) {
+  const rects = cc._wheelTrapPrev || [];
+  const m = cc.io.MousePos;
+  for (const t of rects) {
+    if (t && m.x >= t.x && m.x <= t.x + t.w && m.y >= t.y && m.y <= t.y + t.h) return true;
+  }
+  return false;
+}
 
 // ---------- lazily wrap Begin/End once (scroll + ini) ----------
 let _wrapped = false;
@@ -124,7 +139,9 @@ function wrapBeginEnd() {
       const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
       // wheel scroll when hovered (content taller than view); content renders
       // translated by -scrollY in draw.js and is clipped to the viewport.
-      if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && (this.activeKind !== "slider" && this.activeKind !== "drag" && this.activeKind !== "scroll" && this.activeKind !== "move" && this.activeKind !== "resize")) {
+      // Skipped inside a wheel trapped overlay list (combo dropdowns and
+      // virtualized list boxes own the wheel there).
+      if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && !wheelTrapped(this) && (this.activeKind !== "slider" && this.activeKind !== "drag" && this.activeKind !== "scroll" && this.activeKind !== "move" && this.activeKind !== "resize")) {
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY - this.io.MouseWheel * (this.style.FontSize * 2)));
       }
       // scrollbar grip drag (uses raw viewport coordinates)
@@ -656,7 +673,7 @@ function IsAnyItemFocused() { const k = ensure().activeKind; return k === 'text'
 // wrap edit-reporting widgets to feed IsItemEdited/Deactivated
 function wrapEditTrack() {
   if (ensure().__editWrapped) return; ensure().__editWrapped = true;
-  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "DragFloat4", "DragInt4", "InputFloat4", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
+  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderScalar", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "DragFloat4", "DragInt4", "InputFloat4", "InputText", "InputFloat", "InputInt", "InputDouble", "InputScalar", "ColorEdit4", "ColorEdit3", "ColorPicker4", "Combo", "Selectable", "ListBox", "ListBoxMulti"];
   for (const n of names) {
     if (typeof ImGui[n] !== "function") continue;
     const orig = ImGui[n];

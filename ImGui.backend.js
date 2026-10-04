@@ -192,27 +192,71 @@ const Backend = {
       // Pure canvas text editing: route editing keys straight into the
       // active widget's payload (no DOM element involved).
       if ((cc2.activeKind === "text" || cc2.activeKind === "segtext") && cc2.activePayload) {
-        if (e.key === "Backspace") {
+        const P = cc2.activePayload;
+        const TF = ImGui.InputTextFlags || {};
+        const fl = P.inputFlags || 0;
+        const TE = ImGui._textEdit || null;
+        const fireEdit = () => {
+          if (TE && P.inputCallback && (fl & (TF.CallbackEdit || 0)) && ImGui.InputTextCallbackData) {
+            try { P.inputCallback(new ImGui.InputTextCallbackData(P, TF.CallbackEdit)); }
+            catch (err) { console.error("[ImGui] input callback error:", err); }
+          }
+        };
+        const fireKey = (flag, code) => {
+          if (P.inputCallback && (fl & flag) && ImGui.InputTextCallbackData) {
+            try {
+              const d = new ImGui.InputTextCallbackData(P, flag);
+              d.EventKey = code || "";
+              P.inputCallback(d);
+            } catch (err) { console.error("[ImGui] input callback error:", err); }
+          }
+        };
+        const key = e.key || "";
+        // Undo and redo history (per widget payload stack, seeded at focus).
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && TE && P.history &&
+            (key === "z" || key === "Z" || key === "y" || key === "Y")) {
+          const redo = (key === "y" || key === "Y") || (e.shiftKey && (key === "z" || key === "Z"));
           e.preventDefault();
-          cc2.activePayload.value = cc2.activePayload.value.slice(0, -1);
-          cc2.activePayload.cursorPos = Math.max(0, (cc2.activePayload.cursorPos || cc2.activePayload.value.length) - 1);
-        } else if (e.key === "Enter") {
+          e.stopPropagation();
+          if (redo ? TE.redo(P) : TE.undo(P)) fireEdit();
+          return;
+        }
+        // Completion (Tab) and history (Up/Down) callbacks. Tab never moves
+        // browser focus while a completion callback owns it.
+        if (key === "Tab" && (fl & (TF.CallbackCompletion || 0))) {
           e.preventDefault();
-          if (cc2.activePayload.multiline) {
-            cc2.activePayload.value += "\n";
-            cc2.activePayload.cursorPos = cc2.activePayload.value.length;
+          e.stopPropagation();
+          fireKey(TF.CallbackCompletion, e.code || "Tab");
+          return;
+        }
+        if ((key === "ArrowUp" || key === "ArrowDown") && (fl & (TF.CallbackHistory || 0))) {
+          e.preventDefault();
+          e.stopPropagation();
+          fireKey(TF.CallbackHistory, e.code || key);
+          return;
+        }
+        if (key === "Backspace") {
+          e.preventDefault();
+          P.value = P.value.slice(0, -1);
+          P.cursorPos = Math.max(0, (P.cursorPos || P.value.length) - 1);
+          fireEdit();
+        } else if (key === "Enter") {
+          e.preventDefault();
+          if (P.multiline) {
+            P.value += "\n";
+            P.cursorPos = P.value.length;
+            fireEdit();
           } else {
-            cc2.activePayload.commit = true;
+            P.commit = true;
             this.blurText();
           }
-        } else if (e.key === "Escape") {
+        } else if (key === "Escape") {
           e.preventDefault();
-          cc2.activePayload.commit = true;
+          P.commit = true;
           this.blurText();
-        } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        } else if (key && key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          cc2.activePayload.value += e.key;
-          cc2.activePayload.cursorPos = cc2.activePayload.value.length;
+          if (TE ? TE.insert(P, key) : (P.value += key, P.cursorPos = P.value.length, true)) fireEdit();
         }
         e.stopPropagation(); // the page must never see keys typed into the UI
         return;

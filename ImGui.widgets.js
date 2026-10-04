@@ -18,6 +18,156 @@ function textW(s, font = "13px -apple-system,Segoe UI,Roboto,Arial,sans-serif") 
   return _mc.measureText(s).width;
 }
 function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
+// ---------- InputText callback data + edit helpers (Feature 2) ----------
+// Callback payload mirroring ImGuiInputTextCallbackData: live Buf accessors
+// over the widget payload plus selection and splice helpers.
+class InputTextCallbackData {
+  constructor(P, flag) {
+    this._p = P;
+    this.EventFlag = flag;
+    this.EventChar = 0;
+    this.EventKey = "";
+    this.SelectionStart = P.cursorPos || 0;
+    this.SelectionEnd = P.cursorPos || 0;
+    this._dirty = false;
+  }
+  get Buf() { return this._p.value; }
+  set Buf(v) { this._p.value = String(v == null ? "" : v); this._p.cursorPos = this._p.value.length; this._dirty = true; }
+  get BufTextLen() { return this._p.value.length; }
+  get CursorPos() { return this._p.cursorPos || 0; }
+  set CursorPos(v) { this._p.cursorPos = Math.max(0, Math.min(this._p.value.length, v | 0)); }
+  get BufDirty() { return !!this._dirty; }
+  set BufDirty(v) { this._dirty = !!v; }
+  HasSelection() { return this.SelectionEnd > this.SelectionStart; }
+  SelectAll() { this.SelectionStart = 0; this.SelectionEnd = this._p.value.length; }
+  ClearSelection() { this.SelectionStart = this.SelectionEnd = this.CursorPos; }
+  DeleteChars(pos, bytesCount) {
+    const s = this._p.value;
+    pos = Math.max(0, Math.min(s.length, pos | 0));
+    this._p.value = s.slice(0, pos) + s.slice(pos + Math.max(0, bytesCount | 0));
+    this._p.cursorPos = Math.max(0, Math.min(this._p.value.length, this._p.cursorPos));
+    this._dirty = true;
+  }
+  InsertChars(pos, text) {
+    const s = this._p.value, t = String(text == null ? "" : text);
+    pos = Math.max(0, Math.min(s.length, pos | 0));
+    this._p.value = s.slice(0, pos) + t + s.slice(pos);
+    this._p.cursorPos = pos + t.length;
+    this._dirty = true;
+  }
+}
+// Shared text edit ops used by widgets.js and (guarded) ImGui.backend.js.
+const _textEdit = {
+  // Per character filter for single key inserts. Returns the accepted char
+  // or null when rejected. Runs flag filters first, then the user CharFilter
+  // (nonzero return rejects; the callback may rewrite EventChar).
+  filterChar(P, ch) {
+    const F = ImGui.InputTextFlags || {};
+    const fl = (P && P.inputFlags) || 0;
+    if ((fl & (F.CharsUppercase || 0)) !== 0) ch = ch.toUpperCase();
+    if ((fl & (F.CharsNoBlank || 0)) !== 0 && /\s/.test(ch)) return null;
+    if ((fl & (F.CharsDecimal || 0)) !== 0 && !/[0-9+\-.*/]/.test(ch)) return null;
+    if ((fl & (F.CharsHexadecimal || 0)) !== 0 && !/[0-9a-fA-F]/.test(ch)) return null;
+    const cb = P && P.inputCallback;
+    if ((fl & (F.CharFilter || F.CallbackCharFilter || 0)) !== 0 && typeof cb === "function") {
+      const d = new InputTextCallbackData(P, (F.CallbackCharFilter || F.CharFilter || 0));
+      d.EventChar = ch.codePointAt(0) || 0;
+      let ret = 0;
+      try { ret = cb(d) | 0; } catch (e) { console.error("[ImGui] char filter error:", e); }
+      if (ret) return null;
+      const rep = String.fromCodePoint(d.EventChar || 0);
+      // A callback Buf write already landed in the payload: accept as is.
+      if (d._dirty) return "";
+      if (rep) ch = rep;
+    }
+    return ch;
+  },
+  // Bulk filter for pasted or IME committed strings.
+  filterBulk(P, s) {
+    let out = "";
+    for (const ch of String(s == null ? "" : s)) {
+      const acc = this.filterChar(P, ch);
+      if (acc === null) continue;
+      if (acc === "") return P.value; // callback rewrote the buffer wholesale
+      out += acc;
+    }
+    return out;
+  },
+  // Insert one filtered char: space boundaries snapshot history for undo.
+  insert(P, ch) {
+    const acc = this.filterChar(P, ch);
+    if (acc === null) return false;
+    if (acc === "") return true; // filter callback handled the buffer itself
+    if (P.history) {
+      P.history.r.length = 0;
+      if (acc === " ") this.push(P);
+    }
+    P.value += acc;
+    P.cursorPos = P.value.length;
+    return true;
+  },
+  // Undo stack: pre change snapshots on activation and space boundaries
+  // (maximum 50 states). Commit pushes nothing: the first undo must move.
+  push(P) {
+    const h = P && P.history;
+    if (!h) return;
+    if (h.u[h.u.length - 1] !== P.value) {
+      h.u.push(P.value);
+      if (h.u.length > 50) h.u.shift();
+    }
+    h.r.length = 0;
+  },
+  undo(P) {
+    const h = P && P.history;
+    if (!h || !h.u.length) return false;
+    h.r.push(P.value);
+    P.value = h.u.pop();
+    P.cursorPos = P.value.length;
+    return true;
+  },
+  redo(P) {
+    const h = P && P.history;
+    if (!h || !h.r.length) return false;
+    h.u.push(P.value);
+    P.value = h.r.pop();
+    P.cursorPos = P.value.length;
+    return true;
+  },
+};
+// Arm a text payload with flags, callback, and undo history, then focus the
+// backend capture input with a filtering commit wrapper for IME pastes.
+// extra merges additional payload fields (e.g. { multiline: true }).
+function initTextPayload(c, id, kind, text, flags, callback, extra) {
+  const start = String(text == null ? "" : text);
+  const P = {
+    value: start, cursorPos: start.length, commit: false,
+    inputFlags: flags | 0,
+    inputCallback: (typeof callback === "function") ? callback : null,
+    history: { u: [start], r: [] },
+  };
+  if (extra) Object.assign(P, extra);
+  c.activeId = id; c.activeKind = kind; c.activePayload = P;
+  if (ImGui._backendFocusText) {
+    ImGui._backendFocusText(P.value, (nv) => {
+      if (c.activePayload !== P) return;
+      const keepCb = P.inputCallback;
+      const tmp = { value: "", cursorPos: 0, inputFlags: P.inputFlags, inputCallback: keepCb, history: null };
+      const filtered = _textEdit.filterBulk(tmp, nv);
+      const merged = tmp.value + filtered;
+      if (merged !== P.value) {
+        P.value = merged;
+        P.cursorPos = merged.length;
+        fireTextCallback(c, P, (ImGui.InputTextFlags || {}).CallbackEdit);
+      }
+    });
+  }
+  return P;
+}
+function fireTextCallback(c, P, flag) {
+  const cb = P && P.inputCallback;
+  if (typeof cb !== "function" || !flag) return;
+  try { cb(new InputTextCallbackData(P, flag)); } catch (e) { console.error("[ImGui] input callback error:", e); }
+}
 // Remaining content width from the cursor (child/indent/cell aware).
 // Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
 function contentAvail() {
@@ -359,6 +509,37 @@ function Toggle(label, checked) {
   return { changed, checked: ch };
 }
 
+// ---------- scalar type dispatch (InputScalar/SliderScalar backing) ----------
+// Per type limits, integer flag, and default format. S64/U64 exceed float
+// integer precision and clamp to the safe integer range (documented limit).
+const DataTypeInfo = [
+  { min: -128, max: 127, integer: true, fmt: "%d" },                       // S8
+  { min: 0, max: 255, integer: true, fmt: "%u" },                          // U8
+  { min: -32768, max: 32767, integer: true, fmt: "%d" },                   // S16
+  { min: 0, max: 65535, integer: true, fmt: "%u" },                        // U16
+  { min: -2147483648, max: 2147483647, integer: true, fmt: "%d" },         // S32
+  { min: 0, max: 4294967295, integer: true, fmt: "%u" },                   // U32
+  { min: -9007199254740991, max: 9007199254740991, integer: true, fmt: "%d" }, // S64 (safe int clamp)
+  { min: 0, max: 9007199254740991, integer: true, fmt: "%u" },              // U64 (safe int clamp)
+  { min: -Infinity, max: Infinity, integer: false, fmt: "%.3f" },          // Float
+  { min: -Infinity, max: Infinity, integer: false, fmt: "%.6f" },          // Double
+];
+function scalarInfo(dataType) {
+  return DataTypeInfo[dataType] || DataTypeInfo[ImGui.DataType.Float];
+}
+function scalarClamp(v, info, lo, hi) {
+  let mn = info.min, mx = info.max;
+  if (lo !== undefined && lo !== null && Number.isFinite(lo)) mn = Math.max(mn, lo);
+  if (hi !== undefined && hi !== null && Number.isFinite(hi)) mx = Math.min(mx, hi);
+  if (info.integer) v = Math.round(v);
+  return Math.max(mn, Math.min(mx, v));
+}
+function scalarFormat(dataType, format, v) {
+  const fmt = format || scalarInfo(dataType).fmt;
+  if (fmt.indexOf("%u") >= 0) return String(Math.max(0, Math.round(v)));
+  return formatValue(fmt, v);
+}
+
 // ---------- sliders / drags ----------
 function sliderBehavior(id, x, y, wd, ht, vmin, vmax, value) {
   const c = ctx();
@@ -379,8 +560,32 @@ function sliderBehavior(id, x, y, wd, ht, vmin, vmax, value) {
   }
   return { changed, value: v, hovered: h };
 }
-function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
+function scalarBehavior(id, x, y, wd, ht, lo, hi, logarithmic, value) {
+  const c = ctx();
+  if ((c._disabledDepth || 0) > 0) return { changed: false, value, hovered: false };
+  const h = c.hovered(x, y, wd, ht);
+  if (h) c.anyWindowHovered = true;
+  let v = value, changed = false;
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+    c.activeId = id; c.activeKind = "slider"; c.activePayload = { vmin: lo, vmax: hi };
+  }
+  if (c.activeId === id && c.activeKind === "slider") {
+    const m = c.io.MousePos;
+    let t = (m.x - x) / Math.max(1, wd);
+    t = Math.max(0, Math.min(1, t));
+    // Logarithmic scale needs a strictly positive range, else linear.
+    const useLog = logarithmic && lo > 0 && hi > lo;
+    const nv = useLog ? lo * Math.pow(hi / lo, t) : lo + t * (hi - lo);
+    if (nv !== v) { v = nv; changed = true; }
+    if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; c.activePayload = null; }
+  }
+  return { changed, value: v, hovered: h };
+}
+function SliderScalar(label, dataType, value, vmin, vmax, format, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, value };
+  const info = scalarInfo(dataType);
+  const lo = (vmin === undefined || vmin === null) ? info.min : Math.max(info.min, vmin);
+  const hi = (vmax === undefined || vmax === null) ? info.max : Math.min(info.max, vmax);
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   c.beforeItemPlacement(0, 20);
@@ -391,18 +596,23 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
-  const r = sliderBehavior(id, x, y + 4, sliderW, 12, vmin, vmax, value);
-  const grabT = (r.value - vmin) / Math.max(1e-6, vmax - vmin);
+  const log = (flags & (ImGui.SliderScalarFlags ? ImGui.SliderScalarFlags.Logarithmic : 1)) !== 0;
+  const r = scalarBehavior(id, x, y + 4, sliderW, 12, lo, hi, log, value);
+  const nv = scalarClamp(r.value, info, lo, hi);
+  const changed = r.changed && nv !== value;
+  const grabT = hi > lo ? (Math.max(lo, Math.min(hi, nv)) - lo) / (hi - lo) : 0;
   emit({ t: "rectFilled", x, y: y + 6, w: sliderW, h: 8, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
   emit({ t: "rectFilled", x: x + grabT * (sliderW - 12), y: y + 3, w: 12, h: 14, r: 4, col: st.Colors[r.hovered || c.activeId === id ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
-  const valStr = formatValue(format, r.value);
+  const valStr = scalarFormat(dataType, format, nv);
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)}: ${valStr}`, x: x + sliderW + 10, y: y + 2, col: st.Colors[ImGui.Col.Text] });
-  return r;
+  return { changed, value: nv, hovered: r.hovered };
+}
+function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
+  return SliderScalar(label, ImGui.DataType.Float, value, vmin, vmax, format);
 }
 function SliderInt(label, value, vmin, vmax) {
-  const r = SliderFloat(label, value, vmin, vmax, "%.0f");
-  const iv = Math.round(r.value);
-  return { changed: r.changed && iv !== value, value: iv };
+  const r = SliderScalar(label, ImGui.DataType.S32, value, vmin, vmax, undefined);
+  return { changed: r.changed, value: r.value, hovered: r.hovered };
 }
 function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, value };
@@ -430,9 +640,10 @@ function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
 }
 
 // ---------- input text (uses hidden DOM input managed by backend) ----------
-function InputText(label, text, flags = 0, hint = "") {
+function InputText(label, text, flags = 0, hint = "", callback = null) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
   if ((c._disabledDepth || 0) > 0) { c.beforeItemPlacement(0, c.style.FontSize + c.style.FramePadding.y * 2 + 2); const bw2 = itemWidthOverride() || 200; c.itemSize(bw2 + 80, 22); emit({ t: "text", str: ImGui.findRenderedTextEnd(label) + ": " + String(text||""), x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.TextDisabled] }); return { changed: false, text }; }
+  const F = ImGui.InputTextFlags || {};
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
@@ -451,19 +662,15 @@ function InputText(label, text, flags = 0, hint = "") {
   // (the backend input stays strictly off-screen — IME/mobile capture only,
   // cf. official Emscripten ports which never overlay a DOM box).
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
-    c.activeId = id; c.activeKind = "text";
-    c.activePayload = { value: String(text || ""), cursorPos: String(text || "").length, commit: false };
-    if (ImGui._backendFocusText) {
-      ImGui._backendFocusText(c.activePayload.value, (nv) => {
-        if (c.activePayload) c.activePayload.value = nv;
-      });
-    }
+    initTextPayload(c, id, "text", text, flags, callback);
   }
 
   // Deactivation: click outside, or Enter/Escape (commit flag set by backend).
+  // No history push here: snapshots are pre change states only (activation,
+  // space boundaries), so the first undo always moves.
   let deactivated = false, finalVal = String(text || "");
   if (isActive && ((c.io.MouseClicked[0] && !h) || (c.activePayload && c.activePayload.commit))) {
-    finalVal = c.activePayload ? c.activePayload.value : String(text || "");
+    if (c.activePayload) finalVal = c.activePayload.value;
     c.activeId = 0; c.activeKind = null; c.activePayload = null;
     if (ImGui._backendBlurText) ImGui._backendBlurText();
     deactivated = true;
@@ -473,8 +680,13 @@ function InputText(label, text, flags = 0, hint = "") {
   let currentVal = activeNow && c.activePayload ? c.activePayload.value : String(text || "");
   // live typing fallback when no backend capture exists (headless/tests)
   if (activeNow && c.io.InputChars) {
-    currentVal += c.io.InputChars;
-    if (c.activePayload) c.activePayload.value = currentVal;
+    for (const ch of String(c.io.InputChars)) {
+      if (_textEdit.insert(c.activePayload, ch)) { currentVal = c.activePayload.value; fireTextCallback(c, c.activePayload, F.CallbackEdit); }
+    }
+  }
+  // CallbackAlways fires every frame while the edit is live.
+  if (activeNow && c.activePayload && (flags & (F.CallbackAlways || 0))) {
+    fireTextCallback(c, c.activePayload, F.CallbackAlways);
   }
 
   emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
@@ -510,7 +722,7 @@ function InputText(label, text, flags = 0, hint = "") {
   // value, otherwise callers like `s = InputText(...).text` would lose the edit.
   return { changed, text: deactivated ? finalVal : currentVal };
 }
-function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
+function InputTextMultiline(label, text, wArg = 0, hArg = 60, flags = 0, callback = null) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
@@ -527,20 +739,26 @@ function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
   if (h) c.anyWindowHovered = true;
   const isActive = c.activeId === id && c.activeKind === "text";
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
-    c.activeId = id; c.activeKind = "text";
-    c.activePayload = { value: String(text || ""), cursorPos: String(text || "").length, commit: false, multiline: true };
-    if (ImGui._backendFocusText) ImGui._backendFocusText(c.activePayload.value, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+    initTextPayload(c, id, "text", text, flags, callback, { multiline: true });
   }
   let deactivated = false, finalVal = String(text || "");
   if (isActive && ((c.io.MouseClicked[0] && !h) || (c.activePayload && c.activePayload.commit))) {
-    finalVal = c.activePayload ? c.activePayload.value : String(text || "");
+    if (c.activePayload) finalVal = c.activePayload.value;
     c.activeId = 0; c.activeKind = null; c.activePayload = null;
     if (ImGui._backendBlurText) ImGui._backendBlurText();
     deactivated = true;
   }
   const activeNow = isActive && !deactivated;
   let currentVal = activeNow && c.activePayload ? c.activePayload.value : String(text || "");
-  if (activeNow && c.io.InputChars) { currentVal += c.io.InputChars; if (c.activePayload) c.activePayload.value = currentVal; }
+  if (activeNow && c.io.InputChars) {
+    const F = ImGui.InputTextFlags || {};
+    for (const ch of String(c.io.InputChars)) {
+      if (_textEdit.insert(c.activePayload, ch)) { currentVal = c.activePayload.value; fireTextCallback(c, c.activePayload, F.CallbackEdit); }
+    }
+  }
+  if (activeNow && c.activePayload && (flags & ((ImGui.InputTextFlags || {}).CallbackAlways || 0))) {
+    fireTextCallback(c, c.activePayload, (ImGui.InputTextFlags || {}).CallbackAlways);
+  }
   emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
   emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
   const lineH = st.FontSize + 2;
@@ -558,8 +776,8 @@ function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
 }
 
 // ---------- color (native canvas picker via popup — no detached DOM) ----------
-function ColorEdit3(label, color) { return ColorEdit4(label, [color[0], color[1], color[2], 1]); }
-function ColorEdit4(label, color) {
+function ColorEdit3(label, color, flags = 0) { return ColorEdit4(label, [color[0], color[1], color[2], 1], flags); }
+function ColorEdit4(label, color, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
   const ht = st.FontSize + st.FramePadding.y * 2, bw = 20;
@@ -578,7 +796,7 @@ function ColorEdit4(label, color) {
   // Swatch click opens the canvas picker popup anchored under the swatch.
   if (bb.pressed) ImGui.OpenPopup("##picker_" + id, x, y + ht + 2);
   if (ImGui.BeginPopup("##picker_" + id)) {
-    const cp = ImGui.ColorPicker4(label + "##popup", col);
+    const cp = ImGui.ColorPicker4(label + "##popup", col, flags);
     if (cp.changed) { col = cp.color; changed = true; }
     ImGui.EndPopup();
   }
@@ -587,8 +805,9 @@ function ColorEdit4(label, color) {
 }
 
 // ---------- combo / selectable ----------
-function BeginCombo(label, preview) {
+function BeginCombo(label, preview, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return false;
+  const CF = ImGui.ComboFlags || {};
   const st = c.style;
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
   c.beforeItemPlacement(0, ht);
@@ -602,65 +821,124 @@ function BeginCombo(label, preview) {
   emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[bb.hovered || c.comboOpen === id ? ImGui.Col.ButtonHovered : ImGui.Col.FrameBg] });
   emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
   const textY = y + Math.round((ht - st.FontSize) * 0.5);
-  emit({ t: "text", str: String(preview), x: x + 8, y: textY, col: st.Colors[ImGui.Col.Text] });
-  emit({ t: "text", str: c.comboOpen === id ? "▲" : "▼", x: x + bw - 18, y: textY, col: st.Colors[ImGui.Col.Text] });
+  if (!(flags & (CF.NoPreview || 0))) {
+    emit({ t: "text", str: String(preview), x: x + 8, y: textY, col: st.Colors[ImGui.Col.Text] });
+  }
+  if (!(flags & (CF.NoArrowButton || 0))) {
+    emit({ t: "text", str: c.comboOpen === id ? "▲" : "▼", x: x + bw - 18, y: textY, col: st.Colors[ImGui.Col.Text] });
+  }
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: textY, col: st.Colors[ImGui.Col.Text] });
   // stash popup anchor for EndCombo items (flush seam, zero gap)
-  c._comboAnchor = { x, y: y + ht, w: bw, id, triggerY: y, triggerH: ht };
+  c._comboAnchor = { x, y: y + ht, w: bw, id, triggerY: y, triggerH: ht, flags: flags | 0 };
+  // trigger rect for BeginComboPreview custom drawing (absolute coords)
+  c._comboPreviewRect = { x, y, w: bw, h: ht };
   return c.comboOpen === id;
 }
 function EndCombo() { const c = ctx(); c._comboAnchor = null; }
+// Custom preview scope: after BeginCombo returns true with NoPreview, draw
+// icons, colors, or text into the returned trigger rect via the window draw
+// list, then call EndComboPreview (no-op, kept for API symmetry).
+function BeginComboPreview() {
+  const c = ctx();
+  if (c.comboOpen && c._comboPreviewRect) return { ...c._comboPreviewRect };
+  return null;
+}
+function EndComboPreview() {}
+// Height policy: smallest matching height flag wins, default 8 rows.
+function comboMaxVisible(flags) {
+  const CF = ImGui.ComboFlags || {};
+  if (flags & (CF.HeightSmall || 0)) return 4;
+  if (flags & (CF.HeightRegular || 0)) return 8;
+  if (flags & (CF.HeightLarge || 0)) return 20;
+  if (flags & (CF.HeightLargest || 0)) return 999;
+  return 8;
+}
 function Combo(label, current, items, a, b) {
-  // C++ overloads: items as "A\0B\0C\0\0" string, or (getter, userData, count).
+  // Overloads: items array (4th arg is ComboFlags), items as delimited
+  // string, or getter function (4th/5th args are userData/count as before).
+  let flags = 0;
   if (typeof items === "string") items = items.split("\0").filter((s) => s.length > 0);
   else if (typeof items === "function") {
     const getter = items, userData = a, count = b | 0;
     const arr = [];
     for (let i = 0; i < count; i++) arr.push(String(getter(userData, i)));
     items = arr;
+  } else {
+    if (!Array.isArray(items)) items = [];
+    flags = a | 0;
   }
   const preview = items[current] !== undefined ? items[current] : "";
   let changed = false, index = current;
-  if (BeginCombo(label, preview)) {
-    const c = ctx(), w = cur(), a = c._comboAnchor;
+  if (BeginCombo(label, preview, flags)) {
+    const c = ctx(), w = cur(), an = c._comboAnchor;
     const st = c.style;
     const itemH = st.FontSize + st.FramePadding.y * 2; // ~19px
-    const ph = items.length * itemH + 6;
-    const screenAnchorY = a.y - (w.scrollY || 0);
+    const n = items.length;
+    const maxVisible = comboMaxVisible(flags);
+    const scrollable = n > maxVisible;
+    const visRows = scrollable ? maxVisible : n;
+    const ph = visRows * itemH + 6;
+    const screenAnchorY = an.y - (w.scrollY || 0);
     // Combo choices live in the top overlay, in viewport coordinates. This
     // keeps them above later widgets and anchored to a scrolled control.
     let py = screenAnchorY;
     if (py + ph > w.pos.y + w.sizeFull.y - 4 || py + ph > c.io.DisplaySize.y - 8) {
-      py = (a.triggerY - (w.scrollY || 0)) - ph;
+      py = (an.triggerY - (w.scrollY || 0)) - ph;
     }
     py = Math.max(4, py);
     const popupBg = [0.10, 0.10, 0.12, 1.0];
     const ops = [
-      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: popupBg },
-      { t: "rect", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: st.Colors[ImGui.Col.Border], th: 1 },
+      { t: "rectFilled", x: an.x, y: py, w: an.w, h: ph, r: st.PopupRounding || 2, col: popupBg },
+      { t: "rect", x: an.x, y: py, w: an.w, h: ph, r: st.PopupRounding || 2, col: st.Colors[ImGui.Col.Border], th: 1 },
     ];
     // Do not let underlying controls claim the pointer while choices are open.
-    c._comboRect = { x: a.x, y: py, w: a.w, h: ph };
+    c._comboRect = { x: an.x, y: py, w: an.w, h: ph };
+    // Internal scroll state per combo, reset whenever the list opens.
+    c._comboScroll = c._comboScroll || {};
+    const skey = "combo:" + an.id;
+    if (c._comboLastOpen !== an.id) { c._comboScroll[skey] = 0; c._comboLastOpen = an.id; }
+    let sc = c._comboScroll[skey] || 0;
+    const maxScroll = Math.max(0, (n - maxVisible) * itemH);
     const m = c.io.MousePos;
-    for (let i = 0; i < items.length; i++) {
-      const iy = py + 3 + i * itemH;
-      const h = m.x >= a.x + 2 && m.x <= a.x + a.w - 2 && m.y >= iy && m.y <= iy + itemH;
-      if (h) ops.push({ t: "rectFilled", x: a.x + 2, y: iy, w: a.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.HeaderHovered] });
-      else if (i === current) ops.push({ t: "rectFilled", x: a.x + 2, y: iy, w: a.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.Header] });
+    const inList = m.x >= an.x && m.x <= an.x + an.w && m.y >= py && m.y <= py + ph;
+    if (scrollable) {
+      // Own the wheel while open so the parent window never scrolls beneath.
+      c._wheelTrap = c._wheelTrap || [];
+      c._wheelTrap.push({ x: an.x, y: py, w: an.w, h: ph });
+      if (inList && c.io.MouseWheel !== 0) {
+        sc = Math.max(0, Math.min(maxScroll, sc - c.io.MouseWheel * itemH * 2));
+        c._comboScroll[skey] = sc;
+        c.io.MouseWheel = 0;
+      }
+    }
+    const start = scrollable ? Math.max(0, Math.min(n - 1, Math.floor(sc / itemH))) : 0;
+    const yOff = scrollable ? sc - start * itemH : 0;
+    const rows = scrollable ? Math.min(n - start, maxVisible + 1) : n;
+    for (let k = 0; k < rows; k++) {
+      const i = start + k;
+      const iy = py + 3 + k * itemH - yOff;
+      const h = m.x >= an.x + 2 && m.x <= an.x + an.w - 2 && m.y >= iy && m.y <= iy + itemH;
+      if (h) ops.push({ t: "rectFilled", x: an.x + 2, y: iy, w: an.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.HeaderHovered] });
+      else if (i === current) ops.push({ t: "rectFilled", x: an.x + 2, y: iy, w: an.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.Header] });
       const itemTextY = iy + Math.round((itemH - st.FontSize) * 0.5);
-      ops.push({ t: "text", str: items[i], x: a.x + 8, y: itemTextY, col: st.Colors[ImGui.Col.Text] });
+      ops.push({ t: "text", str: items[i], x: an.x + 8, y: itemTextY, col: st.Colors[ImGui.Col.Text] });
       if (h && c.io.MouseClicked[0]) { index = i; changed = true; c.comboOpen = 0; c.io.MouseClicked[0] = false; c.io.MouseDown[0] = false; }
     }
+    if (scrollable && maxScroll > 0) {
+      const trackH = ph - 6, thumbH = Math.max(12, trackH * maxVisible / n);
+      const thumbY = py + 3 + (trackH - thumbH) * (sc / maxScroll);
+      ops.push({ t: "rectFilled", x: an.x + an.w - 9, y: thumbY, w: 6, h: thumbH, r: 3, col: st.Colors[ImGui.Col.ScrollbarGrab] });
+    }
     // outside click dismisses and consumes the click
-    if (c.io.MouseClicked[0] && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph) && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= a.triggerY && m.y <= a.triggerY + a.triggerH)) {
+    if (c.io.MouseClicked[0] && !inList && !(m.x >= an.x && m.x <= an.x + an.w && m.y >= an.triggerY && m.y <= an.triggerY + an.triggerH)) {
       c.comboOpen = 0; c.io.MouseClicked[0] = false;
     }
-    const inside = m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph;
-    const onTrigger = m.x >= a.x && m.x <= a.x + a.w &&
-      m.y >= a.triggerY && m.y <= a.triggerY + a.triggerH;
+    const onTrigger = m.x >= an.x && m.x <= an.x + an.w &&
+      m.y >= an.triggerY && m.y <= an.triggerY + an.triggerH;
     // Let the combo button process its normal release click so clicking it
     // again closes the list instead of dismissing then immediately reopening.
-    if (c.io.MouseClicked[0] && !inside && !onTrigger) c.comboOpen = 0;
+    if (c.io.MouseClicked[0] && !inList && !onTrigger) c.comboOpen = 0;
+    if (c.comboOpen !== an.id) { c._comboLastOpen = 0; delete c._comboScroll[skey]; }
     c._overlayOps = c._overlayOps || [];
     c._overlayOps.push(...ops);
     EndCombo();
@@ -668,6 +946,7 @@ function Combo(label, current, items, a, b) {
     const c = ctx();
     // A click outside an open list remains consumed for the rest of that frame.
     if (!c.io.MouseClicked[0]) c._comboRect = null;
+    if (c._comboLastOpen) c._comboLastOpen = 0;
   }
   return { changed, index };
 }
@@ -707,21 +986,115 @@ function ListBox(label, current, items, hItems = 4) {
     Text(label);
     Spacing(3);
   }
-  let idx = current, changed = false;
-  // Exact metrics: child inner top pad 6 + rows of 20px Selectables joined by
-  // 4px ItemSpacing + 6px bottom pad. Always fit ALL items: fixed-height
-  // children clip (no child scrolling yet), so honoring hItems by shrinking
-  // would strand items unreachable. hItems stays for API compatibility.
-  const c = ctx();
-  const rowH = 20, gapY = c.style.ItemSpacing.y, padY = 12;
-  const targetH = padY + items.length * rowH + Math.max(0, items.length - 1) * gapY;
-  if (BeginChild(label + "##box", 0, targetH, true)) {
-    for (let i = 0; i < items.length; i++) {
-      if (Selectable(items[i], i === idx)) { idx = i; changed = true; }
+  const r = listBoxImpl(label, items, hItems, false, current);
+  return { changed: r.changed, index: r.single };
+}
+// Shared virtualized list viewport for ListBox (single) and ListBoxMulti.
+// hItems > 0 sizes the viewport to that many rows and virtualizes the rest
+// through an internal wheel offset (only visible rows emit Selectables, so a
+// 10k item list costs a dozen draw ops). hItems <= 0 fits every item like
+// the legacy implementation.
+function listBoxImpl(label, items, hItems, multi, selection) {
+  const c = ctx(), w = cur();
+  if (!w) return { changed: false, single: 0, selection };
+  const n = items.length;
+  const rowH = 20, gapY = c.style.ItemSpacing.y, pitch = rowH + gapY, padY = 12;
+  const fitH = padY + n * rowH + Math.max(0, n - 1) * gapY;
+  const viewH = (hItems > 0) ? padY + hItems * rowH + Math.max(0, hItems - 1) * gapY : fitH;
+  const sid = w.getID(label + "##scroll");
+  c._listScroll = c._listScroll || {};
+  c._listBoxRects = c._listBoxRects || {};
+  const max = Math.max(0, fitH - viewH);
+  let sc = Math.max(0, Math.min(max, c._listScroll[sid] || 0));
+  // Wheel over the previous frame box scrolls internally. The parent window
+  // skips its own wheel step for trapped rects (see the begin wrapper), so a
+  // tall list never drags the whole window along.
+  const prev = c._listBoxRects[sid];
+  const m = c.io.MousePos;
+  if (max > 0 && prev && m.x >= prev.x && m.x <= prev.x + prev.w && m.y >= prev.y && m.y <= prev.y + prev.h) {
+    if (c.io.MouseWheel !== 0) {
+      sc = Math.max(0, Math.min(max, sc - c.io.MouseWheel * pitch * 3));
+      c.io.MouseWheel = 0;
     }
+    c._wheelTrap = c._wheelTrap || [];
+    c._wheelTrap.push({ ...prev });
+  }
+  c._listScroll[sid] = sc;
+  const start = max > 0 ? Math.max(0, Math.min(n - 1, Math.floor(sc / pitch))) : 0;
+  const end = max > 0 ? Math.min(n, start + Math.ceil(viewH / pitch) + 1) : n;
+  let changed = false;
+  if (BeginChild(label + "##box", 0, viewH, true)) {
+    if (start > 0) Dummy(0, start * pitch);
+    for (let i = start; i < end; i++) {
+      if (multi) {
+        if (Selectable(items[i], selection.has(i))) {
+          changed = listMultiClick(c, sid, selection, i) || changed;
+        }
+      } else {
+        if (Selectable(items[i], i === selection)) {
+          if (selection !== i) { selection = i; changed = true; }
+        }
+      }
+    }
+    if (end < n) Dummy(0, (n - end) * pitch);
   }
   EndChild();
-  return { changed, index: idx };
+  // Record this frame box for next frame hover, wheel, and trap checks.
+  const ops = w.drawList;
+  for (let k = ops.length - 1; k >= 0; k--) {
+    if (ops[k].t === "childClip") { c._listBoxRects[sid] = { x: ops[k].x, y: ops[k].y, w: ops[k].w, h: ops[k].h }; break; }
+  }
+  return { changed, single: selection, selection };
+}
+// Modifier click resolution for ListBoxMulti: plain click replaces, Ctrl
+// toggles, Shift unions the range from the last clicked index.
+function listMultiClick(c, sid, set, i) {
+  const io = c.io;
+  const ctrl = !!(io.KeysDown["ControlLeft"] || io.KeysDown["ControlRight"]);
+  const shift = !!(io.KeysDown["ShiftLeft"] || io.KeysDown["ShiftRight"]);
+  c._listMultiLast = c._listMultiLast || {};
+  let changed = false;
+  if (shift) {
+    const from = (c._listMultiLast[sid] === undefined) ? i : c._listMultiLast[sid];
+    const a = Math.min(from, i), b = Math.max(from, i);
+    for (let k = a; k <= b; k++) {
+      if (!set.has(k)) { set.add(k); changed = true; }
+    }
+  } else if (ctrl) {
+    if (set.has(i)) set.delete(i); else set.add(i);
+    changed = true;
+    c._listMultiLast[sid] = i;
+  } else {
+    if (!(set.size === 1 && set.has(i))) {
+      set.clear(); set.add(i); changed = true;
+    }
+    c._listMultiLast[sid] = i;
+  }
+  return changed;
+}
+// ListBoxMulti(label, selection, items, hItems): multi select list. selection
+// accepts a Set (mutated live), an Array of indices (rewritten sorted), or a
+// boolean map {index: true}. Returns { changed, selection: Set }.
+function ListBoxMulti(label, selection, items, hItems = 4) {
+  const shown = ImGui.findRenderedTextEnd(label);
+  if (shown.length > 0) {
+    Text(label);
+    Spacing(3);
+  }
+  let set, write = null;
+  if (selection instanceof Set) { set = selection; }
+  else if (Array.isArray(selection)) {
+    set = new Set(selection.filter((i) => i >= 0 && i < items.length));
+    write = (ns) => { selection.length = 0; [...ns].sort((a, b) => a - b).forEach((i) => selection.push(i)); };
+  } else {
+    set = new Set();
+    const src = selection || {};
+    for (const k of Object.keys(src)) { const i = +k; if (src[k] && i >= 0 && i < items.length) set.add(i); }
+    write = (ns) => { for (const k of Object.keys(src)) src[k] = false; for (const i of ns) src[i] = true; };
+  }
+  const r = listBoxImpl(label, items, hItems, true, set);
+  if (r.changed && write) write(set);
+  return { changed: r.changed, selection: set };
 }
 function ProgressBar(frac, label = "") {
   const c = ctx(), w = cur(); if (!w) return;
@@ -1055,12 +1428,13 @@ Object.assign(ImGui, {
   SameLine, NewLine, Spacing, Separator, Indent, Unindent, Dummy,
   Text, TextColored, TextWrapped, BulletText,
   TextV, TextColoredV, TextWrappedV, BulletTextV, TextDisabledV, TreeNodeV, formatString,
+  InputTextCallbackData, _textEdit, fireTextCallback,
   Button, SmallButton, InvisibleButton,
   Checkbox, RadioButton, Toggle,
-  SliderFloat, SliderInt, DragFloat,
+  SliderFloat, SliderInt, DragFloat, SliderScalar, DataTypeInfo,
   InputText, InputTextMultiline,
   ColorEdit3, ColorEdit4,
-  BeginCombo, EndCombo, Combo, MultiCombo, Selectable, SelectableFlags, ListBox, ProgressBar,
+  BeginCombo, EndCombo, Combo, BeginComboPreview, EndComboPreview, MultiCombo, Selectable, SelectableFlags, ListBox, ListBoxMulti, ProgressBar,
   KeyBind, formatKeyName,
   CollapsingHeader, TreeNode, TreePop,
   BeginChild, EndChild,

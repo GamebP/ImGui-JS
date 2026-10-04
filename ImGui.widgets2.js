@@ -240,17 +240,84 @@ function numericBox(label, text, parse, fmt) {
   const v = parse(r.text);
   return { changed: r.changed, text: r.text, value: v, ok: !Number.isNaN(v) };
 }
+// InputScalar(label, dataType, value, step, stepFast, format, flags): generic
+// numeric editor. Text box flanked by optional "-" and "+" step buttons when
+// step > 0 (Shift swaps in stepFast). Parses per integer or float mode and
+// clamps to the data type range. Returns { changed, value }.
+function InputScalar(label, dataType, value, step = 0, stepFast = 0, format, flags = 0) {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, value };
+  const info = ImGui.DataTypeInfo[dataType] || ImGui.DataTypeInfo[ImGui.DataType.Float];
+  const fmt = format || info.fmt;
+  const st = c.style;
+  const shown = ImGui.findRenderedTextEnd(label);
+  let v = (typeof value === "number" && Number.isFinite(value)) ? value : 0;
+  let changed = false;
+  const stepOn = step > 0;
+  const shift = !!(c.io.KeysDown["ShiftLeft"] || c.io.KeysDown["ShiftRight"]);
+  const stepEff = (shift && stepFast > 0) ? stepFast : step;
+  // Step buttons live on the same row through explicit SameLine placement.
+  if (stepOn) {
+    c.beforeItemPlacement(22, 22);
+    const bx = w.dc.cursorPos.x, by = w.dc.cursorPos.y;
+    c.itemSize(22, 22);
+    const bid = w.getID(label + "##dec");
+    c.itemAdd(bx, by, 22, 22, bid);
+    const bb = c.buttonBehavior(bid, bx, by, 22, 22);
+    emit({ t: "rectFilled", x: bx, y: by, w: 22, h: 22, r: st.FrameRounding, col: st.Colors[bb.hovered ? ImGui.Col.ButtonHovered : ImGui.Col.Button] });
+    emit({ t: "text", str: "-", x: bx + 8, y: by + 3, col: st.Colors[ImGui.Col.Text] });
+    if (bb.pressed) {
+      const nv = scalarClampNum(v - stepEff, info);
+      if (nv !== v) { v = nv; changed = true; }
+    }
+    ImGui.SameLine();
+  }
+  const r = ImGui.InputText(label + "##scalar", scalarText(v, info, fmt));
+  let parsed = info.integer ? parseInt(r.text, 10) : parseFloat(r.text);
+  if (!Number.isNaN(parsed)) {
+    const nv = scalarClampNum(parsed, info);
+    if (nv !== v) { v = nv; changed = true; }
+    else if (r.changed) changed = true;
+  }
+  if (stepOn) {
+    ImGui.SameLine();
+    c.beforeItemPlacement(22, 22);
+    const bx = w.dc.cursorPos.x, by = w.dc.cursorPos.y;
+    c.itemSize(22, 22);
+    const bid = w.getID(label + "##inc");
+    c.itemAdd(bx, by, 22, 22, bid);
+    const bb = c.buttonBehavior(bid, bx, by, 22, 22);
+    emit({ t: "rectFilled", x: bx, y: by, w: 22, h: 22, r: st.FrameRounding, col: st.Colors[bb.hovered ? ImGui.Col.ButtonHovered : ImGui.Col.Button] });
+    emit({ t: "text", str: "+", x: bx + 7, y: by + 3, col: st.Colors[ImGui.Col.Text] });
+    if (bb.pressed) {
+      const nv = scalarClampNum(v + stepEff, info);
+      if (nv !== v) { v = nv; changed = true; }
+    }
+    if (shown.length > 0) {
+      emit({ t: "text", str: shown, x: w.dc.cursorPos.x + 8, y: by + 3, col: st.Colors[ImGui.Col.Text] });
+      w.dc.cursorPos.x += measure(shown) + 8;
+    }
+  }
+  void flags;
+  return { changed, value: v };
+}
+function scalarClampNum(v, info) {
+  if (info.integer) v = Math.round(v);
+  return Math.max(info.min, Math.min(info.max, v));
+}
+function scalarText(v, info, fmt) {
+  if (fmt && fmt.indexOf("%u") >= 0) return String(Math.max(0, Math.round(v)));
+  if (fmt === "%d" || (!fmt && info.integer)) return String(Math.round(v));
+  if (fmt && /%\.(\d+)f/.test(fmt)) return v.toFixed(+fmt.match(/%\.(\d+)f/)[1]);
+  return String(v);
+}
 function InputFloat(label, value, step = 0, fmt = "%.3f") {
-  const r = numericBox(label, String(value), parseFloat);
-  return { changed: r.changed, value: r.ok ? r.value : value };
+  return InputScalar(label, ImGui.DataType.Float, value, step, 0, fmt);
 }
 function InputInt(label, value, step = 1) {
-  const r = numericBox(label, String(value), (s) => parseInt(s, 10));
-  return { changed: r.changed, value: r.ok ? r.value : value };
+  return InputScalar(label, ImGui.DataType.S32, value, step, 0, undefined);
 }
 function InputDouble(label, value) {
-  const r = numericBox(label, String(value), parseFloat);
-  return { changed: r.changed, value: r.ok ? r.value : value };
+  return InputScalar(label, ImGui.DataType.Double, value, 0, 0, undefined);
 }
 function InputFloatN(label, values, step = 0, fmt = "%.3f", vmin, vmax) {
   const out = values.slice(); let changed = false;
@@ -408,16 +475,51 @@ function rgb2hsv(r, g, b) {
   if (d) { if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h /= 6; if (h < 0) h += 1; }
   return [h, mx === 0 ? 0 : d / mx, mx];
 }
-function ColorPicker4(label, color) {
+function hex2(n) {
+  return Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0").toUpperCase();
+}
+function toHexString(color, withAlpha) {
+  let s = "#" + hex2(color[0] * 255) + hex2(color[1] * 255) + hex2(color[2] * 255);
+  if (withAlpha) s += hex2((color[3] === undefined ? 1 : color[3]) * 255);
+  return s;
+}
+function parseHexString(s) {
+  const m = /^\s*#?([0-9a-fA-F]{6})([0-9a-fA-F]{2})?\s*$/.exec(String(s || ""));
+  if (!m) return null;
+  const v = parseInt(m[1], 16);
+  const out = [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1];
+  if (m[2]) out[3] = parseInt(m[2], 16) / 255;
+  return out;
+}
+function checkerOps(x, y, w, h, cell) {
+  const ops = [];
+  const cols = Math.max(1, Math.ceil(w / cell)), rows = Math.max(1, Math.ceil(h / cell));
+  for (let iy = 0; iy < rows; iy++) {
+    for (let ix = 0; ix < cols; ix++) {
+      const light = (ix + iy) % 2 === 0;
+      ops.push({ t: "rectFilled", x: x + ix * cell, y: y + iy * cell, w: Math.min(cell + 0.5, w - ix * cell), h: Math.min(cell + 0.5, h - iy * cell), r: 0, css: light ? "#b0b0b0" : "#707070" });
+    }
+  }
+  return ops;
+}
+function ColorPicker4(label, color, flags = 0) {
   // Inline picker anchored at WindowPos + Padding + CursorPos, clamped to the
   // window's clip rect so it never renders "on the other side of the world".
+  const CF = ImGui.ColorEditFlags || {};
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
   c.beforeItemPlacement(0, 26);
   const availW = Math.max(60, contentAvail());
   const S = Math.min(150, Math.max(80, availW - 18 - 60));
   const HB = 18;
-  const needW = S + HB + 14, ht = S + 26;
+  const alphaOn = !(flags & (CF.NoAlpha || 0)) && !!(flags & (CF.AlphaBar || 0));
+  const AB = alphaOn ? 16 : 0;
+  const barW = S + 6 + HB + (alphaOn ? 6 + AB : 0);
+  const showPreview = !!(flags & ((CF.AlphaPreview || 0) | (CF.AlphaPreviewHalf || 0)));
+  const showRGB = !!(flags & (CF.DisplayRGB || 0));
+  const showHex = !!(flags & (CF.DisplayHex || 0));
+  const showA = showRGB && !(flags & (CF.NoAlpha || 0));
+  const needW = barW, ht = (showPreview ? 24 : 0) + S + 26 + (showRGB ? (showA ? 4 : 3) * 26 : 0) + (showHex ? 26 : 0);
   // Absolute anchor = window-relative cursor; clamp inside content area.
   let x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   const minX = w.pos.x + w.padding.x + (w._indent || 0);
@@ -426,7 +528,9 @@ function ColorPicker4(label, color) {
   c.itemSize(needW, ht);
   const id = w.getID(label + "##picker");
   c.itemAdd(x, y, needW, S, id);
+  const orig = [color[0], color[1], color[2], color[3] === undefined ? 1 : color[3]];
   let [h, s, v] = rgb2hsv(color[0], color[1], color[2]);
+  let alpha = color[3] === undefined ? 1 : color[3];
   let changed = false;
   // Mouse Y is in screen space; the picker rect lives in scrolled content
   // space (cursorPos already carries the -scrollY offset from Draw).
@@ -435,36 +539,103 @@ function ColorPicker4(label, color) {
     s = Math.max(0, Math.min(1, (mx - x) / S)); v = Math.max(0, Math.min(1, 1 - (my - y) / S)); changed = true;
   };
   const setH = (my) => { h = Math.max(0, Math.min(0.999, (my - y) / S)); changed = true; };
+  const setA = (my) => { alpha = Math.max(0, Math.min(1, 1 - (my - y) / S)); changed = true; };
+  const ax = x + S + 6 + HB + (alphaOn ? 6 : 0);
   const inSV = c.hovered(x, y, S, S), inH = c.hovered(x + S + 6, y, HB, S);
-  if ((inSV || inH) && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
-    c.activeId = id; c.activeKind = "picker"; c.activePayload = { zone: inH ? "h" : "sv" };
-    if (inH) setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
+  const inA = alphaOn && c.hovered(ax, y, AB, S);
+  if ((inSV || inH || inA) && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+    c.activeId = id; c.activeKind = "picker"; c.activePayload = { zone: inA ? "a" : (inH ? "h" : "sv") };
+    if (inA) setA(curMouseY); else if (inH) setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
   }
   if (c.activeId === id && c.activeKind === "picker") {
-    if (c.activePayload.zone === "h") setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
+    if (c.activePayload.zone === "a") setA(curMouseY);
+    else if (c.activePayload.zone === "h") setH(curMouseY);
+    else setSV(c.io.MousePos.x, curMouseY);
     if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
   }
+  let oy = y;
+  // Split preview swatch: left half current edit, right half original entry
+  // color, checkerboard beneath when a preview flag is set.
+  if (showPreview) {
+    for (const op of checkerOps(x, oy, barW, 16, 8)) emit(op);
+    const rgbNow = hsv2rgb(h, s, v);
+    emit({ t: "rectFilled", x, y: oy, w: barW / 2, h: 16, r: 0, css: `rgba(${Math.round(rgbNow[0] * 255)},${Math.round(rgbNow[1] * 255)},${Math.round(rgbNow[2] * 255)},${alpha})` });
+    emit({ t: "rectFilled", x: x + barW / 2, y: oy, w: barW - barW / 2, h: 16, r: 0, css: `rgba(${Math.round(orig[0] * 255)},${Math.round(orig[1] * 255)},${Math.round(orig[2] * 255)},${orig[3]})` });
+    emit({ t: "rect", x, y: oy, w: barW, h: 16, r: 2, col: st.Colors[ImGui.Col.Border], th: 1 });
+    oy += 22;
+  }
+  const sy = oy;
   // draw SV square as 16x16 cells (cheap gradient approx)
   const N = 16;
   for (let iy = 0; iy < N; iy++) for (let ix = 0; ix < N; ix++) {
     const cc = hsv2rgb(h, ix / (N - 1), 1 - iy / (N - 1));
-    emit({ t: "rectFilled", x: x + (ix * S) / N, y: y + (iy * S) / N, w: S / N + 1, h: S / N + 1, r: 0, css: `rgb(${cc.map((n) => Math.round(n * 255)).join(",")})` });
+    emit({ t: "rectFilled", x: x + (ix * S) / N, y: sy + (iy * S) / N, w: S / N + 1, h: S / N + 1, r: 0, css: `rgb(${cc.map((n) => Math.round(n * 255)).join(",")})` });
   }
   for (let iy = 0; iy < N; iy++) {
     const cc = hsv2rgb(iy / N, 1, 1);
-    emit({ t: "rectFilled", x: x + S + 6, y: y + (iy * S) / N, w: HB, h: S / N + 1, r: 0, css: `rgb(${cc.map((n) => Math.round(n * 255)).join(",")})` });
+    emit({ t: "rectFilled", x: x + S + 6, y: sy + (iy * S) / N, w: HB, h: S / N + 1, r: 0, css: `rgb(${cc.map((n) => Math.round(n * 255)).join(",")})` });
+  }
+  if (alphaOn) {
+    const rgbA = hsv2rgb(h, s, v);
+    const R = Math.round(rgbA[0] * 255), G = Math.round(rgbA[1] * 255), B = Math.round(rgbA[2] * 255);
+    for (const op of checkerOps(ax, sy, AB, S, 8)) emit(op);
+    // Vertical gradient needs slices: Canvas2D has no vertical blend op, so
+    // stack thin horizontal bands from opaque (top) to clear (bottom).
+    const SL = 24;
+    for (let k = 0; k < SL; k++) {
+      const a = 1 - (k + 0.5) / SL;
+      emit({ t: "rectFilled", x: ax, y: sy + (k * S) / SL, w: AB, h: S / SL + 0.5, r: 0, css: `rgba(${R},${G},${B},${a.toFixed(3)})` });
+    }
+    emit({ t: "rect", x: ax, y: sy, w: AB, h: S, r: 2, col: st.Colors[ImGui.Col.Border], th: 1 });
   }
   // markers
-  emit({ t: "rect", x: x + s * S - 4, y: y + (1 - v) * S - 4, w: 8, h: 8, r: 4, css: "#fff", th: 1.5 });
-  emit({ t: "rect", x: x + S + 4, y: y + h * S - 2, w: HB + 4, h: 5, r: 2, css: "#fff", th: 1.5 });
-  const rgb = hsv2rgb(h, s, v);
-  const out = [rgb[0], rgb[1], rgb[2], color[3] === undefined ? 1 : color[3]];
-  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x, y: y + S + 6, col: st.Colors[ImGui.Col.Text] });
-  c.anyWindowHovered = c.anyWindowHovered || inSV || inH;
-  return { changed, color: out };
+  emit({ t: "rect", x: x + s * S - 4, y: sy + (1 - v) * S - 4, w: 8, h: 8, r: 4, css: "#fff", th: 1.5 });
+  emit({ t: "rect", x: x + S + 4, y: sy + h * S - 2, w: HB + 4, h: 5, r: 2, css: "#fff", th: 1.5 });
+  if (alphaOn) emit({ t: "rect", x: ax - 2, y: sy + (1 - alpha) * S - 2, w: AB + 4, h: 5, r: 2, css: "#fff", th: 1.5 });
+  let rgb = hsv2rgb(h, s, v);
+  const applyRgb = (r, g, b, a) => {
+    const hh = rgb2hsv(r, g, b);
+    h = hh[0]; s = hh[1]; v = hh[2];
+    if (a !== undefined) alpha = Math.max(0, Math.min(1, a));
+    rgb = [r, g, b];
+    changed = true;
+  };
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x, y: sy + S + 6, col: st.Colors[ImGui.Col.Text] });
+  c.anyWindowHovered = c.anyWindowHovered || inSV || inH || inA;
+  const out = [rgb[0], rgb[1], rgb[2], alpha];
+  if (showRGB) {
+    const comps = [["R", out[0]], ["G", out[1]], ["B", out[2]]];
+    if (showA) comps.push(["A", out[3]]);
+    for (const [nm, cv] of comps) {
+      const rr = InputInt(nm + "##" + label + "rgb", Math.round(cv * 255));
+      if (rr.changed) {
+        const nv = Math.max(0, Math.min(255, rr.value)) / 255;
+        const cur = [out[0], out[1], out[2], out[3]];
+        if (nm === "R") cur[0] = nv; else if (nm === "G") cur[1] = nv; else if (nm === "B") cur[2] = nv; else cur[3] = nv;
+        applyRgb(cur[0], cur[1], cur[2], cur[3]);
+      }
+    }
+  }
+  if (showHex) {
+    c._hexEdit = c._hexEdit || {};
+    const hk = "hex:" + id;
+    const ckey = out.map((n) => Math.round(n * 1000)).join(",");
+    let entry = c._hexEdit[hk];
+    if (!entry || entry.applied !== ckey) entry = c._hexEdit[hk] = { text: toHexString(out, true), applied: ckey };
+    const hr = InputTextWithHint("Hex##" + label + "hex", "#RRGGBB[AA]", entry.text);
+    entry.text = hr.text;
+    if (hr.changed) {
+      const parsed = parseHexString(hr.text);
+      if (parsed) {
+        applyRgb(parsed[0], parsed[1], parsed[2], (flags & (CF.NoAlpha || 0)) ? undefined : parsed[3]);
+        entry.applied = out.map((n) => Math.round(n * 1000)).join(",");
+      }
+    }
+  }
+  return { changed, color: [rgb[0], rgb[1], rgb[2], alpha] };
 }
-function ColorPicker3(label, color) {
-  const r = ColorPicker4(label, [color[0], color[1], color[2], 1]);
+function ColorPicker3(label, color, flags = 0) {
+  const r = ColorPicker4(label, [color[0], color[1], color[2], 1], flags);
   return { changed: r.changed, color: [r.color[0], r.color[1], r.color[2]] };
 }
 
@@ -523,11 +694,57 @@ function plotFrame(label, values, overlay, ht, isHist, scaleMin, scaleMax) {
   }
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)}${overlay ? " " + overlay : ""}`, x, y: y + ht + 3, col: st.Colors[ImGui.Col.Text] });
 }
-function PlotLines(label, values, overlay = "", scaleMin, scaleMax, ht = 60) {
-  plotFrame(label, values, overlay, ht, false, scaleMin, scaleMax);
+function PlotLines(label, dataOrGetter, a, b, c, d, e, f, g) {
+  // Dual form: legacy (label, valuesArray, overlay, scaleMin, scaleMax, ht)
+  // versus getter form (label, dataOrGetter, count, offset, overlay,
+  // scaleMin, scaleMax, ht, userData). The forms are disjoint: a numeric
+  // third argument (or a function source) selects the getter form.
+  if (typeof a === "number" || typeof dataOrGetter === "function") {
+    plotFrame(label, samplePlot(dataOrGetter, a, b, g), c || "", (f === undefined ? 60 : f), false, d, e);
+  } else {
+    plotFrame(label, dataOrGetter, a || "", (d === undefined ? 60 : d), false, b, c);
+  }
 }
-function PlotHistogram(label, values, overlay = "", scaleMin, scaleMax, ht = 60) {
-  plotFrame(label, values, overlay, ht, true, scaleMin, scaleMax);
+function PlotHistogram(label, dataOrGetter, a, b, c, d, e, f, g) {
+  if (typeof a === "number" || typeof dataOrGetter === "function") {
+    plotFrame(label, samplePlot(dataOrGetter, a, b, g), c || "", (f === undefined ? 60 : f), true, d, e);
+  } else {
+    plotFrame(label, dataOrGetter, a || "", (d === undefined ? 60 : d), true, b, c);
+  }
+}
+// Extended getter forms with ring buffer offset:
+// PlotLinesEx(label, dataOrGetter, count, offset, overlay, scaleMin, scaleMax, height, userData)
+// A parallel PlotHistogramEx exists. The base names keep the legacy array
+// signature above; the Ex forms add count, offset, and function getters.
+// dataOrGetter: Array (wraps at (i + offset) % length, ring buffer style) or
+// Function called as getter(userData, (i + offset) % count).
+function samplePlot(dataOrGetter, count, offset, userData) {
+  const off = offset | 0;
+  if (typeof dataOrGetter === "function") {
+    const n = Math.max(1, count | 0 || 128);
+    const out = new Array(n);
+    for (let i = 0; i < n; i++) {
+      let v = 0;
+      try { v = Number(dataOrGetter(userData, (i + off) % n)); } catch (e) { v = 0; }
+      out[i] = Number.isFinite(v) ? v : 0;
+    }
+    return out;
+  }
+  const arr = Array.isArray(dataOrGetter) ? dataOrGetter : [];
+  if (!arr.length) return [];
+  const n = Math.max(1, count | 0 || arr.length);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const v = Number(arr[(i + off) % arr.length]);
+    out[i] = Number.isFinite(v) ? v : 0;
+  }
+  return out;
+}
+function PlotLinesEx(label, dataOrGetter, count, offset = 0, overlay = "", scaleMin, scaleMax, ht = 60, userData = null) {
+  plotFrame(label, samplePlot(dataOrGetter, count, offset, userData), overlay, ht, false, scaleMin, scaleMax);
+}
+function PlotHistogramEx(label, dataOrGetter, count, offset = 0, overlay = "", scaleMin, scaleMax, ht = 60, userData = null) {
+  plotFrame(label, samplePlot(dataOrGetter, count, offset, userData), overlay, ht, true, scaleMin, scaleMax);
 }
 
 // ---------- LabelText / Value / misc text ----------
@@ -592,9 +809,9 @@ Object.assign(ImGui, {
   ArrowButton, CheckboxFlags, RadioButtonInt,
   SliderFloat2, SliderFloat3, SliderFloat4, SliderIntN, SliderInt2, SliderInt3, SliderInt4, SliderAngle, VSliderFloat, VSliderInt, VSliderScalar,
   DragInt, DragFloatN, DragIntN, DragFloat4, DragInt4,
-  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputTextWithHint,
+  InputFloat, InputInt, InputDouble, InputScalar, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputTextWithHint,
   ColorButton, ColorPicker3, ColorPicker4,
-  Image, ImageButton, PlotLines, PlotHistogram,
+  Image, ImageButton, PlotLines, PlotHistogram, PlotLinesEx, PlotHistogramEx,
   LabelText, Value, TextDisabled, SeparatorText, Bullet,
   BeginListBox, EndListBox,
   InputFloat4,

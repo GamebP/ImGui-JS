@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.53";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.54";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -50,6 +50,50 @@ const Align = {
   BottomLeft: [0.0, 1.0], BottomRight: [1.0, 1.0],
 };
 const TextAlign = Align;
+// Scalar data types for InputScalar and SliderScalar dispatch.
+const DataType = {
+  S8: 0, U8: 1, S16: 2, U16: 3, S32: 4, U32: 5, S64: 6, U64: 7, Float: 8, Double: 9,
+};
+// InputText behavior flags: character filters, callbacks, history.
+const InputTextFlags = {
+  None: 0,
+  CharsDecimal: 1 << 0,
+  CharsHexadecimal: 1 << 1,
+  CharsUppercase: 1 << 2,
+  CharsNoBlank: 1 << 3,
+  CallbackCompletion: 1 << 4,
+  CallbackHistory: 1 << 5,
+  CallbackAlways: 1 << 6,
+  CallbackCharFilter: 1 << 7,
+  CallbackEdit: 1 << 8,
+};
+// Combo dropdown policies.
+const ComboFlags = {
+  None: 0,
+  PopupAlignLeft: 1 << 0,
+  HeightSmall: 1 << 1,
+  HeightRegular: 1 << 2,
+  HeightLarge: 1 << 3,
+  HeightLargest: 1 << 4,
+  NoArrowButton: 1 << 5,
+  NoPreview: 1 << 6,
+};
+// Color editor display and alpha policies.
+const ColorEditFlags = {
+  None: 0,
+  NoAlpha: 1 << 0,
+  AlphaBar: 1 << 1,
+  AlphaPreview: 1 << 2,
+  AlphaPreviewHalf: 1 << 3,
+  DisplayRGB: 1 << 4,
+  DisplayHSV: 1 << 5,
+  DisplayHex: 1 << 6,
+};
+// Scalar slider scale policies.
+const SliderScalarFlags = {
+  None: 0,
+  Logarithmic: 1 << 0,
+};
 const Col = {
   Text: 0, TextDisabled: 1, WindowBg: 2, ChildBg: 3, PopupBg: 4, Border: 5,
   BorderShadow: 6, FrameBg: 7, FrameBgHovered: 8, FrameBgActive: 9,
@@ -674,6 +718,7 @@ function SetCurrentContext(ctx) { _ctx = ctx; return _ctx; }
 
 const ImGuiBase = {
   VERSION: IMGUI_VERSION, WindowFlags, Cond, Col, Align, TextAlign,
+  DataType, InputTextFlags, ComboFlags, ColorEditFlags, SliderScalarFlags,
   hashStr, findRenderedTextEnd, colToCss, lerpCol, applyStyleDark,
   CreateContext, GetContext, GetIO, GetStyle, SetDebugMode, IsDebugMode,
   GetVersion, NewFrame, EndFrame, Render, DestroyContext, GetCurrentContext, SetCurrentContext,

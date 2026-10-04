@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.53
+// @version      1.0.54
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.53";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.54";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -65,6 +65,50 @@ const Align = {
   BottomLeft: [0.0, 1.0], BottomRight: [1.0, 1.0],
 };
 const TextAlign = Align;
+// Scalar data types for InputScalar and SliderScalar dispatch.
+const DataType = {
+  S8: 0, U8: 1, S16: 2, U16: 3, S32: 4, U32: 5, S64: 6, U64: 7, Float: 8, Double: 9,
+};
+// InputText behavior flags: character filters, callbacks, history.
+const InputTextFlags = {
+  None: 0,
+  CharsDecimal: 1 << 0,
+  CharsHexadecimal: 1 << 1,
+  CharsUppercase: 1 << 2,
+  CharsNoBlank: 1 << 3,
+  CallbackCompletion: 1 << 4,
+  CallbackHistory: 1 << 5,
+  CallbackAlways: 1 << 6,
+  CallbackCharFilter: 1 << 7,
+  CallbackEdit: 1 << 8,
+};
+// Combo dropdown policies.
+const ComboFlags = {
+  None: 0,
+  PopupAlignLeft: 1 << 0,
+  HeightSmall: 1 << 1,
+  HeightRegular: 1 << 2,
+  HeightLarge: 1 << 3,
+  HeightLargest: 1 << 4,
+  NoArrowButton: 1 << 5,
+  NoPreview: 1 << 6,
+};
+// Color editor display and alpha policies.
+const ColorEditFlags = {
+  None: 0,
+  NoAlpha: 1 << 0,
+  AlphaBar: 1 << 1,
+  AlphaPreview: 1 << 2,
+  AlphaPreviewHalf: 1 << 3,
+  DisplayRGB: 1 << 4,
+  DisplayHSV: 1 << 5,
+  DisplayHex: 1 << 6,
+};
+// Scalar slider scale policies.
+const SliderScalarFlags = {
+  None: 0,
+  Logarithmic: 1 << 0,
+};
 const Col = {
   Text: 0, TextDisabled: 1, WindowBg: 2, ChildBg: 3, PopupBg: 4, Border: 5,
   BorderShadow: 6, FrameBg: 7, FrameBgHovered: 8, FrameBgActive: 9,
@@ -689,6 +733,7 @@ function SetCurrentContext(ctx) { _ctx = ctx; return _ctx; }
 
 const ImGuiBase = {
   VERSION: IMGUI_VERSION, WindowFlags, Cond, Col, Align, TextAlign,
+  DataType, InputTextFlags, ComboFlags, ColorEditFlags, SliderScalarFlags,
   hashStr, findRenderedTextEnd, colToCss, lerpCol, applyStyleDark,
   CreateContext, GetContext, GetIO, GetStyle, SetDebugMode, IsDebugMode,
   GetVersion, NewFrame, EndFrame, Render, DestroyContext, GetCurrentContext, SetCurrentContext,
@@ -1244,6 +1289,156 @@ function textW(s, font = "13px -apple-system,Segoe UI,Roboto,Arial,sans-serif") 
   return _mc.measureText(s).width;
 }
 function emit(op) { const w = cur(); if (w) w.drawList.push(op); }
+// ---------- InputText callback data + edit helpers (Feature 2) ----------
+// Callback payload mirroring ImGuiInputTextCallbackData: live Buf accessors
+// over the widget payload plus selection and splice helpers.
+class InputTextCallbackData {
+  constructor(P, flag) {
+    this._p = P;
+    this.EventFlag = flag;
+    this.EventChar = 0;
+    this.EventKey = "";
+    this.SelectionStart = P.cursorPos || 0;
+    this.SelectionEnd = P.cursorPos || 0;
+    this._dirty = false;
+  }
+  get Buf() { return this._p.value; }
+  set Buf(v) { this._p.value = String(v == null ? "" : v); this._p.cursorPos = this._p.value.length; this._dirty = true; }
+  get BufTextLen() { return this._p.value.length; }
+  get CursorPos() { return this._p.cursorPos || 0; }
+  set CursorPos(v) { this._p.cursorPos = Math.max(0, Math.min(this._p.value.length, v | 0)); }
+  get BufDirty() { return !!this._dirty; }
+  set BufDirty(v) { this._dirty = !!v; }
+  HasSelection() { return this.SelectionEnd > this.SelectionStart; }
+  SelectAll() { this.SelectionStart = 0; this.SelectionEnd = this._p.value.length; }
+  ClearSelection() { this.SelectionStart = this.SelectionEnd = this.CursorPos; }
+  DeleteChars(pos, bytesCount) {
+    const s = this._p.value;
+    pos = Math.max(0, Math.min(s.length, pos | 0));
+    this._p.value = s.slice(0, pos) + s.slice(pos + Math.max(0, bytesCount | 0));
+    this._p.cursorPos = Math.max(0, Math.min(this._p.value.length, this._p.cursorPos));
+    this._dirty = true;
+  }
+  InsertChars(pos, text) {
+    const s = this._p.value, t = String(text == null ? "" : text);
+    pos = Math.max(0, Math.min(s.length, pos | 0));
+    this._p.value = s.slice(0, pos) + t + s.slice(pos);
+    this._p.cursorPos = pos + t.length;
+    this._dirty = true;
+  }
+}
+// Shared text edit ops used by widgets.js and (guarded) ImGui.backend.js.
+const _textEdit = {
+  // Per character filter for single key inserts. Returns the accepted char
+  // or null when rejected. Runs flag filters first, then the user CharFilter
+  // (nonzero return rejects; the callback may rewrite EventChar).
+  filterChar(P, ch) {
+    const F = ImGui.InputTextFlags || {};
+    const fl = (P && P.inputFlags) || 0;
+    if ((fl & (F.CharsUppercase || 0)) !== 0) ch = ch.toUpperCase();
+    if ((fl & (F.CharsNoBlank || 0)) !== 0 && /\s/.test(ch)) return null;
+    if ((fl & (F.CharsDecimal || 0)) !== 0 && !/[0-9+\-.*/]/.test(ch)) return null;
+    if ((fl & (F.CharsHexadecimal || 0)) !== 0 && !/[0-9a-fA-F]/.test(ch)) return null;
+    const cb = P && P.inputCallback;
+    if ((fl & (F.CharFilter || F.CallbackCharFilter || 0)) !== 0 && typeof cb === "function") {
+      const d = new InputTextCallbackData(P, (F.CallbackCharFilter || F.CharFilter || 0));
+      d.EventChar = ch.codePointAt(0) || 0;
+      let ret = 0;
+      try { ret = cb(d) | 0; } catch (e) { console.error("[ImGui] char filter error:", e); }
+      if (ret) return null;
+      const rep = String.fromCodePoint(d.EventChar || 0);
+      // A callback Buf write already landed in the payload: accept as is.
+      if (d._dirty) return "";
+      if (rep) ch = rep;
+    }
+    return ch;
+  },
+  // Bulk filter for pasted or IME committed strings.
+  filterBulk(P, s) {
+    let out = "";
+    for (const ch of String(s == null ? "" : s)) {
+      const acc = this.filterChar(P, ch);
+      if (acc === null) continue;
+      if (acc === "") return P.value; // callback rewrote the buffer wholesale
+      out += acc;
+    }
+    return out;
+  },
+  // Insert one filtered char: space boundaries snapshot history for undo.
+  insert(P, ch) {
+    const acc = this.filterChar(P, ch);
+    if (acc === null) return false;
+    if (acc === "") return true; // filter callback handled the buffer itself
+    if (P.history) {
+      P.history.r.length = 0;
+      if (acc === " ") this.push(P);
+    }
+    P.value += acc;
+    P.cursorPos = P.value.length;
+    return true;
+  },
+  // Undo stack: pre change snapshots on activation and space boundaries
+  // (maximum 50 states). Commit pushes nothing: the first undo must move.
+  push(P) {
+    const h = P && P.history;
+    if (!h) return;
+    if (h.u[h.u.length - 1] !== P.value) {
+      h.u.push(P.value);
+      if (h.u.length > 50) h.u.shift();
+    }
+    h.r.length = 0;
+  },
+  undo(P) {
+    const h = P && P.history;
+    if (!h || !h.u.length) return false;
+    h.r.push(P.value);
+    P.value = h.u.pop();
+    P.cursorPos = P.value.length;
+    return true;
+  },
+  redo(P) {
+    const h = P && P.history;
+    if (!h || !h.r.length) return false;
+    h.u.push(P.value);
+    P.value = h.r.pop();
+    P.cursorPos = P.value.length;
+    return true;
+  },
+};
+// Arm a text payload with flags, callback, and undo history, then focus the
+// backend capture input with a filtering commit wrapper for IME pastes.
+// extra merges additional payload fields (e.g. { multiline: true }).
+function initTextPayload(c, id, kind, text, flags, callback, extra) {
+  const start = String(text == null ? "" : text);
+  const P = {
+    value: start, cursorPos: start.length, commit: false,
+    inputFlags: flags | 0,
+    inputCallback: (typeof callback === "function") ? callback : null,
+    history: { u: [start], r: [] },
+  };
+  if (extra) Object.assign(P, extra);
+  c.activeId = id; c.activeKind = kind; c.activePayload = P;
+  if (ImGui._backendFocusText) {
+    ImGui._backendFocusText(P.value, (nv) => {
+      if (c.activePayload !== P) return;
+      const keepCb = P.inputCallback;
+      const tmp = { value: "", cursorPos: 0, inputFlags: P.inputFlags, inputCallback: keepCb, history: null };
+      const filtered = _textEdit.filterBulk(tmp, nv);
+      const merged = tmp.value + filtered;
+      if (merged !== P.value) {
+        P.value = merged;
+        P.cursorPos = merged.length;
+        fireTextCallback(c, P, (ImGui.InputTextFlags || {}).CallbackEdit);
+      }
+    });
+  }
+  return P;
+}
+function fireTextCallback(c, P, flag) {
+  const cb = P && P.inputCallback;
+  if (typeof cb !== "function" || !flag) return;
+  try { cb(new InputTextCallbackData(P, flag)); } catch (e) { console.error("[ImGui] input callback error:", e); }
+}
 // Remaining content width from the cursor (child/indent/cell aware).
 // Block widgets call this AFTER beforeItemPlacement so it measures the fresh line.
 function contentAvail() {
@@ -1585,6 +1780,37 @@ function Toggle(label, checked) {
   return { changed, checked: ch };
 }
 
+// ---------- scalar type dispatch (InputScalar/SliderScalar backing) ----------
+// Per type limits, integer flag, and default format. S64/U64 exceed float
+// integer precision and clamp to the safe integer range (documented limit).
+const DataTypeInfo = [
+  { min: -128, max: 127, integer: true, fmt: "%d" },                       // S8
+  { min: 0, max: 255, integer: true, fmt: "%u" },                          // U8
+  { min: -32768, max: 32767, integer: true, fmt: "%d" },                   // S16
+  { min: 0, max: 65535, integer: true, fmt: "%u" },                        // U16
+  { min: -2147483648, max: 2147483647, integer: true, fmt: "%d" },         // S32
+  { min: 0, max: 4294967295, integer: true, fmt: "%u" },                   // U32
+  { min: -9007199254740991, max: 9007199254740991, integer: true, fmt: "%d" }, // S64 (safe int clamp)
+  { min: 0, max: 9007199254740991, integer: true, fmt: "%u" },              // U64 (safe int clamp)
+  { min: -Infinity, max: Infinity, integer: false, fmt: "%.3f" },          // Float
+  { min: -Infinity, max: Infinity, integer: false, fmt: "%.6f" },          // Double
+];
+function scalarInfo(dataType) {
+  return DataTypeInfo[dataType] || DataTypeInfo[ImGui.DataType.Float];
+}
+function scalarClamp(v, info, lo, hi) {
+  let mn = info.min, mx = info.max;
+  if (lo !== undefined && lo !== null && Number.isFinite(lo)) mn = Math.max(mn, lo);
+  if (hi !== undefined && hi !== null && Number.isFinite(hi)) mx = Math.min(mx, hi);
+  if (info.integer) v = Math.round(v);
+  return Math.max(mn, Math.min(mx, v));
+}
+function scalarFormat(dataType, format, v) {
+  const fmt = format || scalarInfo(dataType).fmt;
+  if (fmt.indexOf("%u") >= 0) return String(Math.max(0, Math.round(v)));
+  return formatValue(fmt, v);
+}
+
 // ---------- sliders / drags ----------
 function sliderBehavior(id, x, y, wd, ht, vmin, vmax, value) {
   const c = ctx();
@@ -1605,8 +1831,32 @@ function sliderBehavior(id, x, y, wd, ht, vmin, vmax, value) {
   }
   return { changed, value: v, hovered: h };
 }
-function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
+function scalarBehavior(id, x, y, wd, ht, lo, hi, logarithmic, value) {
+  const c = ctx();
+  if ((c._disabledDepth || 0) > 0) return { changed: false, value, hovered: false };
+  const h = c.hovered(x, y, wd, ht);
+  if (h) c.anyWindowHovered = true;
+  let v = value, changed = false;
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+    c.activeId = id; c.activeKind = "slider"; c.activePayload = { vmin: lo, vmax: hi };
+  }
+  if (c.activeId === id && c.activeKind === "slider") {
+    const m = c.io.MousePos;
+    let t = (m.x - x) / Math.max(1, wd);
+    t = Math.max(0, Math.min(1, t));
+    // Logarithmic scale needs a strictly positive range, else linear.
+    const useLog = logarithmic && lo > 0 && hi > lo;
+    const nv = useLog ? lo * Math.pow(hi / lo, t) : lo + t * (hi - lo);
+    if (nv !== v) { v = nv; changed = true; }
+    if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; c.activePayload = null; }
+  }
+  return { changed, value: v, hovered: h };
+}
+function SliderScalar(label, dataType, value, vmin, vmax, format, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, value };
+  const info = scalarInfo(dataType);
+  const lo = (vmin === undefined || vmin === null) ? info.min : Math.max(info.min, vmin);
+  const hi = (vmax === undefined || vmax === null) ? info.max : Math.min(info.max, vmax);
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   c.beforeItemPlacement(0, 20);
@@ -1617,18 +1867,23 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
-  const r = sliderBehavior(id, x, y + 4, sliderW, 12, vmin, vmax, value);
-  const grabT = (r.value - vmin) / Math.max(1e-6, vmax - vmin);
+  const log = (flags & (ImGui.SliderScalarFlags ? ImGui.SliderScalarFlags.Logarithmic : 1)) !== 0;
+  const r = scalarBehavior(id, x, y + 4, sliderW, 12, lo, hi, log, value);
+  const nv = scalarClamp(r.value, info, lo, hi);
+  const changed = r.changed && nv !== value;
+  const grabT = hi > lo ? (Math.max(lo, Math.min(hi, nv)) - lo) / (hi - lo) : 0;
   emit({ t: "rectFilled", x, y: y + 6, w: sliderW, h: 8, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
   emit({ t: "rectFilled", x: x + grabT * (sliderW - 12), y: y + 3, w: 12, h: 14, r: 4, col: st.Colors[r.hovered || c.activeId === id ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
-  const valStr = formatValue(format, r.value);
+  const valStr = scalarFormat(dataType, format, nv);
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)}: ${valStr}`, x: x + sliderW + 10, y: y + 2, col: st.Colors[ImGui.Col.Text] });
-  return r;
+  return { changed, value: nv, hovered: r.hovered };
+}
+function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
+  return SliderScalar(label, ImGui.DataType.Float, value, vmin, vmax, format);
 }
 function SliderInt(label, value, vmin, vmax) {
-  const r = SliderFloat(label, value, vmin, vmax, "%.0f");
-  const iv = Math.round(r.value);
-  return { changed: r.changed && iv !== value, value: iv };
+  const r = SliderScalar(label, ImGui.DataType.S32, value, vmin, vmax, undefined);
+  return { changed: r.changed, value: r.value, hovered: r.hovered };
 }
 function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, value };
@@ -1656,9 +1911,10 @@ function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
 }
 
 // ---------- input text (uses hidden DOM input managed by backend) ----------
-function InputText(label, text, flags = 0, hint = "") {
+function InputText(label, text, flags = 0, hint = "", callback = null) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
   if ((c._disabledDepth || 0) > 0) { c.beforeItemPlacement(0, c.style.FontSize + c.style.FramePadding.y * 2 + 2); const bw2 = itemWidthOverride() || 200; c.itemSize(bw2 + 80, 22); emit({ t: "text", str: ImGui.findRenderedTextEnd(label) + ": " + String(text||""), x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.TextDisabled] }); return { changed: false, text }; }
+  const F = ImGui.InputTextFlags || {};
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
@@ -1677,19 +1933,15 @@ function InputText(label, text, flags = 0, hint = "") {
   // (the backend input stays strictly off-screen — IME/mobile capture only,
   // cf. official Emscripten ports which never overlay a DOM box).
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
-    c.activeId = id; c.activeKind = "text";
-    c.activePayload = { value: String(text || ""), cursorPos: String(text || "").length, commit: false };
-    if (ImGui._backendFocusText) {
-      ImGui._backendFocusText(c.activePayload.value, (nv) => {
-        if (c.activePayload) c.activePayload.value = nv;
-      });
-    }
+    initTextPayload(c, id, "text", text, flags, callback);
   }
 
   // Deactivation: click outside, or Enter/Escape (commit flag set by backend).
+  // No history push here: snapshots are pre change states only (activation,
+  // space boundaries), so the first undo always moves.
   let deactivated = false, finalVal = String(text || "");
   if (isActive && ((c.io.MouseClicked[0] && !h) || (c.activePayload && c.activePayload.commit))) {
-    finalVal = c.activePayload ? c.activePayload.value : String(text || "");
+    if (c.activePayload) finalVal = c.activePayload.value;
     c.activeId = 0; c.activeKind = null; c.activePayload = null;
     if (ImGui._backendBlurText) ImGui._backendBlurText();
     deactivated = true;
@@ -1699,8 +1951,13 @@ function InputText(label, text, flags = 0, hint = "") {
   let currentVal = activeNow && c.activePayload ? c.activePayload.value : String(text || "");
   // live typing fallback when no backend capture exists (headless/tests)
   if (activeNow && c.io.InputChars) {
-    currentVal += c.io.InputChars;
-    if (c.activePayload) c.activePayload.value = currentVal;
+    for (const ch of String(c.io.InputChars)) {
+      if (_textEdit.insert(c.activePayload, ch)) { currentVal = c.activePayload.value; fireTextCallback(c, c.activePayload, F.CallbackEdit); }
+    }
+  }
+  // CallbackAlways fires every frame while the edit is live.
+  if (activeNow && c.activePayload && (flags & (F.CallbackAlways || 0))) {
+    fireTextCallback(c, c.activePayload, F.CallbackAlways);
   }
 
   emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
@@ -1736,7 +1993,7 @@ function InputText(label, text, flags = 0, hint = "") {
   // value, otherwise callers like `s = InputText(...).text` would lose the edit.
   return { changed, text: deactivated ? finalVal : currentVal };
 }
-function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
+function InputTextMultiline(label, text, wArg = 0, hArg = 60, flags = 0, callback = null) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
@@ -1753,20 +2010,26 @@ function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
   if (h) c.anyWindowHovered = true;
   const isActive = c.activeId === id && c.activeKind === "text";
   if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
-    c.activeId = id; c.activeKind = "text";
-    c.activePayload = { value: String(text || ""), cursorPos: String(text || "").length, commit: false, multiline: true };
-    if (ImGui._backendFocusText) ImGui._backendFocusText(c.activePayload.value, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+    initTextPayload(c, id, "text", text, flags, callback, { multiline: true });
   }
   let deactivated = false, finalVal = String(text || "");
   if (isActive && ((c.io.MouseClicked[0] && !h) || (c.activePayload && c.activePayload.commit))) {
-    finalVal = c.activePayload ? c.activePayload.value : String(text || "");
+    if (c.activePayload) finalVal = c.activePayload.value;
     c.activeId = 0; c.activeKind = null; c.activePayload = null;
     if (ImGui._backendBlurText) ImGui._backendBlurText();
     deactivated = true;
   }
   const activeNow = isActive && !deactivated;
   let currentVal = activeNow && c.activePayload ? c.activePayload.value : String(text || "");
-  if (activeNow && c.io.InputChars) { currentVal += c.io.InputChars; if (c.activePayload) c.activePayload.value = currentVal; }
+  if (activeNow && c.io.InputChars) {
+    const F = ImGui.InputTextFlags || {};
+    for (const ch of String(c.io.InputChars)) {
+      if (_textEdit.insert(c.activePayload, ch)) { currentVal = c.activePayload.value; fireTextCallback(c, c.activePayload, F.CallbackEdit); }
+    }
+  }
+  if (activeNow && c.activePayload && (flags & ((ImGui.InputTextFlags || {}).CallbackAlways || 0))) {
+    fireTextCallback(c, c.activePayload, (ImGui.InputTextFlags || {}).CallbackAlways);
+  }
   emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
   emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
   const lineH = st.FontSize + 2;
@@ -1784,8 +2047,8 @@ function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
 }
 
 // ---------- color (native canvas picker via popup — no detached DOM) ----------
-function ColorEdit3(label, color) { return ColorEdit4(label, [color[0], color[1], color[2], 1]); }
-function ColorEdit4(label, color) {
+function ColorEdit3(label, color, flags = 0) { return ColorEdit4(label, [color[0], color[1], color[2], 1], flags); }
+function ColorEdit4(label, color, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
   const ht = st.FontSize + st.FramePadding.y * 2, bw = 20;
@@ -1804,7 +2067,7 @@ function ColorEdit4(label, color) {
   // Swatch click opens the canvas picker popup anchored under the swatch.
   if (bb.pressed) ImGui.OpenPopup("##picker_" + id, x, y + ht + 2);
   if (ImGui.BeginPopup("##picker_" + id)) {
-    const cp = ImGui.ColorPicker4(label + "##popup", col);
+    const cp = ImGui.ColorPicker4(label + "##popup", col, flags);
     if (cp.changed) { col = cp.color; changed = true; }
     ImGui.EndPopup();
   }
@@ -1813,8 +2076,9 @@ function ColorEdit4(label, color) {
 }
 
 // ---------- combo / selectable ----------
-function BeginCombo(label, preview) {
+function BeginCombo(label, preview, flags = 0) {
   const c = ctx(), w = cur(); if (!w) return false;
+  const CF = ImGui.ComboFlags || {};
   const st = c.style;
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
   c.beforeItemPlacement(0, ht);
@@ -1828,65 +2092,124 @@ function BeginCombo(label, preview) {
   emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[bb.hovered || c.comboOpen === id ? ImGui.Col.ButtonHovered : ImGui.Col.FrameBg] });
   emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
   const textY = y + Math.round((ht - st.FontSize) * 0.5);
-  emit({ t: "text", str: String(preview), x: x + 8, y: textY, col: st.Colors[ImGui.Col.Text] });
-  emit({ t: "text", str: c.comboOpen === id ? "▲" : "▼", x: x + bw - 18, y: textY, col: st.Colors[ImGui.Col.Text] });
+  if (!(flags & (CF.NoPreview || 0))) {
+    emit({ t: "text", str: String(preview), x: x + 8, y: textY, col: st.Colors[ImGui.Col.Text] });
+  }
+  if (!(flags & (CF.NoArrowButton || 0))) {
+    emit({ t: "text", str: c.comboOpen === id ? "▲" : "▼", x: x + bw - 18, y: textY, col: st.Colors[ImGui.Col.Text] });
+  }
   emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: textY, col: st.Colors[ImGui.Col.Text] });
   // stash popup anchor for EndCombo items (flush seam, zero gap)
-  c._comboAnchor = { x, y: y + ht, w: bw, id, triggerY: y, triggerH: ht };
+  c._comboAnchor = { x, y: y + ht, w: bw, id, triggerY: y, triggerH: ht, flags: flags | 0 };
+  // trigger rect for BeginComboPreview custom drawing (absolute coords)
+  c._comboPreviewRect = { x, y, w: bw, h: ht };
   return c.comboOpen === id;
 }
 function EndCombo() { const c = ctx(); c._comboAnchor = null; }
+// Custom preview scope: after BeginCombo returns true with NoPreview, draw
+// icons, colors, or text into the returned trigger rect via the window draw
+// list, then call EndComboPreview (no-op, kept for API symmetry).
+function BeginComboPreview() {
+  const c = ctx();
+  if (c.comboOpen && c._comboPreviewRect) return { ...c._comboPreviewRect };
+  return null;
+}
+function EndComboPreview() {}
+// Height policy: smallest matching height flag wins, default 8 rows.
+function comboMaxVisible(flags) {
+  const CF = ImGui.ComboFlags || {};
+  if (flags & (CF.HeightSmall || 0)) return 4;
+  if (flags & (CF.HeightRegular || 0)) return 8;
+  if (flags & (CF.HeightLarge || 0)) return 20;
+  if (flags & (CF.HeightLargest || 0)) return 999;
+  return 8;
+}
 function Combo(label, current, items, a, b) {
-  // C++ overloads: items as "A\0B\0C\0\0" string, or (getter, userData, count).
+  // Overloads: items array (4th arg is ComboFlags), items as delimited
+  // string, or getter function (4th/5th args are userData/count as before).
+  let flags = 0;
   if (typeof items === "string") items = items.split("\0").filter((s) => s.length > 0);
   else if (typeof items === "function") {
     const getter = items, userData = a, count = b | 0;
     const arr = [];
     for (let i = 0; i < count; i++) arr.push(String(getter(userData, i)));
     items = arr;
+  } else {
+    if (!Array.isArray(items)) items = [];
+    flags = a | 0;
   }
   const preview = items[current] !== undefined ? items[current] : "";
   let changed = false, index = current;
-  if (BeginCombo(label, preview)) {
-    const c = ctx(), w = cur(), a = c._comboAnchor;
+  if (BeginCombo(label, preview, flags)) {
+    const c = ctx(), w = cur(), an = c._comboAnchor;
     const st = c.style;
     const itemH = st.FontSize + st.FramePadding.y * 2; // ~19px
-    const ph = items.length * itemH + 6;
-    const screenAnchorY = a.y - (w.scrollY || 0);
+    const n = items.length;
+    const maxVisible = comboMaxVisible(flags);
+    const scrollable = n > maxVisible;
+    const visRows = scrollable ? maxVisible : n;
+    const ph = visRows * itemH + 6;
+    const screenAnchorY = an.y - (w.scrollY || 0);
     // Combo choices live in the top overlay, in viewport coordinates. This
     // keeps them above later widgets and anchored to a scrolled control.
     let py = screenAnchorY;
     if (py + ph > w.pos.y + w.sizeFull.y - 4 || py + ph > c.io.DisplaySize.y - 8) {
-      py = (a.triggerY - (w.scrollY || 0)) - ph;
+      py = (an.triggerY - (w.scrollY || 0)) - ph;
     }
     py = Math.max(4, py);
     const popupBg = [0.10, 0.10, 0.12, 1.0];
     const ops = [
-      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: popupBg },
-      { t: "rect", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: st.Colors[ImGui.Col.Border], th: 1 },
+      { t: "rectFilled", x: an.x, y: py, w: an.w, h: ph, r: st.PopupRounding || 2, col: popupBg },
+      { t: "rect", x: an.x, y: py, w: an.w, h: ph, r: st.PopupRounding || 2, col: st.Colors[ImGui.Col.Border], th: 1 },
     ];
     // Do not let underlying controls claim the pointer while choices are open.
-    c._comboRect = { x: a.x, y: py, w: a.w, h: ph };
+    c._comboRect = { x: an.x, y: py, w: an.w, h: ph };
+    // Internal scroll state per combo, reset whenever the list opens.
+    c._comboScroll = c._comboScroll || {};
+    const skey = "combo:" + an.id;
+    if (c._comboLastOpen !== an.id) { c._comboScroll[skey] = 0; c._comboLastOpen = an.id; }
+    let sc = c._comboScroll[skey] || 0;
+    const maxScroll = Math.max(0, (n - maxVisible) * itemH);
     const m = c.io.MousePos;
-    for (let i = 0; i < items.length; i++) {
-      const iy = py + 3 + i * itemH;
-      const h = m.x >= a.x + 2 && m.x <= a.x + a.w - 2 && m.y >= iy && m.y <= iy + itemH;
-      if (h) ops.push({ t: "rectFilled", x: a.x + 2, y: iy, w: a.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.HeaderHovered] });
-      else if (i === current) ops.push({ t: "rectFilled", x: a.x + 2, y: iy, w: a.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.Header] });
+    const inList = m.x >= an.x && m.x <= an.x + an.w && m.y >= py && m.y <= py + ph;
+    if (scrollable) {
+      // Own the wheel while open so the parent window never scrolls beneath.
+      c._wheelTrap = c._wheelTrap || [];
+      c._wheelTrap.push({ x: an.x, y: py, w: an.w, h: ph });
+      if (inList && c.io.MouseWheel !== 0) {
+        sc = Math.max(0, Math.min(maxScroll, sc - c.io.MouseWheel * itemH * 2));
+        c._comboScroll[skey] = sc;
+        c.io.MouseWheel = 0;
+      }
+    }
+    const start = scrollable ? Math.max(0, Math.min(n - 1, Math.floor(sc / itemH))) : 0;
+    const yOff = scrollable ? sc - start * itemH : 0;
+    const rows = scrollable ? Math.min(n - start, maxVisible + 1) : n;
+    for (let k = 0; k < rows; k++) {
+      const i = start + k;
+      const iy = py + 3 + k * itemH - yOff;
+      const h = m.x >= an.x + 2 && m.x <= an.x + an.w - 2 && m.y >= iy && m.y <= iy + itemH;
+      if (h) ops.push({ t: "rectFilled", x: an.x + 2, y: iy, w: an.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.HeaderHovered] });
+      else if (i === current) ops.push({ t: "rectFilled", x: an.x + 2, y: iy, w: an.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.Header] });
       const itemTextY = iy + Math.round((itemH - st.FontSize) * 0.5);
-      ops.push({ t: "text", str: items[i], x: a.x + 8, y: itemTextY, col: st.Colors[ImGui.Col.Text] });
+      ops.push({ t: "text", str: items[i], x: an.x + 8, y: itemTextY, col: st.Colors[ImGui.Col.Text] });
       if (h && c.io.MouseClicked[0]) { index = i; changed = true; c.comboOpen = 0; c.io.MouseClicked[0] = false; c.io.MouseDown[0] = false; }
     }
+    if (scrollable && maxScroll > 0) {
+      const trackH = ph - 6, thumbH = Math.max(12, trackH * maxVisible / n);
+      const thumbY = py + 3 + (trackH - thumbH) * (sc / maxScroll);
+      ops.push({ t: "rectFilled", x: an.x + an.w - 9, y: thumbY, w: 6, h: thumbH, r: 3, col: st.Colors[ImGui.Col.ScrollbarGrab] });
+    }
     // outside click dismisses and consumes the click
-    if (c.io.MouseClicked[0] && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph) && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= a.triggerY && m.y <= a.triggerY + a.triggerH)) {
+    if (c.io.MouseClicked[0] && !inList && !(m.x >= an.x && m.x <= an.x + an.w && m.y >= an.triggerY && m.y <= an.triggerY + an.triggerH)) {
       c.comboOpen = 0; c.io.MouseClicked[0] = false;
     }
-    const inside = m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph;
-    const onTrigger = m.x >= a.x && m.x <= a.x + a.w &&
-      m.y >= a.triggerY && m.y <= a.triggerY + a.triggerH;
+    const onTrigger = m.x >= an.x && m.x <= an.x + an.w &&
+      m.y >= an.triggerY && m.y <= an.triggerY + an.triggerH;
     // Let the combo button process its normal release click so clicking it
     // again closes the list instead of dismissing then immediately reopening.
-    if (c.io.MouseClicked[0] && !inside && !onTrigger) c.comboOpen = 0;
+    if (c.io.MouseClicked[0] && !inList && !onTrigger) c.comboOpen = 0;
+    if (c.comboOpen !== an.id) { c._comboLastOpen = 0; delete c._comboScroll[skey]; }
     c._overlayOps = c._overlayOps || [];
     c._overlayOps.push(...ops);
     EndCombo();
@@ -1894,6 +2217,7 @@ function Combo(label, current, items, a, b) {
     const c = ctx();
     // A click outside an open list remains consumed for the rest of that frame.
     if (!c.io.MouseClicked[0]) c._comboRect = null;
+    if (c._comboLastOpen) c._comboLastOpen = 0;
   }
   return { changed, index };
 }
@@ -1933,21 +2257,115 @@ function ListBox(label, current, items, hItems = 4) {
     Text(label);
     Spacing(3);
   }
-  let idx = current, changed = false;
-  // Exact metrics: child inner top pad 6 + rows of 20px Selectables joined by
-  // 4px ItemSpacing + 6px bottom pad. Always fit ALL items: fixed-height
-  // children clip (no child scrolling yet), so honoring hItems by shrinking
-  // would strand items unreachable. hItems stays for API compatibility.
-  const c = ctx();
-  const rowH = 20, gapY = c.style.ItemSpacing.y, padY = 12;
-  const targetH = padY + items.length * rowH + Math.max(0, items.length - 1) * gapY;
-  if (BeginChild(label + "##box", 0, targetH, true)) {
-    for (let i = 0; i < items.length; i++) {
-      if (Selectable(items[i], i === idx)) { idx = i; changed = true; }
+  const r = listBoxImpl(label, items, hItems, false, current);
+  return { changed: r.changed, index: r.single };
+}
+// Shared virtualized list viewport for ListBox (single) and ListBoxMulti.
+// hItems > 0 sizes the viewport to that many rows and virtualizes the rest
+// through an internal wheel offset (only visible rows emit Selectables, so a
+// 10k item list costs a dozen draw ops). hItems <= 0 fits every item like
+// the legacy implementation.
+function listBoxImpl(label, items, hItems, multi, selection) {
+  const c = ctx(), w = cur();
+  if (!w) return { changed: false, single: 0, selection };
+  const n = items.length;
+  const rowH = 20, gapY = c.style.ItemSpacing.y, pitch = rowH + gapY, padY = 12;
+  const fitH = padY + n * rowH + Math.max(0, n - 1) * gapY;
+  const viewH = (hItems > 0) ? padY + hItems * rowH + Math.max(0, hItems - 1) * gapY : fitH;
+  const sid = w.getID(label + "##scroll");
+  c._listScroll = c._listScroll || {};
+  c._listBoxRects = c._listBoxRects || {};
+  const max = Math.max(0, fitH - viewH);
+  let sc = Math.max(0, Math.min(max, c._listScroll[sid] || 0));
+  // Wheel over the previous frame box scrolls internally. The parent window
+  // skips its own wheel step for trapped rects (see the begin wrapper), so a
+  // tall list never drags the whole window along.
+  const prev = c._listBoxRects[sid];
+  const m = c.io.MousePos;
+  if (max > 0 && prev && m.x >= prev.x && m.x <= prev.x + prev.w && m.y >= prev.y && m.y <= prev.y + prev.h) {
+    if (c.io.MouseWheel !== 0) {
+      sc = Math.max(0, Math.min(max, sc - c.io.MouseWheel * pitch * 3));
+      c.io.MouseWheel = 0;
     }
+    c._wheelTrap = c._wheelTrap || [];
+    c._wheelTrap.push({ ...prev });
+  }
+  c._listScroll[sid] = sc;
+  const start = max > 0 ? Math.max(0, Math.min(n - 1, Math.floor(sc / pitch))) : 0;
+  const end = max > 0 ? Math.min(n, start + Math.ceil(viewH / pitch) + 1) : n;
+  let changed = false;
+  if (BeginChild(label + "##box", 0, viewH, true)) {
+    if (start > 0) Dummy(0, start * pitch);
+    for (let i = start; i < end; i++) {
+      if (multi) {
+        if (Selectable(items[i], selection.has(i))) {
+          changed = listMultiClick(c, sid, selection, i) || changed;
+        }
+      } else {
+        if (Selectable(items[i], i === selection)) {
+          if (selection !== i) { selection = i; changed = true; }
+        }
+      }
+    }
+    if (end < n) Dummy(0, (n - end) * pitch);
   }
   EndChild();
-  return { changed, index: idx };
+  // Record this frame box for next frame hover, wheel, and trap checks.
+  const ops = w.drawList;
+  for (let k = ops.length - 1; k >= 0; k--) {
+    if (ops[k].t === "childClip") { c._listBoxRects[sid] = { x: ops[k].x, y: ops[k].y, w: ops[k].w, h: ops[k].h }; break; }
+  }
+  return { changed, single: selection, selection };
+}
+// Modifier click resolution for ListBoxMulti: plain click replaces, Ctrl
+// toggles, Shift unions the range from the last clicked index.
+function listMultiClick(c, sid, set, i) {
+  const io = c.io;
+  const ctrl = !!(io.KeysDown["ControlLeft"] || io.KeysDown["ControlRight"]);
+  const shift = !!(io.KeysDown["ShiftLeft"] || io.KeysDown["ShiftRight"]);
+  c._listMultiLast = c._listMultiLast || {};
+  let changed = false;
+  if (shift) {
+    const from = (c._listMultiLast[sid] === undefined) ? i : c._listMultiLast[sid];
+    const a = Math.min(from, i), b = Math.max(from, i);
+    for (let k = a; k <= b; k++) {
+      if (!set.has(k)) { set.add(k); changed = true; }
+    }
+  } else if (ctrl) {
+    if (set.has(i)) set.delete(i); else set.add(i);
+    changed = true;
+    c._listMultiLast[sid] = i;
+  } else {
+    if (!(set.size === 1 && set.has(i))) {
+      set.clear(); set.add(i); changed = true;
+    }
+    c._listMultiLast[sid] = i;
+  }
+  return changed;
+}
+// ListBoxMulti(label, selection, items, hItems): multi select list. selection
+// accepts a Set (mutated live), an Array of indices (rewritten sorted), or a
+// boolean map {index: true}. Returns { changed, selection: Set }.
+function ListBoxMulti(label, selection, items, hItems = 4) {
+  const shown = ImGui.findRenderedTextEnd(label);
+  if (shown.length > 0) {
+    Text(label);
+    Spacing(3);
+  }
+  let set, write = null;
+  if (selection instanceof Set) { set = selection; }
+  else if (Array.isArray(selection)) {
+    set = new Set(selection.filter((i) => i >= 0 && i < items.length));
+    write = (ns) => { selection.length = 0; [...ns].sort((a, b) => a - b).forEach((i) => selection.push(i)); };
+  } else {
+    set = new Set();
+    const src = selection || {};
+    for (const k of Object.keys(src)) { const i = +k; if (src[k] && i >= 0 && i < items.length) set.add(i); }
+    write = (ns) => { for (const k of Object.keys(src)) src[k] = false; for (const i of ns) src[i] = true; };
+  }
+  const r = listBoxImpl(label, items, hItems, true, set);
+  if (r.changed && write) write(set);
+  return { changed: r.changed, selection: set };
 }
 function ProgressBar(frac, label = "") {
   const c = ctx(), w = cur(); if (!w) return;
@@ -2281,12 +2699,13 @@ Object.assign(ImGui, {
   SameLine, NewLine, Spacing, Separator, Indent, Unindent, Dummy,
   Text, TextColored, TextWrapped, BulletText,
   TextV, TextColoredV, TextWrappedV, BulletTextV, TextDisabledV, TreeNodeV, formatString,
+  InputTextCallbackData, _textEdit, fireTextCallback,
   Button, SmallButton, InvisibleButton,
   Checkbox, RadioButton, Toggle,
-  SliderFloat, SliderInt, DragFloat,
+  SliderFloat, SliderInt, DragFloat, SliderScalar, DataTypeInfo,
   InputText, InputTextMultiline,
   ColorEdit3, ColorEdit4,
-  BeginCombo, EndCombo, Combo, MultiCombo, Selectable, SelectableFlags, ListBox, ProgressBar,
+  BeginCombo, EndCombo, Combo, BeginComboPreview, EndComboPreview, MultiCombo, Selectable, SelectableFlags, ListBox, ListBoxMulti, ProgressBar,
   KeyBind, formatKeyName,
   CollapsingHeader, TreeNode, TreePop,
   BeginChild, EndChild,
@@ -2543,17 +2962,84 @@ function numericBox(label, text, parse, fmt) {
   const v = parse(r.text);
   return { changed: r.changed, text: r.text, value: v, ok: !Number.isNaN(v) };
 }
+// InputScalar(label, dataType, value, step, stepFast, format, flags): generic
+// numeric editor. Text box flanked by optional "-" and "+" step buttons when
+// step > 0 (Shift swaps in stepFast). Parses per integer or float mode and
+// clamps to the data type range. Returns { changed, value }.
+function InputScalar(label, dataType, value, step = 0, stepFast = 0, format, flags = 0) {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, value };
+  const info = ImGui.DataTypeInfo[dataType] || ImGui.DataTypeInfo[ImGui.DataType.Float];
+  const fmt = format || info.fmt;
+  const st = c.style;
+  const shown = ImGui.findRenderedTextEnd(label);
+  let v = (typeof value === "number" && Number.isFinite(value)) ? value : 0;
+  let changed = false;
+  const stepOn = step > 0;
+  const shift = !!(c.io.KeysDown["ShiftLeft"] || c.io.KeysDown["ShiftRight"]);
+  const stepEff = (shift && stepFast > 0) ? stepFast : step;
+  // Step buttons live on the same row through explicit SameLine placement.
+  if (stepOn) {
+    c.beforeItemPlacement(22, 22);
+    const bx = w.dc.cursorPos.x, by = w.dc.cursorPos.y;
+    c.itemSize(22, 22);
+    const bid = w.getID(label + "##dec");
+    c.itemAdd(bx, by, 22, 22, bid);
+    const bb = c.buttonBehavior(bid, bx, by, 22, 22);
+    emit({ t: "rectFilled", x: bx, y: by, w: 22, h: 22, r: st.FrameRounding, col: st.Colors[bb.hovered ? ImGui.Col.ButtonHovered : ImGui.Col.Button] });
+    emit({ t: "text", str: "-", x: bx + 8, y: by + 3, col: st.Colors[ImGui.Col.Text] });
+    if (bb.pressed) {
+      const nv = scalarClampNum(v - stepEff, info);
+      if (nv !== v) { v = nv; changed = true; }
+    }
+    ImGui.SameLine();
+  }
+  const r = ImGui.InputText(label + "##scalar", scalarText(v, info, fmt));
+  let parsed = info.integer ? parseInt(r.text, 10) : parseFloat(r.text);
+  if (!Number.isNaN(parsed)) {
+    const nv = scalarClampNum(parsed, info);
+    if (nv !== v) { v = nv; changed = true; }
+    else if (r.changed) changed = true;
+  }
+  if (stepOn) {
+    ImGui.SameLine();
+    c.beforeItemPlacement(22, 22);
+    const bx = w.dc.cursorPos.x, by = w.dc.cursorPos.y;
+    c.itemSize(22, 22);
+    const bid = w.getID(label + "##inc");
+    c.itemAdd(bx, by, 22, 22, bid);
+    const bb = c.buttonBehavior(bid, bx, by, 22, 22);
+    emit({ t: "rectFilled", x: bx, y: by, w: 22, h: 22, r: st.FrameRounding, col: st.Colors[bb.hovered ? ImGui.Col.ButtonHovered : ImGui.Col.Button] });
+    emit({ t: "text", str: "+", x: bx + 7, y: by + 3, col: st.Colors[ImGui.Col.Text] });
+    if (bb.pressed) {
+      const nv = scalarClampNum(v + stepEff, info);
+      if (nv !== v) { v = nv; changed = true; }
+    }
+    if (shown.length > 0) {
+      emit({ t: "text", str: shown, x: w.dc.cursorPos.x + 8, y: by + 3, col: st.Colors[ImGui.Col.Text] });
+      w.dc.cursorPos.x += measure(shown) + 8;
+    }
+  }
+  void flags;
+  return { changed, value: v };
+}
+function scalarClampNum(v, info) {
+  if (info.integer) v = Math.round(v);
+  return Math.max(info.min, Math.min(info.max, v));
+}
+function scalarText(v, info, fmt) {
+  if (fmt && fmt.indexOf("%u") >= 0) return String(Math.max(0, Math.round(v)));
+  if (fmt === "%d" || (!fmt && info.integer)) return String(Math.round(v));
+  if (fmt && /%\.(\d+)f/.test(fmt)) return v.toFixed(+fmt.match(/%\.(\d+)f/)[1]);
+  return String(v);
+}
 function InputFloat(label, value, step = 0, fmt = "%.3f") {
-  const r = numericBox(label, String(value), parseFloat);
-  return { changed: r.changed, value: r.ok ? r.value : value };
+  return InputScalar(label, ImGui.DataType.Float, value, step, 0, fmt);
 }
 function InputInt(label, value, step = 1) {
-  const r = numericBox(label, String(value), (s) => parseInt(s, 10));
-  return { changed: r.changed, value: r.ok ? r.value : value };
+  return InputScalar(label, ImGui.DataType.S32, value, step, 0, undefined);
 }
 function InputDouble(label, value) {
-  const r = numericBox(label, String(value), parseFloat);
-  return { changed: r.changed, value: r.ok ? r.value : value };
+  return InputScalar(label, ImGui.DataType.Double, value, 0, 0, undefined);
 }
 function InputFloatN(label, values, step = 0, fmt = "%.3f", vmin, vmax) {
   const out = values.slice(); let changed = false;
@@ -2711,16 +3197,51 @@ function rgb2hsv(r, g, b) {
   if (d) { if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h /= 6; if (h < 0) h += 1; }
   return [h, mx === 0 ? 0 : d / mx, mx];
 }
-function ColorPicker4(label, color) {
+function hex2(n) {
+  return Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0").toUpperCase();
+}
+function toHexString(color, withAlpha) {
+  let s = "#" + hex2(color[0] * 255) + hex2(color[1] * 255) + hex2(color[2] * 255);
+  if (withAlpha) s += hex2((color[3] === undefined ? 1 : color[3]) * 255);
+  return s;
+}
+function parseHexString(s) {
+  const m = /^\s*#?([0-9a-fA-F]{6})([0-9a-fA-F]{2})?\s*$/.exec(String(s || ""));
+  if (!m) return null;
+  const v = parseInt(m[1], 16);
+  const out = [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1];
+  if (m[2]) out[3] = parseInt(m[2], 16) / 255;
+  return out;
+}
+function checkerOps(x, y, w, h, cell) {
+  const ops = [];
+  const cols = Math.max(1, Math.ceil(w / cell)), rows = Math.max(1, Math.ceil(h / cell));
+  for (let iy = 0; iy < rows; iy++) {
+    for (let ix = 0; ix < cols; ix++) {
+      const light = (ix + iy) % 2 === 0;
+      ops.push({ t: "rectFilled", x: x + ix * cell, y: y + iy * cell, w: Math.min(cell + 0.5, w - ix * cell), h: Math.min(cell + 0.5, h - iy * cell), r: 0, css: light ? "#b0b0b0" : "#707070" });
+    }
+  }
+  return ops;
+}
+function ColorPicker4(label, color, flags = 0) {
   // Inline picker anchored at WindowPos + Padding + CursorPos, clamped to the
   // window's clip rect so it never renders "on the other side of the world".
+  const CF = ImGui.ColorEditFlags || {};
   const c = ctx(), w = cur(); if (!w) return { changed: false, color };
   const st = c.style;
   c.beforeItemPlacement(0, 26);
   const availW = Math.max(60, contentAvail());
   const S = Math.min(150, Math.max(80, availW - 18 - 60));
   const HB = 18;
-  const needW = S + HB + 14, ht = S + 26;
+  const alphaOn = !(flags & (CF.NoAlpha || 0)) && !!(flags & (CF.AlphaBar || 0));
+  const AB = alphaOn ? 16 : 0;
+  const barW = S + 6 + HB + (alphaOn ? 6 + AB : 0);
+  const showPreview = !!(flags & ((CF.AlphaPreview || 0) | (CF.AlphaPreviewHalf || 0)));
+  const showRGB = !!(flags & (CF.DisplayRGB || 0));
+  const showHex = !!(flags & (CF.DisplayHex || 0));
+  const showA = showRGB && !(flags & (CF.NoAlpha || 0));
+  const needW = barW, ht = (showPreview ? 24 : 0) + S + 26 + (showRGB ? (showA ? 4 : 3) * 26 : 0) + (showHex ? 26 : 0);
   // Absolute anchor = window-relative cursor; clamp inside content area.
   let x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   const minX = w.pos.x + w.padding.x + (w._indent || 0);
@@ -2729,7 +3250,9 @@ function ColorPicker4(label, color) {
   c.itemSize(needW, ht);
   const id = w.getID(label + "##picker");
   c.itemAdd(x, y, needW, S, id);
+  const orig = [color[0], color[1], color[2], color[3] === undefined ? 1 : color[3]];
   let [h, s, v] = rgb2hsv(color[0], color[1], color[2]);
+  let alpha = color[3] === undefined ? 1 : color[3];
   let changed = false;
   // Mouse Y is in screen space; the picker rect lives in scrolled content
   // space (cursorPos already carries the -scrollY offset from Draw).
@@ -2738,36 +3261,103 @@ function ColorPicker4(label, color) {
     s = Math.max(0, Math.min(1, (mx - x) / S)); v = Math.max(0, Math.min(1, 1 - (my - y) / S)); changed = true;
   };
   const setH = (my) => { h = Math.max(0, Math.min(0.999, (my - y) / S)); changed = true; };
+  const setA = (my) => { alpha = Math.max(0, Math.min(1, 1 - (my - y) / S)); changed = true; };
+  const ax = x + S + 6 + HB + (alphaOn ? 6 : 0);
   const inSV = c.hovered(x, y, S, S), inH = c.hovered(x + S + 6, y, HB, S);
-  if ((inSV || inH) && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
-    c.activeId = id; c.activeKind = "picker"; c.activePayload = { zone: inH ? "h" : "sv" };
-    if (inH) setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
+  const inA = alphaOn && c.hovered(ax, y, AB, S);
+  if ((inSV || inH || inA) && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+    c.activeId = id; c.activeKind = "picker"; c.activePayload = { zone: inA ? "a" : (inH ? "h" : "sv") };
+    if (inA) setA(curMouseY); else if (inH) setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
   }
   if (c.activeId === id && c.activeKind === "picker") {
-    if (c.activePayload.zone === "h") setH(curMouseY); else setSV(c.io.MousePos.x, curMouseY);
+    if (c.activePayload.zone === "a") setA(curMouseY);
+    else if (c.activePayload.zone === "h") setH(curMouseY);
+    else setSV(c.io.MousePos.x, curMouseY);
     if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
   }
+  let oy = y;
+  // Split preview swatch: left half current edit, right half original entry
+  // color, checkerboard beneath when a preview flag is set.
+  if (showPreview) {
+    for (const op of checkerOps(x, oy, barW, 16, 8)) emit(op);
+    const rgbNow = hsv2rgb(h, s, v);
+    emit({ t: "rectFilled", x, y: oy, w: barW / 2, h: 16, r: 0, css: `rgba(${Math.round(rgbNow[0] * 255)},${Math.round(rgbNow[1] * 255)},${Math.round(rgbNow[2] * 255)},${alpha})` });
+    emit({ t: "rectFilled", x: x + barW / 2, y: oy, w: barW - barW / 2, h: 16, r: 0, css: `rgba(${Math.round(orig[0] * 255)},${Math.round(orig[1] * 255)},${Math.round(orig[2] * 255)},${orig[3]})` });
+    emit({ t: "rect", x, y: oy, w: barW, h: 16, r: 2, col: st.Colors[ImGui.Col.Border], th: 1 });
+    oy += 22;
+  }
+  const sy = oy;
   // draw SV square as 16x16 cells (cheap gradient approx)
   const N = 16;
   for (let iy = 0; iy < N; iy++) for (let ix = 0; ix < N; ix++) {
     const cc = hsv2rgb(h, ix / (N - 1), 1 - iy / (N - 1));
-    emit({ t: "rectFilled", x: x + (ix * S) / N, y: y + (iy * S) / N, w: S / N + 1, h: S / N + 1, r: 0, css: `rgb(${cc.map((n) => Math.round(n * 255)).join(",")})` });
+    emit({ t: "rectFilled", x: x + (ix * S) / N, y: sy + (iy * S) / N, w: S / N + 1, h: S / N + 1, r: 0, css: `rgb(${cc.map((n) => Math.round(n * 255)).join(",")})` });
   }
   for (let iy = 0; iy < N; iy++) {
     const cc = hsv2rgb(iy / N, 1, 1);
-    emit({ t: "rectFilled", x: x + S + 6, y: y + (iy * S) / N, w: HB, h: S / N + 1, r: 0, css: `rgb(${cc.map((n) => Math.round(n * 255)).join(",")})` });
+    emit({ t: "rectFilled", x: x + S + 6, y: sy + (iy * S) / N, w: HB, h: S / N + 1, r: 0, css: `rgb(${cc.map((n) => Math.round(n * 255)).join(",")})` });
+  }
+  if (alphaOn) {
+    const rgbA = hsv2rgb(h, s, v);
+    const R = Math.round(rgbA[0] * 255), G = Math.round(rgbA[1] * 255), B = Math.round(rgbA[2] * 255);
+    for (const op of checkerOps(ax, sy, AB, S, 8)) emit(op);
+    // Vertical gradient needs slices: Canvas2D has no vertical blend op, so
+    // stack thin horizontal bands from opaque (top) to clear (bottom).
+    const SL = 24;
+    for (let k = 0; k < SL; k++) {
+      const a = 1 - (k + 0.5) / SL;
+      emit({ t: "rectFilled", x: ax, y: sy + (k * S) / SL, w: AB, h: S / SL + 0.5, r: 0, css: `rgba(${R},${G},${B},${a.toFixed(3)})` });
+    }
+    emit({ t: "rect", x: ax, y: sy, w: AB, h: S, r: 2, col: st.Colors[ImGui.Col.Border], th: 1 });
   }
   // markers
-  emit({ t: "rect", x: x + s * S - 4, y: y + (1 - v) * S - 4, w: 8, h: 8, r: 4, css: "#fff", th: 1.5 });
-  emit({ t: "rect", x: x + S + 4, y: y + h * S - 2, w: HB + 4, h: 5, r: 2, css: "#fff", th: 1.5 });
-  const rgb = hsv2rgb(h, s, v);
-  const out = [rgb[0], rgb[1], rgb[2], color[3] === undefined ? 1 : color[3]];
-  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x, y: y + S + 6, col: st.Colors[ImGui.Col.Text] });
-  c.anyWindowHovered = c.anyWindowHovered || inSV || inH;
-  return { changed, color: out };
+  emit({ t: "rect", x: x + s * S - 4, y: sy + (1 - v) * S - 4, w: 8, h: 8, r: 4, css: "#fff", th: 1.5 });
+  emit({ t: "rect", x: x + S + 4, y: sy + h * S - 2, w: HB + 4, h: 5, r: 2, css: "#fff", th: 1.5 });
+  if (alphaOn) emit({ t: "rect", x: ax - 2, y: sy + (1 - alpha) * S - 2, w: AB + 4, h: 5, r: 2, css: "#fff", th: 1.5 });
+  let rgb = hsv2rgb(h, s, v);
+  const applyRgb = (r, g, b, a) => {
+    const hh = rgb2hsv(r, g, b);
+    h = hh[0]; s = hh[1]; v = hh[2];
+    if (a !== undefined) alpha = Math.max(0, Math.min(1, a));
+    rgb = [r, g, b];
+    changed = true;
+  };
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x, y: sy + S + 6, col: st.Colors[ImGui.Col.Text] });
+  c.anyWindowHovered = c.anyWindowHovered || inSV || inH || inA;
+  const out = [rgb[0], rgb[1], rgb[2], alpha];
+  if (showRGB) {
+    const comps = [["R", out[0]], ["G", out[1]], ["B", out[2]]];
+    if (showA) comps.push(["A", out[3]]);
+    for (const [nm, cv] of comps) {
+      const rr = InputInt(nm + "##" + label + "rgb", Math.round(cv * 255));
+      if (rr.changed) {
+        const nv = Math.max(0, Math.min(255, rr.value)) / 255;
+        const cur = [out[0], out[1], out[2], out[3]];
+        if (nm === "R") cur[0] = nv; else if (nm === "G") cur[1] = nv; else if (nm === "B") cur[2] = nv; else cur[3] = nv;
+        applyRgb(cur[0], cur[1], cur[2], cur[3]);
+      }
+    }
+  }
+  if (showHex) {
+    c._hexEdit = c._hexEdit || {};
+    const hk = "hex:" + id;
+    const ckey = out.map((n) => Math.round(n * 1000)).join(",");
+    let entry = c._hexEdit[hk];
+    if (!entry || entry.applied !== ckey) entry = c._hexEdit[hk] = { text: toHexString(out, true), applied: ckey };
+    const hr = InputTextWithHint("Hex##" + label + "hex", "#RRGGBB[AA]", entry.text);
+    entry.text = hr.text;
+    if (hr.changed) {
+      const parsed = parseHexString(hr.text);
+      if (parsed) {
+        applyRgb(parsed[0], parsed[1], parsed[2], (flags & (CF.NoAlpha || 0)) ? undefined : parsed[3]);
+        entry.applied = out.map((n) => Math.round(n * 1000)).join(",");
+      }
+    }
+  }
+  return { changed, color: [rgb[0], rgb[1], rgb[2], alpha] };
 }
-function ColorPicker3(label, color) {
-  const r = ColorPicker4(label, [color[0], color[1], color[2], 1]);
+function ColorPicker3(label, color, flags = 0) {
+  const r = ColorPicker4(label, [color[0], color[1], color[2], 1], flags);
   return { changed: r.changed, color: [r.color[0], r.color[1], r.color[2]] };
 }
 
@@ -2826,11 +3416,57 @@ function plotFrame(label, values, overlay, ht, isHist, scaleMin, scaleMax) {
   }
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)}${overlay ? " " + overlay : ""}`, x, y: y + ht + 3, col: st.Colors[ImGui.Col.Text] });
 }
-function PlotLines(label, values, overlay = "", scaleMin, scaleMax, ht = 60) {
-  plotFrame(label, values, overlay, ht, false, scaleMin, scaleMax);
+function PlotLines(label, dataOrGetter, a, b, c, d, e, f, g) {
+  // Dual form: legacy (label, valuesArray, overlay, scaleMin, scaleMax, ht)
+  // versus getter form (label, dataOrGetter, count, offset, overlay,
+  // scaleMin, scaleMax, ht, userData). The forms are disjoint: a numeric
+  // third argument (or a function source) selects the getter form.
+  if (typeof a === "number" || typeof dataOrGetter === "function") {
+    plotFrame(label, samplePlot(dataOrGetter, a, b, g), c || "", (f === undefined ? 60 : f), false, d, e);
+  } else {
+    plotFrame(label, dataOrGetter, a || "", (d === undefined ? 60 : d), false, b, c);
+  }
 }
-function PlotHistogram(label, values, overlay = "", scaleMin, scaleMax, ht = 60) {
-  plotFrame(label, values, overlay, ht, true, scaleMin, scaleMax);
+function PlotHistogram(label, dataOrGetter, a, b, c, d, e, f, g) {
+  if (typeof a === "number" || typeof dataOrGetter === "function") {
+    plotFrame(label, samplePlot(dataOrGetter, a, b, g), c || "", (f === undefined ? 60 : f), true, d, e);
+  } else {
+    plotFrame(label, dataOrGetter, a || "", (d === undefined ? 60 : d), true, b, c);
+  }
+}
+// Extended getter forms with ring buffer offset:
+// PlotLinesEx(label, dataOrGetter, count, offset, overlay, scaleMin, scaleMax, height, userData)
+// A parallel PlotHistogramEx exists. The base names keep the legacy array
+// signature above; the Ex forms add count, offset, and function getters.
+// dataOrGetter: Array (wraps at (i + offset) % length, ring buffer style) or
+// Function called as getter(userData, (i + offset) % count).
+function samplePlot(dataOrGetter, count, offset, userData) {
+  const off = offset | 0;
+  if (typeof dataOrGetter === "function") {
+    const n = Math.max(1, count | 0 || 128);
+    const out = new Array(n);
+    for (let i = 0; i < n; i++) {
+      let v = 0;
+      try { v = Number(dataOrGetter(userData, (i + off) % n)); } catch (e) { v = 0; }
+      out[i] = Number.isFinite(v) ? v : 0;
+    }
+    return out;
+  }
+  const arr = Array.isArray(dataOrGetter) ? dataOrGetter : [];
+  if (!arr.length) return [];
+  const n = Math.max(1, count | 0 || arr.length);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const v = Number(arr[(i + off) % arr.length]);
+    out[i] = Number.isFinite(v) ? v : 0;
+  }
+  return out;
+}
+function PlotLinesEx(label, dataOrGetter, count, offset = 0, overlay = "", scaleMin, scaleMax, ht = 60, userData = null) {
+  plotFrame(label, samplePlot(dataOrGetter, count, offset, userData), overlay, ht, false, scaleMin, scaleMax);
+}
+function PlotHistogramEx(label, dataOrGetter, count, offset = 0, overlay = "", scaleMin, scaleMax, ht = 60, userData = null) {
+  plotFrame(label, samplePlot(dataOrGetter, count, offset, userData), overlay, ht, true, scaleMin, scaleMax);
 }
 
 // ---------- LabelText / Value / misc text ----------
@@ -2895,9 +3531,9 @@ Object.assign(ImGui, {
   ArrowButton, CheckboxFlags, RadioButtonInt,
   SliderFloat2, SliderFloat3, SliderFloat4, SliderIntN, SliderInt2, SliderInt3, SliderInt4, SliderAngle, VSliderFloat, VSliderInt, VSliderScalar,
   DragInt, DragFloatN, DragIntN, DragFloat4, DragInt4,
-  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputTextWithHint,
+  InputFloat, InputInt, InputDouble, InputScalar, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputTextWithHint,
   ColorButton, ColorPicker3, ColorPicker4,
-  Image, ImageButton, PlotLines, PlotHistogram,
+  Image, ImageButton, PlotLines, PlotHistogram, PlotLinesEx, PlotHistogramEx,
   LabelText, Value, TextDisabled, SeparatorText, Bullet,
   BeginListBox, EndListBox,
   InputFloat4,
@@ -2968,6 +3604,11 @@ function ensure() {
     c._popupRolloverFrame = c.frame;
     c._popupRectsPrev = c._popupRects || {};
     c._popupRects = {};
+    // Wheel trap rollover: overlay lists (combo dropdowns, list boxes) own
+    // the wheel for one frame after rendering, so the parent window beneath
+    // never scrolls while an inner list does.
+    c._wheelTrapPrev = c._wheelTrap || [];
+    c._wheelTrap = [];
     // Reset overlay ops at frame start so no stale modal dim/popup frames
     // persist after the popup closes (ghost dim artifact).
     c._overlayOps = [];
@@ -3011,6 +3652,16 @@ function inPopupContent() {
   const c = ensure();
   return (c._popupBoxStack && c._popupBoxStack.length > 0);
 }
+// Wheel ownership: an overlay list rendered last frame traps the wheel when
+// the pointer sits inside its rect, so the parent window skips its own step.
+function wheelTrapped(cc) {
+  const rects = cc._wheelTrapPrev || [];
+  const m = cc.io.MousePos;
+  for (const t of rects) {
+    if (t && m.x >= t.x && m.x <= t.x + t.w && m.y >= t.y && m.y <= t.y + t.h) return true;
+  }
+  return false;
+}
 
 // ---------- lazily wrap Begin/End once (scroll + ini) ----------
 let _wrapped = false;
@@ -3033,7 +3684,9 @@ function wrapBeginEnd() {
       const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
       // wheel scroll when hovered (content taller than view); content renders
       // translated by -scrollY in draw.js and is clipped to the viewport.
-      if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && (this.activeKind !== "slider" && this.activeKind !== "drag" && this.activeKind !== "scroll" && this.activeKind !== "move" && this.activeKind !== "resize")) {
+      // Skipped inside a wheel trapped overlay list (combo dropdowns and
+      // virtualized list boxes own the wheel there).
+      if (!noScroll && w.scrollMax > 0 && w.contentHover && !w.collapsed && this.io.MouseWheel !== 0 && !wheelTrapped(this) && (this.activeKind !== "slider" && this.activeKind !== "drag" && this.activeKind !== "scroll" && this.activeKind !== "move" && this.activeKind !== "resize")) {
         w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY - this.io.MouseWheel * (this.style.FontSize * 2)));
       }
       // scrollbar grip drag (uses raw viewport coordinates)
@@ -3565,7 +4218,7 @@ function IsAnyItemFocused() { const k = ensure().activeKind; return k === 'text'
 // wrap edit-reporting widgets to feed IsItemEdited/Deactivated
 function wrapEditTrack() {
   if (ensure().__editWrapped) return; ensure().__editWrapped = true;
-  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "DragFloat4", "DragInt4", "InputFloat4", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
+  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderScalar", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "DragFloat4", "DragInt4", "InputFloat4", "InputText", "InputFloat", "InputInt", "InputDouble", "InputScalar", "ColorEdit4", "ColorEdit3", "ColorPicker4", "Combo", "Selectable", "ListBox", "ListBoxMulti"];
   for (const n of names) {
     if (typeof ImGui[n] !== "function") continue;
     const orig = ImGui[n];
@@ -5791,27 +6444,71 @@ const Backend = {
       // Pure canvas text editing: route editing keys straight into the
       // active widget's payload (no DOM element involved).
       if ((cc2.activeKind === "text" || cc2.activeKind === "segtext") && cc2.activePayload) {
-        if (e.key === "Backspace") {
+        const P = cc2.activePayload;
+        const TF = ImGui.InputTextFlags || {};
+        const fl = P.inputFlags || 0;
+        const TE = ImGui._textEdit || null;
+        const fireEdit = () => {
+          if (TE && P.inputCallback && (fl & (TF.CallbackEdit || 0)) && ImGui.InputTextCallbackData) {
+            try { P.inputCallback(new ImGui.InputTextCallbackData(P, TF.CallbackEdit)); }
+            catch (err) { console.error("[ImGui] input callback error:", err); }
+          }
+        };
+        const fireKey = (flag, code) => {
+          if (P.inputCallback && (fl & flag) && ImGui.InputTextCallbackData) {
+            try {
+              const d = new ImGui.InputTextCallbackData(P, flag);
+              d.EventKey = code || "";
+              P.inputCallback(d);
+            } catch (err) { console.error("[ImGui] input callback error:", err); }
+          }
+        };
+        const key = e.key || "";
+        // Undo and redo history (per widget payload stack, seeded at focus).
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && TE && P.history &&
+            (key === "z" || key === "Z" || key === "y" || key === "Y")) {
+          const redo = (key === "y" || key === "Y") || (e.shiftKey && (key === "z" || key === "Z"));
           e.preventDefault();
-          cc2.activePayload.value = cc2.activePayload.value.slice(0, -1);
-          cc2.activePayload.cursorPos = Math.max(0, (cc2.activePayload.cursorPos || cc2.activePayload.value.length) - 1);
-        } else if (e.key === "Enter") {
+          e.stopPropagation();
+          if (redo ? TE.redo(P) : TE.undo(P)) fireEdit();
+          return;
+        }
+        // Completion (Tab) and history (Up/Down) callbacks. Tab never moves
+        // browser focus while a completion callback owns it.
+        if (key === "Tab" && (fl & (TF.CallbackCompletion || 0))) {
           e.preventDefault();
-          if (cc2.activePayload.multiline) {
-            cc2.activePayload.value += "\n";
-            cc2.activePayload.cursorPos = cc2.activePayload.value.length;
+          e.stopPropagation();
+          fireKey(TF.CallbackCompletion, e.code || "Tab");
+          return;
+        }
+        if ((key === "ArrowUp" || key === "ArrowDown") && (fl & (TF.CallbackHistory || 0))) {
+          e.preventDefault();
+          e.stopPropagation();
+          fireKey(TF.CallbackHistory, e.code || key);
+          return;
+        }
+        if (key === "Backspace") {
+          e.preventDefault();
+          P.value = P.value.slice(0, -1);
+          P.cursorPos = Math.max(0, (P.cursorPos || P.value.length) - 1);
+          fireEdit();
+        } else if (key === "Enter") {
+          e.preventDefault();
+          if (P.multiline) {
+            P.value += "\n";
+            P.cursorPos = P.value.length;
+            fireEdit();
           } else {
-            cc2.activePayload.commit = true;
+            P.commit = true;
             this.blurText();
           }
-        } else if (e.key === "Escape") {
+        } else if (key === "Escape") {
           e.preventDefault();
-          cc2.activePayload.commit = true;
+          P.commit = true;
           this.blurText();
-        } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        } else if (key && key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          cc2.activePayload.value += e.key;
-          cc2.activePayload.cursorPos = cc2.activePayload.value.length;
+          if (TE ? TE.insert(P, key) : (P.value += key, P.cursorPos = P.value.length, true)) fireEdit();
         }
         e.stopPropagation(); // the page must never see keys typed into the UI
         return;
@@ -5945,7 +6642,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.53"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.54"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.modal.js", "ImGui.backend.js"];
 
 function libsPresent() {

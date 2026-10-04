@@ -2,7 +2,7 @@
 
 Pure JavaScript and Canvas2D port of Dear ImGui window management, widgets, and draw lists, packaged as a browser userscript (Violentmonkey, Tampermonkey). Rendering targets a fixed full viewport overlay canvas. Input is captured on window listeners in the capture phase and fed into an ImGuiIO compatible queue. No DOM controls are rendered. All widgets draw into per window draw lists and flush through CanvasRenderer.
 
-Current release: 1.0.45. Upstream reference: Dear ImGui 1.92.9b (imgui.h, imgui.cpp, imgui_widgets.cpp, imgui_tables.cpp, imgui_draw.cpp, backends for Win32, GLFW, SDL2).
+Current release: 1.0.53. Upstream reference: Dear ImGui 1.92.9b (imgui.h, imgui.cpp, imgui_widgets.cpp, imgui_tables.cpp, imgui_draw.cpp, backends for Win32, GLFW, SDL2).
 
 ## File Map
 
@@ -14,6 +14,7 @@ Current release: 1.0.45. Upstream reference: Dear ImGui 1.92.9b (imgui.h, imgui.
 - `ImGui.extended.js`: ID stack, popups, menus, tabs, tables, INI storage, themes
 - `ImGui.demo.js`: ShowDemoWindow, ShowStyleEditor, ShowMetricsWindow
 - `ImGui.notify.js`: ImGuiNotify toast port
+- `ImGui.modal.js`: standalone modal dialogs
 - `ImGui.backend.js`: overlay canvas, listeners, frame loop, menu toggle
 - `ImGui.main.js`: entry script, MY_MENU, DASHBOARD_MENU, boot
 - `ImGui.bundle.user.js`: concatenated one file install (regenerated from the split libs after edits)
@@ -36,10 +37,10 @@ Responsibilities:
 - `ImGuiIO` subset: `DisplaySize`, `DisplayFramebufferScale`, `DeltaTime`, `Time`, `MousePos`, `MouseDown[5]`, `MouseClicked[5]`, `MouseReleased[5]`, `MouseWheel`, `KeysDown` (map of browser `e.code` to boolean), `InputChars`, `WantCaptureMouse`, `WantCaptureKeyboard`, `WantTextInput`. Event entry points: `AddMousePosEvent`, `AddMouseButtonEvent`, `AddMouseWheelEvent`, `AddInputCharactersUTF8`.
 - Window temporary data and cursor tracking: each `ImGuiWindow` owns a `dc` block with `cursorPos` (placement cursor, absolute screen space), `cursorPosPrevLine` (line origin), `cursorStartPos` (work area origin), `cursorMaxPos` (content extents), `currLineHeight`, `prevLineHeight`, `isSameLine`, `sameLineSpacing`, `lastItemWidth`, `lastItemHeight`, `_lineUsed`, `_lockFeed`, `_cellStartX`, `_inPopup`.
 - Layout engine: `beforeItemPlacement(wd, ht)` performs the implicit line feed (skipped when `_lockFeed` is set for explicit positioning, or offset when `isSameLine` is set by `SameLine`). `itemSize(wd, ht)` advances the cursor horizontally and grows content extents and line height. `itemAdd(x, y, wd, ht, id)` records the last item rect for ID bearing items. `nextLine`, `newLineBreak`, `sameLine` implement explicit breaks. Widgets call `beforeItemPlacement`, draw at the cursor, then call `itemSize`. Widgets never call line feed directly.
-- Window lifecycle in `begin(name, pOpen, flags)`: find or create by name hash, apply staged `nextData` (position, size, collapse, focus, scroll, content size, background alpha), assign monotonically increasing `z`, compute `titleH` from `TitleBarHeight` (13 plus twice vertical frame padding, total 19 at default metrics) unless `NoTitleBar`, reset draw list and ID stack, push the window stack, compute `contentHover` (mouse inside window rect and no modal lock), process title bar interactions (close button, double click collapse, move drag, resize grip drag), continue active move and resize drags, reset the `dc` cursor to the work area origin. Returns `{ visible, open, window }`. `end()` computes content height from `cursorMaxPos`, applies auto fit height when `size.y` is 0 or `AlwaysAutoResize` is set, applies fixed sizes, clamps position to the viewport, and pops the stack.
+- Window lifecycle in `begin(name, pOpen, flags)`: find or create by name hash, apply staged `nextData` (position, size, collapse, focus, scroll, content size, background alpha), assign monotonically increasing `z`, compute `titleH` from `TitleBarHeight` (13 plus twice vertical frame padding, total 19 at default metrics) unless `NoTitleBar`, reset draw list and ID stack, push the window stack, compute `contentHover` (mouse inside window rect and no modal lock), process title bar interactions (close button, single click collapse arrow with an explicit 16px hit box, double click collapse shortcut on empty title areas, move drag, resize grip drag), continue active move and resize drags, reset the `dc` cursor to the work area origin. Returns `{ visible, open, window }`. `end()` computes content height from `cursorMaxPos`, applies auto fit height when `size.y` is 0 or `AlwaysAutoResize` is set, applies fixed sizes, clamps position to the viewport, and pops the stack.
 - Hit testing in `hovered(x, y, wd, ht)`: rejects when a modal rect owns input (outside popup content), when the pointer is inside an open combo dropdown rect, menu dropdown rect, or popup rect owned by a previous frame, then translates the raw mouse position into scrolled content space for windows with `scrollY` and tests the rect.
-- `buttonBehavior(id, x, y, wd, ht)`: hover assignment, press Hoyland's law on left click when no item is active, release to click semantics returning `{ hovered, held, pressed }`. Disabled scopes short circuit to inert results. Popup layer consumption can void a press that dismissed a popup.
-- Style constants: full `Col` enum (61 entries, indices 0 to 60 plus renamed aliases), `Cond` (None, Always, Once, FirstUseEver, Appearing), `WindowFlags` bit set, `colToCss`, `lerpCol`, `applyStyleDark` (exact dark defaults adapted to opaque window fills so page content never bleeds through), `makeStyleDark` (FontSize 13, WindowPadding 8 by 8, ItemSpacing 8 by 4, ScrollbarSize 14).
+- `buttonBehavior(id, x, y, wd, ht)`: hover assignment, press on left click when no item is active, release to click semantics returning `{ hovered, held, pressed }`. Disabled scopes short circuit to inert results. Popup layer consumption can void a press that dismissed a popup.
+- Style constants: full `Col` enum (61 entries, indices 0 to 60 plus renamed aliases), `Cond` (None, Always, Once, FirstUseEver, Appearing), `Align` and `TextAlign` anchor vectors (9 positions as unit pairs), `DataType` scalar kinds (S8 through Double), `InputTextFlags` (filters, Completion, History, Always, CharFilter, Edit), `ComboFlags` (height policies, NoArrowButton, NoPreview), `ColorEditFlags` (alpha, preview, RGB, HSV, hex display), `SliderScalarFlags` (logarithmic scale), `WindowFlags` bit set, `colToCss`, `lerpCol`, `applyStyleDark` (exact dark defaults adapted to opaque window fills so page content never bleeds through), `makeStyleDark` (FontSize 13, WindowPadding 8 by 8, ItemSpacing 8 by 4, ScrollbarSize 14, `ButtonTextAlign` center, `SelectableTextAlign` left centered).
 - Hashing: FNV-1a `hashStr` over label strings mixed with the ID stack seed. `findRenderedTextEnd` splits the display label at `##` (right side stays ID only).
 - Focus tracking: `focusedWindow` implements click to focus semantics used by title bar coloring. First begun window starts focused. A left click inside a window (when no popup owns the click, no modal is active, and mouse inputs are allowed) moves focus. Stale references to destroyed windows fall back to the current window.
 
@@ -68,17 +69,19 @@ CanvasRenderer rasterization loop:
 Core controls. Every control follows one pattern: resolve display label, `beforeItemPlacement`, read cursor, `itemSize`, `getID`, `itemAdd`, `buttonBehavior` or hover plus active state machine, emit draw ops. Return values are plain data (booleans or `{changed, value}` style objects). Caller owned state in `S` persists across frames.
 
 - Text: `Text` (with `%s`, `%d`, `%i`, `%f` substitution), `TextColored`, `TextWrapped` (word wrap at available width), `BulletText`. Table cell horizontal alignment and vertical centering handled inside text widgets.
-- Buttons: `Button(label, w, h)` (auto width from text plus frame padding, animated hover and active colors), `SmallButton`, `InvisibleButton` (hit area only).
+- Buttons: `Button(label, w, h, align)` (auto width from text plus frame padding, animated hover and active colors, 9 anchor text alignment defaulting to style `ButtonTextAlign`), `SmallButton`, `InvisibleButton` (hit area only).
 - `Checkbox(label, checked)` returns `{changed, checked}`. 16px box with hand drawn check strokes.
 - `Toggle(label, checked)` returns `{changed, checked}`. Pill track (34 by 18) with animated knob position, off color lerped to accent color by animation value.
 - `RadioButton(label, active)` returns pressed boolean. Ring plus filled dot.
-- Sliders and drags: `SliderFloat` (with `%.Nf` format parsing), `SliderInt`, `DragFloat` (horizontal pixel drag with optional range clamp). Slider rows reserve label plus value space from available width.
-- `InputText(label, text, flags, hint)` returns `{changed, text}`. Activation stores `{value, cursorPos, commit}` in `activePayload` and focuses the backend hidden input (strictly off screen, IME and mobile capture only). All rendering is canvas native, including the blinking caret and tail trimming to fit. Commit on outside click, Enter, or Escape. `InputTextMultiline` stacks lines with fixed line height and clips to the box height.
+- Sliders and drags: `SliderFloat` (with `%.Nf` format parsing), `SliderInt`, `SliderScalar` (generic DataType dispatch with linear or logarithmic scale; the Float and Int variants delegate to it), `DragFloat` (horizontal pixel drag with optional range clamp). Slider rows reserve label plus value space from available width.
+- `InputText(label, text, flags, hint, callback)` returns `{changed, text}`. Flags select character filters and opt into Completion (Tab), History (Up and Down), Always (every live frame), CharFilter (per keystroke veto or rewrite), and Edit (every mutation) callbacks receiving an `InputTextCallbackData` (buffer accessors, cursor, selection, splice helpers). Per widget undo history answers Ctrl+Z, Ctrl+Y, and Ctrl+Shift+Z. Activation stores `{value, cursorPos, commit}` in `activePayload` and focuses the backend hidden input (strictly off screen, IME and mobile capture only). All rendering is canvas native, including the blinking caret and tail trimming to fit. Commit on outside click, Enter, or Escape. `InputTextMultiline` stacks lines with fixed line height and clips to the box height.
 - Color: `ColorEdit3`, `ColorEdit4` (swatch opens a canvas picker popup anchored under the swatch, returns `{changed, color}`).
-- Combo: `BeginCombo(label, preview)` draws the trigger, toggles `comboOpen`, stashes the anchor rect. `EndCombo` clears the anchor. `Combo(label, current, items)` supports string list, delimited string, or getter callback overloads, renders the dropdown into the overlay layer with above or below flipping, hover highlight, click to select with click consumption, and outside click dismissal. `MultiCombo(label, flagsMap)` renders one checkbox row per key in the same overlay dropdown and mutates the map in place, returning `{changed, flags}`.
-- `Selectable(label, selected, flags, sizeArg)` with `SelectableFlags` (DontClosePopups, SpanAllColumns, AllowDoubleClick, Disabled, AllowOverlap, Highlight). Consumes popup dismissal rules on press.
+- Combo: `BeginCombo(label, preview, flags)` draws the trigger, toggles `comboOpen`, stashes the anchor rect. `EndCombo` clears the anchor. `BeginComboPreview` returns the trigger rect for custom preview drawing with `NoPreview`. `Combo(label, current, items, flags)` supports arrays, delimited strings, and getter callbacks, renders height capped dropdowns (Small 4 through Largest viewport rows) with internal wheel scrolling, a scrollbar thumb, above or below flipping, hover highlight, click to select with click consumption, and outside click dismissal. `MultiCombo(label, flagsMap)` renders one checkbox row per key in the same overlay dropdown and mutates the map in place, returning `{changed, flags}`.
+- `Selectable(label, selected, flags, sizeArg, align)` with `SelectableFlags` (DontClosePopups, SpanAllColumns, AllowDoubleClick, Disabled, AllowOverlap, Highlight). Text alignment defaults to style `SelectableTextAlign` (left, vertically centered). Consumes popup dismissal rules on press.
+- `ListBox(label, current, items, hItems)` renders a virtualized viewport sized to `hItems` rows (only visible rows emit draw ops) with an internal wheel offset, inside a bordered child with 20px rows. `ListBoxMulti(label, selection, items, hItems)` adds Ctrl toggle and Shift range selection over Set, Array, or boolean map inputs.
 - `ListBox(label, current, items, hItems)` fits all items (fixed height children do not scroll in this port) inside a bordered child with 20px rows.
 - `ProgressBar(frac, label)` clamps fraction to the unit interval.
+- Vertical rhythm: `Spacing(height)` reserves a blank line defaulting to twice `ItemSpacing.y` and scaling with style overrides, `Dummy(w, h)` reserves exact pixel gaps.
 - Collapsing: `CollapsingHeader` (persisted open state per window plus label key, default open), `TreeNode` (delegates to `TreeNodeEx`), `TreePop`.
 - Printf style wrappers: `TextV`, `TextColoredV`, `TextWrappedV`, `BulletTextV`, `TextDisabledV`, `TreeNodeV`, plus exported `formatString`.
 - Child windows: `BeginChild(id, wArg, hArg, border)` and `EndChild()`. Width defaults to available content width. Height auto fills remaining window height when `hArg` is 0 or less (negative values reserve padding, C++ style). Child scope isolates indent, line state, and cursor, clips inner ops to the child box, grows auto height boxes to fit overflow, and registers the finished box as a parent line item so `SameLine` chains horizontally (see section 5).
@@ -93,23 +96,23 @@ Segmented and secondary controls:
 - `CheckboxFlags(label, flags, mask)` bit set helper. `RadioButtonInt(label, current, vButton)`.
 - Scalar sliders: `SliderFloat2`, `SliderFloat3`, `SliderFloat4` (stacked rows), compact `SliderInt2`, `SliderInt3`, `SliderInt4` (single row partitioned track), `SliderAngle` (radian wrapper over degree slider), `VSliderFloat`, `VSliderInt`, `VSliderScalar` (vertical tracks with mouse Y mapping corrected for scroll).
 - Drags: `DragInt`, `DragFloatN`, `DragIntN`, segmented single row `DragFloat4`, `DragInt4` (four independently draggable partitions with shared label), matching segmented `InputFloat4`.
-- Numeric inputs: `InputFloat`, `InputInt`, `InputDouble`, `InputFloatN`, `InputIntN`, `InputFloat2`, `InputFloat3` (parse guarded, invalid input keeps the old value).
+- Numeric inputs: `InputScalar` (generic DataType editor with optional step buttons and Shift fast step), `InputFloat`, `InputInt`, `InputDouble` (all three delegate to `InputScalar`), `InputFloatN`, `InputIntN`, `InputFloat2`, `InputFloat3` (parse guarded, invalid input keeps the old value).
 - `InputTextWithHint(label, hint, text, flags)` (hint renders dimmed inside empty boxes).
-- `ColorButton` (static swatch button), `ColorPicker3`, `ColorPicker4` (16 by 16 cell SV square plus hue strip, drag interaction with markers, position clamped inside the window clip).
+- `ColorButton` (static swatch button), `ColorPicker3`, `ColorPicker4` (16 by 16 cell SV square plus hue strip, optional alpha bar with checkerboard and gradient, split preview swatch, RGB numeric rows, bidirectional hex field, drag interaction with markers, position clamped inside the window clip).
 - `Image`, `ImageButton` (canvas backed, hover outline on buttons).
-- `PlotLines`, `PlotHistogram` (auto range with optional explicit scale, bar and polyline modes).
-- `LabelText`, `Value` (boolean, integer, float, string dispatch), `TextDisabled`, `SeparatorText` (centered label with flanking rules), `Bullet`, `BeginListBox`, `EndListBox` (child backed).
+- `PlotLines`, `PlotHistogram` (legacy array form plus getter form with count, ring buffer offset, and user data; explicit `PlotLinesEx` and `PlotHistogramEx` aliases; auto range with optional explicit scale, bar and polyline modes).
+- `LabelText`, `Value` (boolean, integer, float, string dispatch), `TextDisabled`, `SeparatorText` (left aligned label after a 24px rule prefix with a trailing rule, 6px vertical padding each side), `Bullet`, `BeginListBox`, `EndListBox` (child backed, `hArg <= 0` auto fills instead of the legacy fixed 110px default).
 
 ### ImGui.extended.js
 
 - ID stack: `PushID`, `PopID`, `GetID`, `GetItemRect`.
-- Scopes: `BeginGroup`, `EndGroup` ( bounding box item), `BeginDisabled`, `EndDisabled` (depth counter swallowing button family clicks), item width stack (`PushItemWidth`, `PopItemWidth`, `SetNextItemWidth`, `CalcItemWidth`).
-- Style stacks: `PushStyleColor`, `PopStyleColor`, `PushStyleVar`, `PushStyleVarX`, `PushStyleVarY`, `PopStyleVar`, plus `StyleVar` index map, `GetStyleColorVec4`, `GetColorU32`.
+- Scopes: `BeginGroup`, `EndGroup` (bounding box item), `BeginDisabled`, `EndDisabled` (depth counter swallowing button family clicks), item width stack (`PushItemWidth`, `PopItemWidth`, `SetNextItemWidth`, `CalcItemWidth`).
+- Style stacks: `PushStyleColor`, `PopStyleColor`, `PushStyleVar`, `PushStyleVarX`, `PushStyleVarY`, `PopStyleVar`, plus `StyleVar` index map (includes `ButtonTextAlign` 33 and `SelectableTextAlign` 34), `GetStyleColorVec4`, `GetColorU32`.
 - Layout queries: cursor position getters and setters (window local and screen), `GetContentRegionAvail`, `GetContentRegionMax`, `CalcTextSize`, `AlignTextToFramePadding`, font and frame metrics, window position and size getters, collapse and appearing queries, clip rect push and pop, no op font hooks.
 - Item state queries: active, clicked, edited, deactivated, deactivated after edit, visible, toggled open, window hovered and focused, rect visibility, any active, hovered, or focused. Edit tracking wraps value widgets and records commit frames.
 - Mouse and keyboard queries: `IsMouseClicked`, `IsMouseDown`, `IsMouseReleased`, `IsMouseDragging`, `GetMouseDragDelta`, `IsMouseHoveringRect`, `IsKeyDown` (browser `e.code`), `GetKeyPressedAmount`.
 - Tooltips: immediate tooltip box at cursor offset, `SetTooltip`, `SetItemTooltip`, printf variant.
-- Popups and modals: `OpenPopup` (explicit, mouse, or viewport center anchors), `OpenPopupOnItemClick`, `IsPopupOpen`, `CloseCurrentPopup`, `ClosePopup`, `BeginPopup`, `EndPopup`, `BeginPopupModal`, `EndPopupModal`, context variants for item, window, and void. Popup content renders in absolute overlay coordinates with per frame rect registration driving next frame click preemption and the modal input lock. Menus share the overlay treatment.
+- Popups and modals: `OpenPopup` (explicit, mouse, or viewport center anchors), `OpenPopupOnItemClick`, `IsPopupOpen`, `CloseCurrentPopup`, `ClosePopup`, `BeginPopup`, `EndPopup`, `BeginPopupModal`, `EndPopupModal`, context variants for item, window, and void. Popup content renders in absolute overlay coordinates with per frame rect registration driving next frame click preemption and the modal input lock. Begin and End save and restore the full parent layout state including `cursorMaxPos`, so overlay coords never inflate the host window. Menus share the overlay treatment.
 - Menu bars and menus: `BeginMenuBar`, `EndMenuBar`, `BeginMainMenuBar`, `EndMainMenuBar`, `BeginMenu` (single open top level menu with dropdown overlay box and cursor restore), `EndMenu`, `MenuItem` (label, shortcut, selected check, enabled dimming, click closes the chain).
 - Tab bars: `BeginTabBar`, `BeginTabItem` (shrink to fit with ellipsis, centered labels, active overline and baseline masking), `EndTabItem`, `EndTabBar` (auto height window horizontal growth), `TabItemButton`.
 - Data tables: `BeginTable`, `TableSetupColumn` (width, weight, fixed and stretch sizing policies, alignment flags), `TableHeadersRow` (sortable arrows, resizable column drag with persistence, reorder mapping), `TableNextRow` (row background banding), `TableSetColumnIndex`, `TableNextColumn`, `TableHeader`, index and count getters, `EndTable` (grid lines, outer border, cursor advance). `TableFlags` and `TableColumnFlags` bit sets. `TableSetBgColor` with `TableBgTarget`. Sort specs accessors and column order setters backed by storage.
@@ -132,15 +135,26 @@ Port of ImGuiNotify toasts:
 - Lifecycle phases: FadeIn, Wait, FadeOut, Expired. Expired toasts are removed. Clicking the dismiss box removes a toast. Action toasts invoke the callback on body click.
 - Glyphs follow IconFontCppHeaders Font Awesome 6 codepoints, loaded once as a webfont from jsDelivr (`ImGui.Notify.loadFontAwesome(url)` overrides the source). Until the font arrives, or offline, crisp vector fallback glyphs render instead.
 
+### ImGui.modal.js
+
+Standalone modal dialogs (original design, notify styled card without accent bar or animation):
+
+- `ImGui.ModalDialog.Show(config)` with `{ title, text, maxWidth (default 360), buttons: [{ label, onClick, closeOnClick (default true) }] }`. Dismissal belongs to the button row and the Escape safety key. No X box is rendered.
+- `ImGui.ModalDialog.Close()` clears state and releases the modal lock (unless a popup modal is still open). `ImGui.ModalDialog.IsOpen()` reports presence.
+- `ImGui.ModalDialog.Render()` draws the fullscreen dimmer (`rgba(0,0,0,0.6)`), the centered card (fill `[0.10, 0.10, 0.10, 0.95]`, border `[0.3, 0.3, 0.3, 1.0]`, rounding 6), the word wrapped body, and the right aligned button row into the overlay layer. Buttons arm on left press and fire on release over the same box. Callbacks may chain into `Show` for multi step flows (a sequence counter skips auto close when a new dialog opens inside `onClick`).
+- Input beneath is blocked through the core modal lock, re-derived every frame in the style rollover plus a backend pre frame sync, with a keyboard capture gate and char feed block while open. The backend loop auto renders after `userFn` (per frame deduped, manual calls safe).
+
 ### ImGui.backend.js
 
 - Overlay setup: creates `#imgui-overlay` fixed canvas (full viewport, configurable z index defaulting to maximum signed 32 bit range minus 2, transparent background, `pointerEvents: none`) and `#imgui-ime-capture` hidden text input (positioned off screen, used for IME and mobile keyboards only, never overlaid on widgets).
 - Mouse: `mousemove` feeds position, `mouseleave` and window `blur` park the pointer off screen and release all buttons, `mousedown` and `mouseup` feed buttons 0 to 4 (left, middle, right, back, forward), `wheel` feeds a scaled delta. Capture phase listeners call `preventDefault` and `stopPropagation` only when the menu is visible and `WantCaptureMouse` is set (keyboard capture gated the same way on `WantCaptureKeyboard`), so the page receives raw events otherwise.
 - Mouse button naming for binds: `e.button` index maps through `["M1", "M3", "M2", "M4", "M5"]` (left, middle, right, back, forward).
-- Keyboard: `keydown` and `keyup` maintain `KeysDown` by `e.code`. Text editing routes Backspace, Enter, Escape, and printable characters into the active payload and hides them from the page. KeyBind listening intercepts all keys into the pending payload. The menu toggle key is matched before normal routing and works while hidden.
+- Keyboard: `keydown` and `keyup` maintain `KeysDown` by `e.code`. Text editing routes Backspace, Enter, Escape, Tab (completion), Up and Down (history), Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z (undo and redo), and filtered printable characters into the active payload and hides them from the page. KeyBind listening intercepts all keys into the pending payload. The menu toggle key is matched before normal routing and works while hidden.
 - Context menu: suppressed when the menu is visible and the pointer is captured or a KeyBind is listening, which is what makes right click (`M2`) binds usable.
 - Frame driver: `frame(userFn)` runs the loop with hidden tab skipping. When the menu is toggled closed, the loop clears the canvas, resets hover and active bind state, keeps `pointerEvents: none`, skips `userFn`, and schedules the next frame. Otherwise it runs `newFrame`, `userFn` with error isolation, `endFrame`, cursor styling (resize, move, default), and `renderFrame`.
 - Menu visibility toggle state machine: `Backend.menuVisible` (true on load), `Backend.menuToggleKey` (default `"Insert"`, rebindable to any `e.code` or `M1` to `M5`), `setMenuVisible`, `toggleMenu`, canvas display toggling between `block` and `none`.
+- Stuck input recovery: `Backend.clearInputs()` drops all held keys, chars, and buttons. It runs on window blur, on every hidden tab frame, and from the Input Monitor clear button, which cures keys stuck by browser swallowed releases (example: Ctrl+Shift+S opening the Firefox screenshot tool).
+- Live input introspection: `Backend.getHeldInputs()` returns held keyboard codes plus pressed `M1` to `M5` names for monitors. `Backend.hz` tracks the smoothed frame rate (the display refresh rate) from loop deltas.
 
 ### ImGui.main.js
 
@@ -148,8 +162,8 @@ Entry script and example content:
 
 - Userscript header with `@match`, `@grant GM_getValue` and `GM_setValue`, versioned `@require` lines plus `LIB_VERSION` cache buster, and a dynamic CDN fallback loader (`ensureLibs`) for local development.
 - Persistent state object `S` (demo values plus overlay state: menu key, feature keys, feature flags, theme index).
-- `MY_MENU()`: example window (buttons, checkbox, sliders, text input, color editor, combo, collapsible toggles, overlay toggle KeyBind row).
-- `DASHBOARD_MENU()`: sidebar dashboard starter (navigation child plus content child, feature KeyBinds, held state monitor, MultiCombo flags page, GM storage save and load page, theme selector page, background draw list ESP sample).
+- `MY_MENU()`: example window (aligned buttons, checkbox, sliders, text input, color editor, combo, spacing and dummy rhythm, collapsible toggles, overlay toggle KeyBind row).
+- `DASHBOARD_MENU()`: sidebar dashboard starter (navigation child plus content child, feature KeyBinds, held state monitor, MultiCombo flags page, GM storage save and load plus Input Monitor with Hz readout and modal confirm demo, theme selector page, background draw list ESP sample).
 - `DEMO_WINDOW(dt)`: reference window exercising progress, list box, child panels, and SameLine rows.
 - `boot()`: creates context, initializes backend, syncs the toggle key from state, starts the frame loop calling user menus, the full port demo window, and notification rendering.
 
@@ -160,7 +174,7 @@ Upstream parity audit against Dear ImGui 1.92.9b (`imgui.h`, `imgui_internal.h`,
 ### Core Window and Viewport Mechanics
 
 - [x] Begin and End window lifecycle with name identity and open flags
-- [x] Title bar drag move, resize grip, double click collapse, close button
+- [x] Title bar drag move, resize grip, single click collapse arrow with explicit hit box, double click collapse shortcut, close button
 - [x] Auto fit height, fixed sizes, viewport clamping, z ordering
 - [x] SetNextWindowPos, Size, Collapsed, Focus, Scroll, ContentSize, BgAlpha
 - [x] SetWindowPos, Size, Collapsed, Focus
@@ -170,7 +184,7 @@ Upstream parity audit against Dear ImGui 1.92.9b (`imgui.h`, `imgui_internal.h`,
 - [x] INI window position, size, and collapse persistence (GM storage with localStorage fallback)
 - [ ] Docking: DockSpace, DockBuilder, docked window nodes, dock persistence
 - [ ] Multi viewport platform windows and per viewport DPI handling
-- [ ] Window который appearing and focus order APIs beyond the focused window subset (partial: appearing and focused queries exist)
+- [ ] Window appearing and focus order APIs beyond the focused window subset (partial: appearing and focused queries exist)
 - [ ] Background dimming policies for popups beyond modal dim (partial: modal dim only)
 - [ ] Settings handlers for custom sections (only window and table sections persist)
 
@@ -217,6 +231,9 @@ Upstream parity audit against Dear ImGui 1.92.9b (`imgui.h`, `imgui_internal.h`,
 ### Widget Coverage and Variations
 
 - [x] Button, SmallButton, InvisibleButton, Checkbox, RadioButton, Toggle pill (port addition)
+- [x] Button and Selectable 9 anchor text alignment via style defaults plus per call override (mirrors upstream `ButtonTextAlign` and `SelectableTextAlign`)
+- [x] Spacing with optional pixel height and Dummy exact gaps (upstream rhythm helpers)
+- [x] Friendly key names via `ImGui.formatKeyName` across binds and monitors (port addition)
 - [x] SliderFloat, SliderInt, DragFloat, InputText, InputTextMultiline
 - [x] ColorEdit3, ColorEdit4 with canvas picker popup
 - [x] Combo, BeginCombo, EndCombo, Selectable, ListBox, ProgressBar
@@ -227,14 +244,14 @@ Upstream parity audit against Dear ImGui 1.92.9b (`imgui.h`, `imgui_internal.h`,
 - [x] DragInt, DragFloatN, DragIntN, DragFloat4, DragInt4
 - [x] InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputFloat2, 3, 4, InputTextWithHint
 - [x] ColorButton, ColorPicker3, ColorPicker4, Image, ImageButton
-- [x] PlotLines, PlotHistogram, LabelText, Value, TextDisabled, SeparatorText, Bullet, BeginListBox, EndListBox
+- [x] PlotLines, PlotHistogram, LabelText, Value, TextDisabled, SeparatorText (left aligned), Bullet, BeginListBox (auto fill default), EndListBox
 - [x] CollapsingHeader, TreeNode, TreeNodeEx, TreePush, TreePop, SetNextItemOpen
-- [ ] InputScalar and SliderScalar generic type dispatch (only float, int, double covered)
-- [ ] InputText callbacks, character filters, resize callbacks, undo and redo stack
-- [ ] Combo with custom preview content and height policies (partial: fixed row metrics)
-- [ ] ListBox with clipper virtualization and multi select (partial: full fit list)
-- [ ] ColorPicker alpha bar and option flags (partial: SV plus hue only)
-- [ ] Plot custom getters beyond array values (partial: arrays only)
+- [x] InputScalar and SliderScalar generic dispatch over DataType enums (S8 through Double with limits, integer rounding, and format defaults; InputFloat, InputInt, InputDouble, SliderFloat, and SliderInt delegate to them)
+- [x] InputText callbacks (Completion, History, Always, CharFilter, Edit), character filters (decimal, hexadecimal, uppercase, no blank), callback data with buffer and selection editing, and per widget undo and redo history (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z)
+- [x] Combo height policies (Small 4, Regular 8, Large 20, Largest viewport rows) with internal wheel scrolling, plus custom preview scope (BeginComboPreview) and NoArrowButton and NoPreview trigger modes
+- [x] ListBox clipper virtualization (only visible rows emit draw ops) with internal wheel offset, plus ListBoxMulti with Ctrl toggle and Shift range selection over Set, Array, or boolean map inputs
+- [x] ColorPicker alpha bar with checkerboard and gradient, split original versus edited preview swatch, RGB numeric rows, and bidirectional hex field (NoAlpha, AlphaBar, AlphaPreview, DisplayRGB, DisplayHex flags)
+- [x] Plot array plus function getter feeds with count, ring buffer offset, and user data (PlotLines, PlotHistogram, and explicit Ex forms; legacy positional calls dispatch unchanged)
 - [ ] ImageButton with UV tiling and tint options (partial: full blit only)
 - [ ] DragDropSource with OS payload and drag preview window (partial: lite payload plus tooltip)
 - [ ] BeginComboPreview and ComboPreviewData
@@ -266,6 +283,8 @@ Upstream parity audit against Dear ImGui 1.92.9b (`imgui.h`, `imgui_internal.h`,
 - [x] StyleColorsCatppuccin and StyleColorsCyberpunk theme presets
 - [x] Glow rendering extension on draw ops
 - [x] Sidebar dashboard starter layout (DASHBOARD_MENU)
+- [x] Standalone ModalDialog system with chaining, dimmer, and modal lock (port addition)
+- [x] Input Monitor inputs: live held key and button snapshot, display Hz readout, stuck key auto clear on blur and hidden tabs (port addition)
 
 ## 3. UNIVERSAL KEY AND MOUSE BINDING (ImGui.KeyBind)
 
@@ -367,12 +386,12 @@ const S = { tab: 0 };
 function Dashboard() {
   const ImGui = window.ImGui;
   ImGui.SetNextWindowSize(540, 360, ImGui.Cond.FirstUseEver);
-  const w = ImGui.Begin("Tool Dashboard", null, ImGui.WindowFlags.NoCollapse);
+  const w = ImGui.Begin("Tool Dashboard", null, ImGui.WindowFlags.NoCollapse | ImGui.WindowFlags.NoScrollbar | ImGui.WindowFlags.NoScrollWithMouse);
   if (!w.visible) { ImGui.End(); return; }
 
   if (ImGui.BeginChild("##sidebar", 120, 0, true)) {
     for (let i = 0; i < tabs.length; i++) {
-      if (ImGui.Selectable(tabs[i], S.tab === i, 0, [110, 28])) S.tab = i;
+      if (ImGui.Selectable(tabs[i], S.tab === i, 0, [110, 28], ImGui.Align.CenterLeft)) S.tab = i;
     }
   }
   ImGui.EndChild();
@@ -400,7 +419,7 @@ function Dashboard() {
 }
 ```
 
-Verified geometry for a 520 by 340 window at (50, 50): sidebar box at x 58, y 77, width 110, height 311; content box at x 176, y 77 (tops aligned, x past the sidebar right edge plus spacing), filling remaining width and full remaining height. A widget placed after the row without `SameLine` feeds to y 181 (box top plus box height plus item spacing), directly below both columns.
+Verified geometry for a 520 by 340 window at (50, 50): sidebar box at x 58, y 77, width 110, height 305 (exact interior fill, zero growth overshoot); content box at x 176, y 77 (tops aligned, x past the sidebar right edge plus spacing), filling remaining width and full remaining height with `scrollMax` 0 and no scrollbar chrome. A widget placed after the row without `SameLine` feeds directly below both columns. The `NoScrollbar` and `NoScrollWithMouse` flags pin the outer frame (the scroll math additionally discounts trailing padding with a 2px epsilon, so exact fits never phantom scroll).
 
 ## 6. TITLE BAR FOCUS AND COLOR LEAK PREVENTION
 
