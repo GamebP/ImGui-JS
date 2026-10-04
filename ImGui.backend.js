@@ -217,8 +217,8 @@ const Backend = {
         e.stopPropagation(); // the page must never see keys typed into the UI
         return;
       }
-      if (Backend.menuVisible && io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
-      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
+      if (Backend.menuVisible && (io.WantCaptureKeyboard || (ImGui.ModalDialog && ImGui.ModalDialog.IsOpen()))) { e.preventDefault(); e.stopPropagation(); }
+      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !(ImGui.ModalDialog && ImGui.ModalDialog.IsOpen())) io.AddInputCharactersUTF8(e.key);
     }, true);
     window.addEventListener("keyup", (e) => { io.KeysDown[e.code] = false; }, true);
 
@@ -275,7 +275,14 @@ const Backend = {
         return;
       }
       c.newFrame(dt);
+      // Modal lock first: windows in this frame evaluate under the dialog
+      // lock (guarded: split installs without the modal lib skip this).
+      if (ImGui.ModalDialog && ImGui.ModalDialog._syncLock) ImGui.ModalDialog._syncLock();
       try { this.userFn(c); } catch (err) { console.error("[ImGui] frame error:", err); }
+      // Modal on top: dimmer plus card flush into the overlay layer after all
+      // windows and popups. Render dedupes per frame, so manual calls from
+      // user menus are safe. Runs before endFrame so hover feeds capture.
+      if (ImGui.ModalDialog) ImGui.ModalDialog.Render();
       c.endFrame();
       // OS cursor follows interaction state (no canvas-drawn ghost ring).
       if (this.canvas) {

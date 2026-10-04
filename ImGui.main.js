@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Main Menu
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.49
+// @version      1.0.51
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey (Canvas2D). Drag the demo windows, edit MY_MENU below to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -10,25 +10,26 @@
 // @run-at       document-idle
 // @downloadURL   https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
 // @updateURL     https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.49
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.49
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.49
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.49
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.49
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.49
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.49
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.49
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.49
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.51
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.51
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.51
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.51
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.51
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.51
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.51
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.51
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.modal.js?v=1.0.51
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.51
 // ==/UserScript==
 
 /* ============================================================================
  * ImGui.main.js — MAIN FILE (all includes + example menu live here)
  * ----------------------------------------------------------------------------
  * HOW THE LIBS ARE INCLUDED (https:// as requested):
- *   1. Static (preferred, Violentmonkey-native): the 9x `// @require https://...`
+ *   1. Static (preferred, Violentmonkey-native): the 10x `// @require https://...`
  *      lines in the header above point at GamebP/ImGui-JS (raw.githubusercontent,
  *      with `?v=LIB_VERSION` cache-buster). On every update: bump `@version`,
- *      `LIB_VERSION`, and the `?v=` in all 9 @require lines — new URL = new
+ *      `LIB_VERSION`, and the `?v=` in all 10 @require lines — new URL = new
  *      cache entry, so clients drop the old cached libs. Push this Build/
  *      folder to GitHub, reinstall the script — Violentmonkey
  *      downloads each lib ONCE at install time and runs them before this file.
@@ -49,6 +50,7 @@
  *                        tabbar, tables, columns, TreeNodeEx, drag&drop, ini
  *   ImGui.demo.js      — ShowDemoWindow/ShowStyleEditor/ShowMetricsWindow
   *   ImGui.notify.js  — toast notifications (ImGuiNotify port, bottom-corner stack)
+ *   ImGui.modal.js   — standalone modal dialogs (notify-styled card, no animation)
  *   ImGui.backend.js  — overlay canvas, mouse/keyboard, rAF loop, text input
  *   ImGui.main.js    — THIS FILE: includes + YOUR menu code (edit MY_MENU)
  * ============================================================================
@@ -57,15 +59,15 @@
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.49"; // bump on every update: also bump @version + ?v= in @require lines
-const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
+const LIB_VERSION = "1.0.51"; // bump on every update: also bump @version + ?v= in @require lines
+const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.modal.js", "ImGui.backend.js"];
 
 function libsPresent() {
   try {
     return typeof window.ImGui !== "undefined"
       && window.__IMGUI_CORE__ && window.__IMGUI_DRAW__
       && window.__IMGUI_ANIMATE__ && window.__IMGUI_WIDGETS__ && window.__IMGUI_WIDGETS2__
-      && window.__IMGUI_EXTENDED__ && window.__IMGUI_DEMO__ && window.__IMGUI_NOTIFY__ && window.__IMGUI_BACKEND__;
+      && window.__IMGUI_EXTENDED__ && window.__IMGUI_DEMO__ && window.__IMGUI_NOTIFY__ && window.__IMGUI_MODAL__ && window.__IMGUI_BACKEND__;
   } catch { return false; }
 }
 function loadScript(url) {
@@ -229,10 +231,10 @@ function DASHBOARD_MENU() {
       ImGui.SeparatorText("Status Monitor");
       const heldA = ImGui.Backend.isKeyOrMouseActive(S.aimbotKey, true);
       ImGui.TextColored(heldA ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
-        "Aimbot [" + S.aimbotKey + "]: " + (heldA ? "ACTIVE (HELD)" : "INACTIVE"));
+        "Aimbot [" + ImGui.formatKeyName(S.aimbotKey) + "]: " + (heldA ? "ACTIVE (HELD)" : "INACTIVE"));
       const heldT = ImGui.Backend.isKeyOrMouseActive(S.triggerKey, true);
       ImGui.TextColored(heldT ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
-        "Trigger [" + S.triggerKey + "]: " + (heldT ? "ACTIVE (HELD)" : "INACTIVE"));
+        "Trigger [" + ImGui.formatKeyName(S.triggerKey) + "]: " + (heldT ? "ACTIVE (HELD)" : "INACTIVE"));
     } else if (S.dashTab === 1) {
       ImGui.SeparatorText("ESP & Visuals");
       const mc = ImGui.MultiCombo("ESP Flags", S.flags);
@@ -252,13 +254,35 @@ function DASHBOARD_MENU() {
         const saved = ImGui.StorageGet("[ImGui]demo-flags", null);
         if (saved) S.flags = { ...S.flags, ...saved };
       }
+      if (ImGui.Button("Reset all (confirm...)")) {
+        ImGui.ModalDialog.Show({
+          title: "Reset settings",
+          text: "This clears all dashboard flags. This cannot be undone. Continue?",
+          buttons: [
+            {
+              label: "Continue", closeOnClick: false,
+              onClick: () => {
+                for (const k of Object.keys(S.flags)) S.flags[k] = false;
+                ImGui.ModalDialog.Show({
+                  title: "Done",
+                  text: "All flags were cleared.",
+                  buttons: [{ label: "OK" }],
+                });
+              },
+            },
+            { label: "Cancel" },
+          ],
+        });
+      }
       ImGui.SeparatorText("Input Monitor");
       ImGui.Text("Monitor: " + (ImGui.Backend.hz || 60).toFixed(0) + " Hz");
       const held = ImGui.Backend.getHeldInputs();
+      const fmtKeys = held.keys.map((k) => ImGui.formatKeyName(k));
+      const fmtBtns = held.buttons.map((b) => ImGui.formatKeyName(b));
       ImGui.TextColored(held.keys.length ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
-        "Keys: " + (held.keys.length ? held.keys.join(" + ") : "(none)"));
+        "Keys: " + (fmtKeys.length ? fmtKeys.join(" + ") : "(none)"));
       ImGui.TextColored(held.buttons.length ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
-        "Mouse: " + (held.buttons.length ? held.buttons.join(" + ") : "(none)"));
+        "Mouse: " + (fmtBtns.length ? fmtBtns.join(" + ") : "(none)"));
       if (ImGui.SmallButton("Clear stuck keys")) ImGui.Backend.clearInputs();
       ImGui.TextDisabled("Reserved browser combos can swallow key release. Focus loss auto clears.");
     } else {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.49
+// @version      1.0.51
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.49";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.51";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -2954,6 +2954,13 @@ function ensure() {
       const r = c._popupRectsPrev[c._popupStack[i]];
       if (r && r.modal) { c._activeModalRect = { x: r.x, y: r.y, w: r.w, h: r.h }; break; }
     }
+    // Standalone ModalDialog owns the whole viewport while open (dimmer
+    // covers everything). Re-derived here because this rollover runs inside
+    // the first Begin, after the backend pre frame sync, and would otherwise
+    // wipe a lock set before userFn ran.
+    if (c._modalConfig) {
+      c._activeModalRect = { x: 0, y: 0, w: c.io.DisplaySize.x, h: c.io.DisplaySize.y };
+    }
   }
   return c;
 }
@@ -5306,6 +5313,214 @@ global.__IMGUI_NOTIFY__ = true;
 })(typeof globalThis !== "undefined" ? globalThis : this);
 
 })();
+;(function(){/*__MODAL__*/
+/* ImGui Browser Port — ModalDialog (original, notify-styled)
+ * Standalone modal dialog: dark notify-style card WITHOUT the accent bar and
+ * WITHOUT any animation (spawns and vanishes instantly), centered on the
+ * viewport over a fullscreen dimmer. Single active dialog. Buttons arm on
+ * left press and fire on release; onClick may chain into Show() for multi
+ * step flows (auto close is skipped when the callback opens a new dialog).
+ * Input beneath is blocked through the core modal lock (_activeModalRect),
+ * synced every frame by the backend loop, plus a keyboard capture gate.
+ * Requires: core (+extended for the overlay queue, backend for auto sync).
+ */
+(function (global) {
+"use strict";
+const ImGui = global.ImGui;
+if (!global.__IMGUI_CORE__) throw new Error("ImGui.core.js must load first");
+const measure = (s) => (ImGui._measure ? ImGui._measure(s) : String(s).length * 7);
+function wrapLines(str, maxW) {
+  const words = String(str == null ? "" : str).split(/\s+/).filter((x) => x.length > 0);
+  const lines = [];
+  let line = "";
+  for (const wd of words) {
+    const t = line ? line + " " + wd : wd;
+    if (measure(t) > maxW && line) { lines.push(line); line = wd; }
+    else line = t;
+  }
+  if (line) lines.push(line);
+  // Hard split a single overlong token so it can never overflow the card.
+  const out = [];
+  for (const ln of lines) {
+    let s = ln;
+    while (measure(s) > maxW && s.length > 1) {
+      let cut = s.length - 1;
+      while (cut > 1 && measure(s.slice(0, cut)) > maxW) cut--;
+      out.push(s.slice(0, Math.max(1, cut)));
+      s = s.slice(Math.max(1, cut));
+    }
+    out.push(s);
+  }
+  return out;
+}
+function inside(m, r) {
+  return m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h;
+}
+
+const ModalDialog = {
+  // Show(config): { title, text, maxWidth (default 360), showCloseButton
+  // (default true), buttons: [{ label, onClick, closeOnClick (default true) }] }
+  Show(cfg) {
+    const c = ImGui.GetContext();
+    cfg = cfg || {};
+    const buttons = Array.isArray(cfg.buttons) ? cfg.buttons.map((b) => ({
+      label: String(b && b.label !== undefined ? b.label : "OK"),
+      onClick: b && typeof b.onClick === "function" ? b.onClick : null,
+      closeOnClick: !b || b.closeOnClick !== false,
+    })) : [];
+    c._modalConfig = {
+      title: String(cfg.title || ""),
+      text: String(cfg.text || ""),
+      maxWidth: Math.max(160, cfg.maxWidth || 360),
+      showCloseButton: cfg.showCloseButton !== false,
+      buttons,
+    };
+    c._modalSeq = (c._modalSeq || 0) + 1;
+    c._modalArm = null;
+    return this;
+  },
+  Close() {
+    const c = ImGui.GetContext();
+    c._modalConfig = null;
+    c._modalArm = null;
+    c._modalRect = null;
+    c._modalBtnRects = [];
+    if (!this._anyModalStillOpen(c)) c._activeModalRect = null;
+    return this;
+  },
+  _anyModalStillOpen(c) {
+    const stack = c._popupStack || [];
+    for (const k of stack) {
+      const r = (c._popupRects && c._popupRects[k]) || (c._popupRectsPrev && c._popupRectsPrev[k]);
+      if (r && r.modal) return true;
+    }
+    return false;
+  },
+  IsOpen() {
+    try { return !!ImGui.GetContext()._modalConfig; } catch { return false; }
+  },
+  // Backend loop calls this before userFn so every window in the frame
+  // evaluates under the lock. Fullscreen rect: the dimmer covers everything.
+  _syncLock() {
+    let c = null;
+    try { c = ImGui.GetContext(); } catch { return; }
+    if (!c._modalConfig) return;
+    const dw = c.io.DisplaySize.x, dh = c.io.DisplaySize.y;
+    c._activeModalRect = { x: 0, y: 0, w: dw, h: dh };
+  },
+  // Render dimmer, card, title, close box, body, and buttons into the overlay
+  // layer (topmost). Auto called by Backend.frame after userFn, guarded once
+  // per frame so manual calls are safe. Layout is deterministic from viewport
+  // and text metrics, so hit testing uses same frame rects (no stale data,
+  // unlike animated toasts which must use previous frame rects).
+  Render() {
+    let c = null;
+    try { c = ImGui.GetContext(); } catch { return; }
+    const cfg = c._modalConfig;
+    if (!cfg) return;
+    if (c._modalRendered === c.frame) return;
+    c._modalRendered = c.frame;
+    const st = c.style, io = c.io, m = io.MousePos;
+    const dw = io.DisplaySize.x, dh = io.DisplaySize.y;
+    c._overlayOps = c._overlayOps || [];
+    const ops = c._overlayOps;
+
+    // Escape is a safety hatch: always dismisses, even without an X button.
+    if (io.KeysDown && io.KeysDown["Escape"]) {
+      io.KeysDown["Escape"] = false;
+      this.Close();
+      return;
+    }
+
+    const padX = 20, padY = 18, maxW = cfg.maxWidth;
+    const titleH = cfg.title ? 22 : 0;
+    const lines = cfg.text ? wrapLines(cfg.text, maxW) : [];
+    const btnH = 26, btnGap = 8;
+    const widths = cfg.buttons.map((b) => measure(b.label) + 32);
+    const rowW = widths.reduce((a, b) => a + b, 0) + Math.max(0, cfg.buttons.length - 1) * btnGap;
+    const cardW = Math.max(maxW + padX * 2, rowW + padX * 2);
+    const cardH = padY + titleH + (cfg.title && lines.length ? 8 : 0) +
+      lines.length * 16 + (cfg.buttons.length ? 12 + btnH : 0) + padY;
+    const cx = Math.round((dw - cardW) / 2), cy = Math.round((dh - cardH) / 2);
+    c._modalRect = { x: cx, y: cy, w: cardW, h: cardH };
+
+    // 1. Dimmer: fullscreen, blocks sight and (via the modal lock) input.
+    ops.push({ t: "rectFilled", x: 0, y: 0, w: dw, h: dh, r: 0, css: "rgba(0,0,0,0.6)" });
+    // 2. Card: notify dark fill and thin border, rounding 6, no accent bar.
+    ops.push({ t: "rectFilled", x: cx, y: cy, w: cardW, h: cardH, r: 6, col: [0.10, 0.10, 0.10, 0.95] });
+    ops.push({ t: "rect", x: cx, y: cy, w: cardW, h: cardH, r: 6, col: [0.3, 0.3, 0.3, 1.0], th: 1 });
+
+    const rects = [];
+    if (cfg.title) {
+      ops.push({ t: "text", str: cfg.title, x: cx + padX, y: cy + padY, col: st.Colors[ImGui.Col.Text], font: "600 14px -apple-system,Segoe UI,Roboto,Arial,sans-serif" });
+    }
+    if (cfg.showCloseButton) {
+      const xs = 22, xr = { x: cx + cardW - padX - xs + 6, y: cy + padY - 3, w: xs, h: xs, idx: -1 };
+      const xhov = inside(m, xr);
+      if (xhov) {
+        ops.push({ t: "rectFilled", x: xr.x, y: xr.y, w: xr.w, h: xr.h, r: 4, col: st.Colors[ImGui.Col.FrameBgHovered] });
+        c.anyWindowHovered = true;
+      }
+      ops.push({ t: "text", str: "x", x: xr.x + Math.round((xs - measure("x")) / 2), y: xr.y + 3, col: st.Colors[ImGui.Col.Text] });
+      rects.push(xr);
+    }
+    let by = cy + padY + titleH + (cfg.title && lines.length ? 8 : 0);
+    for (const ln of lines) {
+      ops.push({ t: "text", str: ln, x: cx + padX, y: by, col: st.Colors[ImGui.Col.Text] });
+      by += 16;
+    }
+    if (cfg.buttons.length) {
+      let bx = cx + cardW - padX - rowW;
+      const bTop = cy + cardH - padY - btnH;
+      cfg.buttons.forEach((b, i) => {
+        const bw = widths[i];
+        const r = { x: bx, y: bTop, w: bw, h: btnH, idx: i };
+        const hov = inside(m, r);
+        const armed = c._modalArm === i;
+        if (hov) c.anyWindowHovered = true;
+        const fill = armed ? st.Colors[ImGui.Col.ButtonActive]
+          : hov ? st.Colors[ImGui.Col.ButtonHovered]
+          : st.Colors[ImGui.Col.Button];
+        ops.push({ t: "rectFilled", x: bx, y: bTop, w: bw, h: btnH, r: 4, col: fill });
+        ops.push({ t: "text", str: b.label, x: bx + Math.round((bw - measure(b.label)) / 2), y: bTop + Math.round((btnH - st.FontSize) / 2), col: st.Colors[ImGui.Col.Text] });
+        rects.push(r);
+        bx += bw + btnGap;
+      });
+    }
+    c._modalBtnRects = rects;
+
+    // 3. Interaction: arm on left press, fire on release over the same box.
+    // Beneath UI cannot arm because the modal lock voids its hover.
+    if (c._modalArm !== null && c._modalArm !== undefined && !io.MouseDown[0] && !io.MouseReleased[0]) c._modalArm = null;
+    if (io.MouseClicked[0] && (c._modalArm === null || c._modalArm === undefined)) {
+      for (const r of rects) {
+        if (inside(m, r)) { c._modalArm = r.idx; break; }
+      }
+    }
+    if (io.MouseReleased[0] && c._modalArm !== null && c._modalArm !== undefined) {
+      const idx = c._modalArm;
+      c._modalArm = null;
+      const hit = rects.some((r) => r.idx === idx && inside(m, r));
+      if (hit) {
+        if (idx === -1) { this.Close(); return; }
+        const b = cfg.buttons[idx];
+        const seq0 = c._modalSeq;
+        if (b && b.onClick) {
+          try { b.onClick(); } catch (e) { console.error("[ModalDialog]", e); }
+        }
+        // Chain safe: when onClick opened a new dialog the sequence moved,
+        // so auto close must not destroy the fresh dialog.
+        if (c._modalSeq === seq0 && (!b || b.closeOnClick !== false)) this.Close();
+      }
+    }
+  },
+};
+
+Object.assign(ImGui, { ModalDialog });
+global.__IMGUI_MODAL__ = true;
+})(typeof globalThis !== "undefined" ? globalThis : this);
+
+})();
 ;(function(){/*__BACKEND__*/
 /* ImGui Browser Port — Backend (ported from backends/imgui_impl_win32/glfw/sdl2)
  * Browser equivalent: fixed overlay canvas + window-capture listeners + hidden
@@ -5526,8 +5741,8 @@ const Backend = {
         e.stopPropagation(); // the page must never see keys typed into the UI
         return;
       }
-      if (Backend.menuVisible && io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
-      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
+      if (Backend.menuVisible && (io.WantCaptureKeyboard || (ImGui.ModalDialog && ImGui.ModalDialog.IsOpen()))) { e.preventDefault(); e.stopPropagation(); }
+      if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !(ImGui.ModalDialog && ImGui.ModalDialog.IsOpen())) io.AddInputCharactersUTF8(e.key);
     }, true);
     window.addEventListener("keyup", (e) => { io.KeysDown[e.code] = false; }, true);
 
@@ -5584,7 +5799,14 @@ const Backend = {
         return;
       }
       c.newFrame(dt);
+      // Modal lock first: windows in this frame evaluate under the dialog
+      // lock (guarded: split installs without the modal lib skip this).
+      if (ImGui.ModalDialog && ImGui.ModalDialog._syncLock) ImGui.ModalDialog._syncLock();
       try { this.userFn(c); } catch (err) { console.error("[ImGui] frame error:", err); }
+      // Modal on top: dimmer plus card flush into the overlay layer after all
+      // windows and popups. Render dedupes per frame, so manual calls from
+      // user menus are safe. Runs before endFrame so hover feeds capture.
+      if (ImGui.ModalDialog) ImGui.ModalDialog.Render();
       c.endFrame();
       // OS cursor follows interaction state (no canvas-drawn ghost ring).
       if (this.canvas) {
@@ -5615,10 +5837,10 @@ global.__IMGUI_BACKEND__ = true;
  * ImGui.main.js — MAIN FILE (all includes + example menu live here)
  * ----------------------------------------------------------------------------
  * HOW THE LIBS ARE INCLUDED (https:// as requested):
- *   1. Static (preferred, Violentmonkey-native): the 9x `// @require https://...`
+ *   1. Static (preferred, Violentmonkey-native): the 10x `// @require https://...`
  *      lines in the header above point at GamebP/ImGui-JS (raw.githubusercontent,
  *      with `?v=LIB_VERSION` cache-buster). On every update: bump `@version`,
- *      `LIB_VERSION`, and the `?v=` in all 9 @require lines — new URL = new
+ *      `LIB_VERSION`, and the `?v=` in all 10 @require lines — new URL = new
  *      cache entry, so clients drop the old cached libs. Push this Build/
  *      folder to GitHub, reinstall the script — Violentmonkey
  *      downloads each lib ONCE at install time and runs them before this file.
@@ -5639,6 +5861,7 @@ global.__IMGUI_BACKEND__ = true;
  *                        tabbar, tables, columns, TreeNodeEx, drag&drop, ini
  *   ImGui.demo.js      — ShowDemoWindow/ShowStyleEditor/ShowMetricsWindow
   *   ImGui.notify.js  — toast notifications (ImGuiNotify port, bottom-corner stack)
+ *   ImGui.modal.js   — standalone modal dialogs (notify-styled card, no animation)
  *   ImGui.backend.js  — overlay canvas, mouse/keyboard, rAF loop, text input
  *   ImGui.main.js    — THIS FILE: includes + YOUR menu code (edit MY_MENU)
  * ============================================================================
@@ -5647,15 +5870,15 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.49"; // bump on every update: also bump @version + ?v= in @require lines
-const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
+const LIB_VERSION = "1.0.51"; // bump on every update: also bump @version + ?v= in @require lines
+const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.modal.js", "ImGui.backend.js"];
 
 function libsPresent() {
   try {
     return typeof window.ImGui !== "undefined"
       && window.__IMGUI_CORE__ && window.__IMGUI_DRAW__
       && window.__IMGUI_ANIMATE__ && window.__IMGUI_WIDGETS__ && window.__IMGUI_WIDGETS2__
-      && window.__IMGUI_EXTENDED__ && window.__IMGUI_DEMO__ && window.__IMGUI_NOTIFY__ && window.__IMGUI_BACKEND__;
+      && window.__IMGUI_EXTENDED__ && window.__IMGUI_DEMO__ && window.__IMGUI_NOTIFY__ && window.__IMGUI_MODAL__ && window.__IMGUI_BACKEND__;
   } catch { return false; }
 }
 function loadScript(url) {
@@ -5819,10 +6042,10 @@ function DASHBOARD_MENU() {
       ImGui.SeparatorText("Status Monitor");
       const heldA = ImGui.Backend.isKeyOrMouseActive(S.aimbotKey, true);
       ImGui.TextColored(heldA ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
-        "Aimbot [" + S.aimbotKey + "]: " + (heldA ? "ACTIVE (HELD)" : "INACTIVE"));
+        "Aimbot [" + ImGui.formatKeyName(S.aimbotKey) + "]: " + (heldA ? "ACTIVE (HELD)" : "INACTIVE"));
       const heldT = ImGui.Backend.isKeyOrMouseActive(S.triggerKey, true);
       ImGui.TextColored(heldT ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
-        "Trigger [" + S.triggerKey + "]: " + (heldT ? "ACTIVE (HELD)" : "INACTIVE"));
+        "Trigger [" + ImGui.formatKeyName(S.triggerKey) + "]: " + (heldT ? "ACTIVE (HELD)" : "INACTIVE"));
     } else if (S.dashTab === 1) {
       ImGui.SeparatorText("ESP & Visuals");
       const mc = ImGui.MultiCombo("ESP Flags", S.flags);
@@ -5842,13 +6065,35 @@ function DASHBOARD_MENU() {
         const saved = ImGui.StorageGet("[ImGui]demo-flags", null);
         if (saved) S.flags = { ...S.flags, ...saved };
       }
+      if (ImGui.Button("Reset all (confirm...)")) {
+        ImGui.ModalDialog.Show({
+          title: "Reset settings",
+          text: "This clears all dashboard flags. This cannot be undone. Continue?",
+          buttons: [
+            {
+              label: "Continue", closeOnClick: false,
+              onClick: () => {
+                for (const k of Object.keys(S.flags)) S.flags[k] = false;
+                ImGui.ModalDialog.Show({
+                  title: "Done",
+                  text: "All flags were cleared.",
+                  buttons: [{ label: "OK" }],
+                });
+              },
+            },
+            { label: "Cancel" },
+          ],
+        });
+      }
       ImGui.SeparatorText("Input Monitor");
       ImGui.Text("Monitor: " + (ImGui.Backend.hz || 60).toFixed(0) + " Hz");
       const held = ImGui.Backend.getHeldInputs();
+      const fmtKeys = held.keys.map((k) => ImGui.formatKeyName(k));
+      const fmtBtns = held.buttons.map((b) => ImGui.formatKeyName(b));
       ImGui.TextColored(held.keys.length ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
-        "Keys: " + (held.keys.length ? held.keys.join(" + ") : "(none)"));
+        "Keys: " + (fmtKeys.length ? fmtKeys.join(" + ") : "(none)"));
       ImGui.TextColored(held.buttons.length ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
-        "Mouse: " + (held.buttons.length ? held.buttons.join(" + ") : "(none)"));
+        "Mouse: " + (fmtBtns.length ? fmtBtns.join(" + ") : "(none)"));
       if (ImGui.SmallButton("Clear stuck keys")) ImGui.Backend.clearInputs();
       ImGui.TextDisabled("Reserved browser combos can swallow key release. Focus loss auto clears.");
     } else {

@@ -71,6 +71,13 @@ function ensure() {
       const r = c._popupRectsPrev[c._popupStack[i]];
       if (r && r.modal) { c._activeModalRect = { x: r.x, y: r.y, w: r.w, h: r.h }; break; }
     }
+    // Standalone ModalDialog owns the whole viewport while open (dimmer
+    // covers everything). Re-derived here because this rollover runs inside
+    // the first Begin, after the backend pre frame sync, and would otherwise
+    // wipe a lock set before userFn ran.
+    if (c._modalConfig) {
+      c._activeModalRect = { x: 0, y: 0, w: c.io.DisplaySize.x, h: c.io.DisplaySize.y };
+    }
   }
   return c;
 }
