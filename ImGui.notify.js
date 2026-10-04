@@ -79,7 +79,7 @@ function Toast(type, dismissTime, content, buttonLabel, onButtonPress) {
     title: "", content: "",
     dismissTime: Config.defaultDismiss,
     buttonLabel: "", onButtonPress: null,
-    createdAt: (typeof performance !== "undefined" ? performance.now() : Date.now()),
+    createdAt: 0, // stamped on first visible frame (queued toasts must not tick early)
   };
   const args = Array.prototype.slice.call(arguments, 1);
   if (args.length === 1 && typeof args[0] === "string") { t.content = args[0]; }
@@ -97,7 +97,7 @@ function Toast(type, dismissTime, content, buttonLabel, onButtonPress) {
   return t;
 }
 function nowMs() { return (typeof performance !== "undefined" ? performance.now() : Date.now()); }
-function elapsedMs(t) { return nowMs() - t.createdAt; }
+function elapsedMs(t) { if (!t.createdAt) return 0; return nowMs() - t.createdAt; }
 function easeOutQuad(t) { return t * (2 - t); }
 function easeInQuad(t) { return t * t; }
 
@@ -232,6 +232,7 @@ function RenderNotifications() {
   }
 
   for (const t of list) {
+    if (!t.createdAt) t.createdAt = nowMs(); // start lifecycle on first visible frame
     const info = TYPE_INFO[t.type] || TYPE_INFO[0];
     const alpha = getFadePercent(t);
     const title = t.title || info.title || "";

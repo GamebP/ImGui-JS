@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.35
+// @version      1.0.36
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.35";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.36";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -4206,7 +4206,7 @@ function Toast(type, dismissTime, content, buttonLabel, onButtonPress) {
     title: "", content: "",
     dismissTime: Config.defaultDismiss,
     buttonLabel: "", onButtonPress: null,
-    createdAt: (typeof performance !== "undefined" ? performance.now() : Date.now()),
+    createdAt: 0, // stamped on first visible frame (queued toasts must not tick early)
   };
   const args = Array.prototype.slice.call(arguments, 1);
   if (args.length === 1 && typeof args[0] === "string") { t.content = args[0]; }
@@ -4224,7 +4224,7 @@ function Toast(type, dismissTime, content, buttonLabel, onButtonPress) {
   return t;
 }
 function nowMs() { return (typeof performance !== "undefined" ? performance.now() : Date.now()); }
-function elapsedMs(t) { return nowMs() - t.createdAt; }
+function elapsedMs(t) { if (!t.createdAt) return 0; return nowMs() - t.createdAt; }
 function easeOutQuad(t) { return t * (2 - t); }
 function easeInQuad(t) { return t * t; }
 
@@ -4359,6 +4359,7 @@ function RenderNotifications() {
   }
 
   for (const t of list) {
+    if (!t.createdAt) t.createdAt = nowMs(); // start lifecycle on first visible frame
     const info = TYPE_INFO[t.type] || TYPE_INFO[0];
     const alpha = getFadePercent(t);
     const title = t.title || info.title || "";
@@ -4671,7 +4672,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.35"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.36"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
