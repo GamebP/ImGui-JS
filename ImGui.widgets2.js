@@ -554,17 +554,24 @@ function TextDisabled(str) {
 function SeparatorText(label) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  c.beforeItemPlacement(0, 16);
+  // Left aligned section header (C++ SeparatorTextAlign default): 24px rule
+  // prefix, label, then trailing rule to the right margin. Generous vertical
+  // padding keeps the rules clear of widgets above and below.
+  const padY = 6;
+  const ht = st.FontSize + padY * 2;
+  c.beforeItemPlacement(0, ht);
   const bw = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   const tw = measure(label);
-  // Centered section header: label mid-width, separator lines on both sides.
-  const tx = Math.round(x + (bw - tw) / 2);
-  const lineY = Math.round(y + 16 / 2);
-  emit({ t: "text", str: label, x: tx, y: y + 1, col: st.Colors[ImGui.Col.Text] });
-  if (tx - x > 10) emit({ t: "line", x1: x, y1: lineY, x2: tx - 6, y2: lineY, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  emit({ t: "line", x1: tx + tw + 6, y1: lineY, x2: x + bw, y2: lineY, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  c.itemSize(bw, 16);
+  const rule = 24, gap = 6;
+  const tx = x + rule + gap;
+  const textY = y + padY;
+  const midY = Math.round(y + ht / 2) + 0.5;
+  emit({ t: "line", x1: x, y1: midY, x2: x + rule, y2: midY, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  emit({ t: "text", str: label, x: tx, y: textY, col: st.Colors[ImGui.Col.Text] });
+  const tailX = tx + tw + gap;
+  if (tailX < x + bw) emit({ t: "line", x1: tailX, y1: midY, x2: x + bw, y2: midY, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  c.itemSize(bw, ht);
 }
 function Bullet() {
   const c = ctx(), w = cur(); if (!w) return;
@@ -574,7 +581,10 @@ function Bullet() {
   c.itemSize(12, 16);
 }
 function BeginListBox(label, wArg = 0, hArg = 0) {
-  return ImGui.BeginChild(label + "##listbox", wArg, hArg || 110, true);
+  // hArg <= 0 auto fills remaining window height through BeginChild, so rows
+  // are never sliced by a fixed default. Explicit heights still clip (this
+  // port has no child scrolling), so size fixed boxes to fit their content.
+  return ImGui.BeginChild(label + "##listbox", wArg, hArg, true);
 }
 function EndListBox() { ImGui.EndChild(); }
 

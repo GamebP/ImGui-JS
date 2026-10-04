@@ -245,7 +245,6 @@ function demoPopups() {
     ImGui.ModalDialog.Show({
       title: "Action Required",
       text: "This is a centered modal dialog styled like ImGuiNotify, with no animation ramps and no accent bars. It completely blocks background clicks.",
-      showCloseButton: true,
       buttons: [
         { label: "Next Step", closeOnClick: false, onClick: showStep2 },
         {
@@ -268,7 +267,6 @@ function demoPopups() {
     ImGui.ModalDialog.Show({
       title: "Step 2: Confirm Action",
       text: "Chained multi step prompts open cleanly without distorting the underlying UI.",
-      showCloseButton: true,
       buttons: [
         {
           label: "Close Tab",

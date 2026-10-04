@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.52
+// @version      1.0.53
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.52";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.53";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -426,6 +426,22 @@ class ImGuiContext {
         if (m.x >= cx && m.x <= cx + cs && m.y >= cy && m.y <= cy + cs) {
           this.hoveredId = closeId;
           if (io.MouseClicked[0]) { w.open = false; io.MouseDown[0] = false; io._prevDown[0] = false; }
+        }
+      }
+      // collapse arrow: explicit single-click target drawn by drawWindow.
+      // Placed before the double-click check so arrow clicks are consumed
+      // here and never fall through to it or start a title bar move drag.
+      if (!this._activeModalRect && inTitle && !(flags & WindowFlags.NoCollapse)) {
+        const arrowSize = 16;
+        const hasClose = w.open !== null && w.open !== undefined;
+        const arrowX = w.pos.x + w.sizeFull.x - (hasClose ? 36 : 14) - 8;
+        const arrowY = w.pos.y + (barH - arrowSize) / 2;
+        if (m.x >= arrowX && m.x <= arrowX + arrowSize && m.y >= arrowY && m.y <= arrowY + arrowSize) {
+          this.hoveredId = collapseId;
+          if (io.MouseClicked[0]) {
+            w.collapsed = !w.collapsed;
+            io.MouseClicked[0] = false; io.MouseDown[0] = false; io._prevDown[0] = false;
+          }
         }
       }
       // collapse on double-click title (approx: two clicks within 400ms)
@@ -2841,17 +2857,24 @@ function TextDisabled(str) {
 function SeparatorText(label) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  c.beforeItemPlacement(0, 16);
+  // Left aligned section header (C++ SeparatorTextAlign default): 24px rule
+  // prefix, label, then trailing rule to the right margin. Generous vertical
+  // padding keeps the rules clear of widgets above and below.
+  const padY = 6;
+  const ht = st.FontSize + padY * 2;
+  c.beforeItemPlacement(0, ht);
   const bw = contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   const tw = measure(label);
-  // Centered section header: label mid-width, separator lines on both sides.
-  const tx = Math.round(x + (bw - tw) / 2);
-  const lineY = Math.round(y + 16 / 2);
-  emit({ t: "text", str: label, x: tx, y: y + 1, col: st.Colors[ImGui.Col.Text] });
-  if (tx - x > 10) emit({ t: "line", x1: x, y1: lineY, x2: tx - 6, y2: lineY, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  emit({ t: "line", x1: tx + tw + 6, y1: lineY, x2: x + bw, y2: lineY, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  c.itemSize(bw, 16);
+  const rule = 24, gap = 6;
+  const tx = x + rule + gap;
+  const textY = y + padY;
+  const midY = Math.round(y + ht / 2) + 0.5;
+  emit({ t: "line", x1: x, y1: midY, x2: x + rule, y2: midY, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  emit({ t: "text", str: label, x: tx, y: textY, col: st.Colors[ImGui.Col.Text] });
+  const tailX = tx + tw + gap;
+  if (tailX < x + bw) emit({ t: "line", x1: tailX, y1: midY, x2: x + bw, y2: midY, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  c.itemSize(bw, ht);
 }
 function Bullet() {
   const c = ctx(), w = cur(); if (!w) return;
@@ -2861,7 +2884,10 @@ function Bullet() {
   c.itemSize(12, 16);
 }
 function BeginListBox(label, wArg = 0, hArg = 0) {
-  return ImGui.BeginChild(label + "##listbox", wArg, hArg || 110, true);
+  // hArg <= 0 auto fills remaining window height through BeginChild, so rows
+  // are never sliced by a fixed default. Explicit heights still clip (this
+  // port has no child scrolling), so size fixed boxes to fit their content.
+  return ImGui.BeginChild(label + "##listbox", wArg, hArg, true);
 }
 function EndListBox() { ImGui.EndChild(); }
 
@@ -4900,7 +4926,6 @@ function demoPopups() {
     ImGui.ModalDialog.Show({
       title: "Action Required",
       text: "This is a centered modal dialog styled like ImGuiNotify, with no animation ramps and no accent bars. It completely blocks background clicks.",
-      showCloseButton: true,
       buttons: [
         { label: "Next Step", closeOnClick: false, onClick: showStep2 },
         {
@@ -4923,7 +4948,6 @@ function demoPopups() {
     ImGui.ModalDialog.Show({
       title: "Step 2: Confirm Action",
       text: "Chained multi step prompts open cleanly without distorting the underlying UI.",
-      showCloseButton: true,
       buttons: [
         {
           label: "Close Tab",
@@ -5419,8 +5443,10 @@ function inside(m, r) {
 }
 
 const ModalDialog = {
-  // Show(config): { title, text, maxWidth (default 360), showCloseButton
-  // (default true), buttons: [{ label, onClick, closeOnClick (default true) }] }
+  // Show(config): { title, text, maxWidth (default 360),
+  // buttons: [{ label, onClick, closeOnClick (default true) }] }
+  // Dismissal belongs strictly to the button row and the Escape safety key:
+  // the card renders no X box.
   Show(cfg) {
     const c = ImGui.GetContext();
     cfg = cfg || {};
@@ -5433,7 +5459,6 @@ const ModalDialog = {
       title: String(cfg.title || ""),
       text: String(cfg.text || ""),
       maxWidth: Math.max(160, cfg.maxWidth || 360),
-      showCloseButton: cfg.showCloseButton !== false,
       buttons,
     };
     c._modalSeq = (c._modalSeq || 0) + 1;
@@ -5486,7 +5511,7 @@ const ModalDialog = {
     c._overlayOps = c._overlayOps || [];
     const ops = c._overlayOps;
 
-    // Escape is a safety hatch: always dismisses, even without an X button.
+    // Escape is a safety hatch: always dismisses alongside button actions.
     if (io.KeysDown && io.KeysDown["Escape"]) {
       io.KeysDown["Escape"] = false;
       this.Close();
@@ -5514,16 +5539,6 @@ const ModalDialog = {
     const rects = [];
     if (cfg.title) {
       ops.push({ t: "text", str: cfg.title, x: cx + padX, y: cy + padY, col: st.Colors[ImGui.Col.Text], font: "600 14px -apple-system,Segoe UI,Roboto,Arial,sans-serif" });
-    }
-    if (cfg.showCloseButton) {
-      const xs = 22, xr = { x: cx + cardW - padX - xs + 6, y: cy + padY - 3, w: xs, h: xs, idx: -1 };
-      const xhov = inside(m, xr);
-      if (xhov) {
-        ops.push({ t: "rectFilled", x: xr.x, y: xr.y, w: xr.w, h: xr.h, r: 4, col: st.Colors[ImGui.Col.FrameBgHovered] });
-        c.anyWindowHovered = true;
-      }
-      ops.push({ t: "text", str: "x", x: xr.x + Math.round((xs - measure("x")) / 2), y: xr.y + 3, col: st.Colors[ImGui.Col.Text] });
-      rects.push(xr);
     }
     let by = cy + padY + titleH + (cfg.title && lines.length ? 8 : 0);
     for (const ln of lines) {
@@ -5563,7 +5578,6 @@ const ModalDialog = {
       c._modalArm = null;
       const hit = rects.some((r) => r.idx === idx && inside(m, r));
       if (hit) {
-        if (idx === -1) { this.Close(); return; }
         const b = cfg.buttons[idx];
         const seq0 = c._modalSeq;
         if (b && b.onClick) {
@@ -5931,7 +5945,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.52"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.53"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.modal.js", "ImGui.backend.js"];
 
 function libsPresent() {

@@ -42,8 +42,10 @@ function inside(m, r) {
 }
 
 const ModalDialog = {
-  // Show(config): { title, text, maxWidth (default 360), showCloseButton
-  // (default true), buttons: [{ label, onClick, closeOnClick (default true) }] }
+  // Show(config): { title, text, maxWidth (default 360),
+  // buttons: [{ label, onClick, closeOnClick (default true) }] }
+  // Dismissal belongs strictly to the button row and the Escape safety key:
+  // the card renders no X box.
   Show(cfg) {
     const c = ImGui.GetContext();
     cfg = cfg || {};
@@ -56,7 +58,6 @@ const ModalDialog = {
       title: String(cfg.title || ""),
       text: String(cfg.text || ""),
       maxWidth: Math.max(160, cfg.maxWidth || 360),
-      showCloseButton: cfg.showCloseButton !== false,
       buttons,
     };
     c._modalSeq = (c._modalSeq || 0) + 1;
@@ -109,7 +110,7 @@ const ModalDialog = {
     c._overlayOps = c._overlayOps || [];
     const ops = c._overlayOps;
 
-    // Escape is a safety hatch: always dismisses, even without an X button.
+    // Escape is a safety hatch: always dismisses alongside button actions.
     if (io.KeysDown && io.KeysDown["Escape"]) {
       io.KeysDown["Escape"] = false;
       this.Close();
@@ -137,16 +138,6 @@ const ModalDialog = {
     const rects = [];
     if (cfg.title) {
       ops.push({ t: "text", str: cfg.title, x: cx + padX, y: cy + padY, col: st.Colors[ImGui.Col.Text], font: "600 14px -apple-system,Segoe UI,Roboto,Arial,sans-serif" });
-    }
-    if (cfg.showCloseButton) {
-      const xs = 22, xr = { x: cx + cardW - padX - xs + 6, y: cy + padY - 3, w: xs, h: xs, idx: -1 };
-      const xhov = inside(m, xr);
-      if (xhov) {
-        ops.push({ t: "rectFilled", x: xr.x, y: xr.y, w: xr.w, h: xr.h, r: 4, col: st.Colors[ImGui.Col.FrameBgHovered] });
-        c.anyWindowHovered = true;
-      }
-      ops.push({ t: "text", str: "x", x: xr.x + Math.round((xs - measure("x")) / 2), y: xr.y + 3, col: st.Colors[ImGui.Col.Text] });
-      rects.push(xr);
     }
     let by = cy + padY + titleH + (cfg.title && lines.length ? 8 : 0);
     for (const ln of lines) {
@@ -186,7 +177,6 @@ const ModalDialog = {
       c._modalArm = null;
       const hit = rects.some((r) => r.idx === idx && inside(m, r));
       if (hit) {
-        if (idx === -1) { this.Close(); return; }
         const b = cfg.buttons[idx];
         const seq0 = c._modalSeq;
         if (b && b.onClick) {

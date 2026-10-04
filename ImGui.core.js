@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.52";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.53";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -411,6 +411,22 @@ class ImGuiContext {
         if (m.x >= cx && m.x <= cx + cs && m.y >= cy && m.y <= cy + cs) {
           this.hoveredId = closeId;
           if (io.MouseClicked[0]) { w.open = false; io.MouseDown[0] = false; io._prevDown[0] = false; }
+        }
+      }
+      // collapse arrow: explicit single-click target drawn by drawWindow.
+      // Placed before the double-click check so arrow clicks are consumed
+      // here and never fall through to it or start a title bar move drag.
+      if (!this._activeModalRect && inTitle && !(flags & WindowFlags.NoCollapse)) {
+        const arrowSize = 16;
+        const hasClose = w.open !== null && w.open !== undefined;
+        const arrowX = w.pos.x + w.sizeFull.x - (hasClose ? 36 : 14) - 8;
+        const arrowY = w.pos.y + (barH - arrowSize) / 2;
+        if (m.x >= arrowX && m.x <= arrowX + arrowSize && m.y >= arrowY && m.y <= arrowY + arrowSize) {
+          this.hoveredId = collapseId;
+          if (io.MouseClicked[0]) {
+            w.collapsed = !w.collapsed;
+            io.MouseClicked[0] = false; io.MouseDown[0] = false; io._prevDown[0] = false;
+          }
         }
       }
       // collapse on double-click title (approx: two clicks within 400ms)
