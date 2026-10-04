@@ -128,7 +128,7 @@ function demoWidgets() {
   ImGui.Value("bool", true); ImGui.Value("num", 1.23456);
   ImGui.TextDisabled("disabled text");
   ImGui.SeparatorText("separator text");
-  if (ImGui.BeginListBox("lb", 0, 80)) {
+  if (ImGui.BeginListBox("lb", 0, 0)) {
     for (let i = 0; i < 5; i++) if (ImGui.Selectable("item " + i, D._lb === i)) D._lb = i;
     ImGui.EndListBox();
   }

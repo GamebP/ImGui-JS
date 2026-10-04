@@ -437,12 +437,14 @@ function BeginCombo(label, preview) {
   c.itemAdd(x, y, bw, ht, id);
   const bb = c.buttonBehavior(id, x, y, bw, ht);
   if (bb.pressed) c.comboOpen = c.comboOpen === id ? 0 : id;
-  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[bb.hovered ? ImGui.Col.ButtonHovered : ImGui.Col.FrameBg] });
-  emit({ t: "text", str: String(preview), x: x + 8, y: y + 5, col: st.Colors[ImGui.Col.Text] });
-  emit({ t: "text", str: c.comboOpen === id ? "▲" : "▼", x: x + bw - 20, y: y + 5, col: st.Colors[ImGui.Col.Text] });
-  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 5, col: st.Colors[ImGui.Col.Text] });
-  // stash popup anchor for EndCombo items
-  c._comboAnchor = { x, y: y + ht + 2, w: bw, id, triggerY: y, triggerH: ht };
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[bb.hovered || c.comboOpen === id ? ImGui.Col.ButtonHovered : ImGui.Col.FrameBg] });
+  emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
+  const textY = y + Math.round((ht - st.FontSize) * 0.5);
+  emit({ t: "text", str: String(preview), x: x + 8, y: textY, col: st.Colors[ImGui.Col.Text] });
+  emit({ t: "text", str: c.comboOpen === id ? "▲" : "▼", x: x + bw - 18, y: textY, col: st.Colors[ImGui.Col.Text] });
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: textY, col: st.Colors[ImGui.Col.Text] });
+  // stash popup anchor for EndCombo items (flush seam, zero gap)
+  c._comboAnchor = { x, y: y + ht, w: bw, id, triggerY: y, triggerH: ht };
   return c.comboOpen === id;
 }
 function EndCombo() { const c = ctx(); c._comboAnchor = null; }
@@ -451,29 +453,37 @@ function Combo(label, current, items) {
   let changed = false, index = current;
   if (BeginCombo(label, preview)) {
     const c = ctx(), w = cur(), a = c._comboAnchor;
-    const itemH = 22, ph = items.length * itemH + 8;
+    const st = c.style;
+    const itemH = st.FontSize + st.FramePadding.y * 2; // ~19px
+    const ph = items.length * itemH + 6;
     const screenAnchorY = a.y - (w.scrollY || 0);
     // Combo choices live in the top overlay, in viewport coordinates. This
     // keeps them above later widgets and anchored to a scrolled control.
     let py = screenAnchorY;
-    if (py + ph > c.io.DisplaySize.y - 4) py = screenAnchorY - ph - 4;
-    py = Math.max(4, Math.min(c.io.DisplaySize.y - ph - 4, py));
-    const popupBg = [...c.style.Colors[ImGui.Col.PopupBg]];
-    popupBg[3] = 1;
+    if (py + ph > w.pos.y + w.sizeFull.y - 4 || py + ph > c.io.DisplaySize.y - 8) {
+      py = (a.triggerY - (w.scrollY || 0)) - ph;
+    }
+    py = Math.max(4, py);
+    const popupBg = [0.10, 0.10, 0.12, 1.0];
     const ops = [
-      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: 6, col: popupBg },
-      { t: "rect", x: a.x, y: py, w: a.w, h: ph, r: 6, col: c.style.Colors[ImGui.Col.Border], th: 1 },
+      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: popupBg },
+      { t: "rect", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: st.Colors[ImGui.Col.Border], th: 1 },
     ];
     // Do not let underlying controls claim the pointer while choices are open.
     c._comboRect = { x: a.x, y: py, w: a.w, h: ph };
     const m = c.io.MousePos;
     for (let i = 0; i < items.length; i++) {
-      const iy = py + 4 + i * itemH;
-      const h = m.x >= a.x + 4 && m.x <= a.x + a.w - 4 && m.y >= iy && m.y <= iy + itemH - 2;
-      if (h) ops.push({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] });
-      else if (i === current) ops.push({ t: "rectFilled", x: a.x + 4, y: iy, w: a.w - 8, h: itemH - 2, r: 4, col: c.style.Colors[ImGui.Col.Header] });
-      ops.push({ t: "text", str: items[i], x: a.x + 12, y: iy + 3, col: c.style.Colors[ImGui.Col.Text] });
-      if (h && c.io.MouseClicked[0]) { index = i; changed = true; c.comboOpen = 0; }
+      const iy = py + 3 + i * itemH;
+      const h = m.x >= a.x + 2 && m.x <= a.x + a.w - 2 && m.y >= iy && m.y <= iy + itemH;
+      if (h) ops.push({ t: "rectFilled", x: a.x + 2, y: iy, w: a.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.HeaderHovered] });
+      else if (i === current) ops.push({ t: "rectFilled", x: a.x + 2, y: iy, w: a.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.Header] });
+      const itemTextY = iy + Math.round((itemH - st.FontSize) * 0.5);
+      ops.push({ t: "text", str: items[i], x: a.x + 8, y: itemTextY, col: st.Colors[ImGui.Col.Text] });
+      if (h && c.io.MouseClicked[0]) { index = i; changed = true; c.comboOpen = 0; c.io.MouseClicked[0] = false; c.io.MouseDown[0] = false; }
+    }
+    // outside click dismisses and consumes the click
+    if (c.io.MouseClicked[0] && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph) && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= a.triggerY && m.y <= a.triggerY + a.triggerH)) {
+      c.comboOpen = 0; c.io.MouseClicked[0] = false;
     }
     const inside = m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph;
     const onTrigger = m.x >= a.x && m.x <= a.x + a.w &&
@@ -616,7 +626,7 @@ function EndChild() {
   // the overflow would clip silently and the parent cursor wouldn't advance.
   let boxH = st ? st.bounds.h : 0;
   if (st) {
-    const contentH = w.dc.cursorMaxPos.y - st.bounds.y;
+    const contentH = (w.dc.cursorMaxPos.y - st.bounds.y) + 6; // content + bottom padding
     if (contentH > boxH) {
       boxH = contentH;
       const bg = w.drawList[st.bgIndex];
