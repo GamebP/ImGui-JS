@@ -738,8 +738,11 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
   // Auto-fill height (cf. C++ size.y<=0 semantics): hArg<=0 stretches to the
-  // window's bottom edge instead of the old hardcoded 120px. Negative hArg
-  // leaves |hArg| px of padding (C++ "remaining minus N").
+  // window's interior bottom edge. Exactly one bottom padding is subtracted:
+  // the box ends flush with the interior (content may touch it without
+  // scrolling). Subtracting twice would leave a dead gap and would NOT fix
+  // overflow, because the EndChild growth path and the parent contentH
+  // padding each add their own independent overshoot (measured +6 and +8).
   const availH = (w.sizeFull.y > 0)
     ? Math.max(40, (w.pos.y + w.sizeFull.y - w.padding.y) - w.dc.cursorPos.y)
     : 240;
@@ -795,14 +798,18 @@ function EndChild() {
   const st = (c._childStack || []).pop();
   if (!st) { w._childBounds = null; return; }
   const b = st.bounds;
-  // If the content overflowed the requested box (items leak above the border),
-  // grow the box + border to fit before wrapping the inner ops — otherwise
-  // the overflow would clip silently and the parent cursor wouldn't advance.
+  // If inner content truly overflowed the requested box, grow the box plus
+  // border to fit before wrapping the inner ops. Growth fires ONLY on genuine
+  // overflow: the box reservation itself (b.y + boxH, via itemSize) and any
+  // taller pre existing parent content (parentMaxPosY, e.g. a tall SameLine
+  // neighbor) never count as overflow. The old test compared content plus an
+  // unconditional 6px against the box, so an exactly fitting box always grew
+  // by 6px past the window interior and phantom scrolled the parent.
   let boxH = b.h;
   if (!st.fixedH) {
-    const contentH = (w.dc.cursorMaxPos.y - b.y) + 6; // content + bottom padding
-    if (contentH > boxH) {
-      boxH = contentH;
+    const base = Math.max(st.parentMaxPosY || 0, b.y + boxH);
+    if (w.dc.cursorMaxPos.y > base) {
+      boxH = (w.dc.cursorMaxPos.y - b.y) + 6; // overflow plus bottom breathing room
       const bg = w.drawList[st.bgIndex];
       if (bg && bg.t === "rectFilled") bg.h = boxH;
       if (st.borderIndex >= 0) {

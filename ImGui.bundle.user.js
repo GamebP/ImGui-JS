@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.45
+// @version      1.0.46
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.45";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.46";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1934,8 +1934,11 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
   // Auto-fill height (cf. C++ size.y<=0 semantics): hArg<=0 stretches to the
-  // window's bottom edge instead of the old hardcoded 120px. Negative hArg
-  // leaves |hArg| px of padding (C++ "remaining minus N").
+  // window's interior bottom edge. Exactly one bottom padding is subtracted:
+  // the box ends flush with the interior (content may touch it without
+  // scrolling). Subtracting twice would leave a dead gap and would NOT fix
+  // overflow, because the EndChild growth path and the parent contentH
+  // padding each add their own independent overshoot (measured +6 and +8).
   const availH = (w.sizeFull.y > 0)
     ? Math.max(40, (w.pos.y + w.sizeFull.y - w.padding.y) - w.dc.cursorPos.y)
     : 240;
@@ -1991,14 +1994,18 @@ function EndChild() {
   const st = (c._childStack || []).pop();
   if (!st) { w._childBounds = null; return; }
   const b = st.bounds;
-  // If the content overflowed the requested box (items leak above the border),
-  // grow the box + border to fit before wrapping the inner ops — otherwise
-  // the overflow would clip silently and the parent cursor wouldn't advance.
+  // If inner content truly overflowed the requested box, grow the box plus
+  // border to fit before wrapping the inner ops. Growth fires ONLY on genuine
+  // overflow: the box reservation itself (b.y + boxH, via itemSize) and any
+  // taller pre existing parent content (parentMaxPosY, e.g. a tall SameLine
+  // neighbor) never count as overflow. The old test compared content plus an
+  // unconditional 6px against the box, so an exactly fitting box always grew
+  // by 6px past the window interior and phantom scrolled the parent.
   let boxH = b.h;
   if (!st.fixedH) {
-    const contentH = (w.dc.cursorMaxPos.y - b.y) + 6; // content + bottom padding
-    if (contentH > boxH) {
-      boxH = contentH;
+    const base = Math.max(st.parentMaxPosY || 0, b.y + boxH);
+    if (w.dc.cursorMaxPos.y > base) {
+      boxH = (w.dc.cursorMaxPos.y - b.y) + 6; // overflow plus bottom breathing room
       const bg = w.drawList[st.bgIndex];
       if (bg && bg.t === "rectFilled") bg.h = boxH;
       if (st.borderIndex >= 0) {
@@ -2968,13 +2975,21 @@ function wrapBeginEnd() {
     }
     if (w && w.collapsed) { w.scrollMax = 0; w.scrollY = 0; }
     // Fixed-height windows: overflow becomes a scrollable range (pure
-    // content-space measurement, no scroll offset involved).
+    // content-space measurement, no scroll offset involved). Scroll is driven
+    // by the true content extent: the trailing bottom padding inside contentH
+    // is empty space and must not count toward overflow, or an exactly fitting
+    // fill height child would phantom scroll by that padding. A 2px epsilon
+    // absorbs fractional rounding, and NoScrollbar and NoScrollWithMouse force
+    // a zero scroll state (outer window never scrolls; child panels own any
+    // clipping).
     if (w && !w.collapsed && w.size.y > 0 && !(w.flags & ImGui.WindowFlags.AlwaysAutoResize)) {
+      const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
       const contentTop = w.pos.y + w.titleH + w.padding.y;
       const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
       const visibleH = Math.max(0, w.sizeFull.y - w.titleH - w.padding.y * 2);
-      w.scrollMax = Math.max(0, contentH - visibleH);
-      w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
+      const overflow = (contentH - w.padding.y) - visibleH;
+      w.scrollMax = (!noScroll && overflow > 2) ? overflow : 0;
+      w.scrollY = w.scrollMax === 0 ? 0 : Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
     }
     // Auto-fit windows (size.y == 0) grow unbounded by default. Clamp to the
     // viewport so content can never flow off-screen: the excess becomes
@@ -2983,11 +2998,13 @@ function wrapBeginEnd() {
       const margin = 20; // keep 20px above the browser edge/taskbar
       const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y - margin);
       if (w.sizeFull.y > maxH) {
+        const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
         const contentTop = w.pos.y + w.titleH + w.padding.y;
         const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
         w.sizeFull.y = maxH;
-        w.scrollMax = Math.max(0, contentH - (maxH - w.titleH - w.padding.y * 2));
-        w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
+        const overflow = (contentH - w.padding.y) - (maxH - w.titleH - w.padding.y * 2);
+        w.scrollMax = (!noScroll && overflow > 2) ? overflow : 0;
+        w.scrollY = w.scrollMax === 0 ? 0 : Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
       } else {
         w.scrollMax = 0; w.scrollY = 0;
       }
@@ -5543,7 +5560,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.45"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.46"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -5672,7 +5689,8 @@ const DASHBOARD_TABS = ["Aimbot", "Visuals", "Misc", "Settings"];
 function DASHBOARD_MENU() {
   const ImGui = window.ImGui;
   ImGui.SetNextWindowSize(540, 360, ImGui.Cond.FirstUseEver);
-  const w = ImGui.Begin("Tool Dashboard", S.showDash ? true : false, ImGui.WindowFlags.NoCollapse);
+  const w = ImGui.Begin("Tool Dashboard", S.showDash ? true : false,
+    ImGui.WindowFlags.NoCollapse | ImGui.WindowFlags.NoScrollbar | ImGui.WindowFlags.NoScrollWithMouse);
   S.showDash = w.open !== false;
   if (!w.visible) { ImGui.End(); return; }
 

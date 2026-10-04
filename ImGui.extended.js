@@ -151,13 +151,21 @@ function wrapBeginEnd() {
     }
     if (w && w.collapsed) { w.scrollMax = 0; w.scrollY = 0; }
     // Fixed-height windows: overflow becomes a scrollable range (pure
-    // content-space measurement, no scroll offset involved).
+    // content-space measurement, no scroll offset involved). Scroll is driven
+    // by the true content extent: the trailing bottom padding inside contentH
+    // is empty space and must not count toward overflow, or an exactly fitting
+    // fill height child would phantom scroll by that padding. A 2px epsilon
+    // absorbs fractional rounding, and NoScrollbar and NoScrollWithMouse force
+    // a zero scroll state (outer window never scrolls; child panels own any
+    // clipping).
     if (w && !w.collapsed && w.size.y > 0 && !(w.flags & ImGui.WindowFlags.AlwaysAutoResize)) {
+      const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
       const contentTop = w.pos.y + w.titleH + w.padding.y;
       const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
       const visibleH = Math.max(0, w.sizeFull.y - w.titleH - w.padding.y * 2);
-      w.scrollMax = Math.max(0, contentH - visibleH);
-      w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
+      const overflow = (contentH - w.padding.y) - visibleH;
+      w.scrollMax = (!noScroll && overflow > 2) ? overflow : 0;
+      w.scrollY = w.scrollMax === 0 ? 0 : Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
     }
     // Auto-fit windows (size.y == 0) grow unbounded by default. Clamp to the
     // viewport so content can never flow off-screen: the excess becomes
@@ -166,11 +174,13 @@ function wrapBeginEnd() {
       const margin = 20; // keep 20px above the browser edge/taskbar
       const maxH = Math.max(80, this.io.DisplaySize.y - w.pos.y - margin);
       if (w.sizeFull.y > maxH) {
+        const noScroll = (w.flags & ImGui.WindowFlags.NoScrollbar) || (w.flags & ImGui.WindowFlags.NoScrollWithMouse);
         const contentTop = w.pos.y + w.titleH + w.padding.y;
         const contentH = Math.max(0, (w.dc.cursorMaxPos.y - contentTop) + w.padding.y);
         w.sizeFull.y = maxH;
-        w.scrollMax = Math.max(0, contentH - (maxH - w.titleH - w.padding.y * 2));
-        w.scrollY = Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
+        const overflow = (contentH - w.padding.y) - (maxH - w.titleH - w.padding.y * 2);
+        w.scrollMax = (!noScroll && overflow > 2) ? overflow : 0;
+        w.scrollY = w.scrollMax === 0 ? 0 : Math.max(0, Math.min(w.scrollMax, w.scrollY || 0));
       } else {
         w.scrollMax = 0; w.scrollY = 0;
       }
