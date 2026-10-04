@@ -1192,7 +1192,8 @@ function NextColumn() {
   if (cc.i === 0) {
     cc.rowY += cc.rowHeight + C().style.ItemSpacing.y;
     cc.rowHeight = 0;
-    w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
+    w.dc.cursorPos.x = cc.x + C().style.CellPadding.x;
+    w.dc.cursorPos.y = cc.rowY;
   } else { w.dc.cursorPos.x = cc.x + cc.i * cc.w + C().style.CellPadding.x; w.dc.cursorPos.y = cc.rowY; }
   w.dc.cursorStartPos = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;

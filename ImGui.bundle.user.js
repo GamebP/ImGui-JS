@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.29
+// @version      1.0.30
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.29";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.30";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -3352,7 +3352,8 @@ function NextColumn() {
   if (cc.i === 0) {
     cc.rowY += cc.rowHeight + C().style.ItemSpacing.y;
     cc.rowHeight = 0;
-    w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
+    w.dc.cursorPos.x = cc.x + C().style.CellPadding.x;
+    w.dc.cursorPos.y = cc.rowY;
   } else { w.dc.cursorPos.x = cc.x + cc.i * cc.w + C().style.CellPadding.x; w.dc.cursorPos.y = cc.rowY; }
   w.dc.cursorStartPos = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
@@ -4193,7 +4194,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.29"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.30"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
