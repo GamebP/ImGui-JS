@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.24";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.25";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -534,6 +534,13 @@ class ImGuiContext {
     const w = this.current;
     const comboRect = this._comboRect;
     if (comboRect && m.x >= comboRect.x && m.x <= comboRect.x + comboRect.w && m.y >= comboRect.y && m.y <= comboRect.y + comboRect.h) return false;
+    // MENU PREEMPTION: open menu dropdowns own their rect; underlying
+    // widgets must not hover/click there (except the menu's own items).
+    if (this._popupRectsPrev) for (const k of Object.keys(this._popupRectsPrev)) {
+      if (k.charCodeAt(0) !== 109 || k.slice(0, 5) !== "menu:") continue;
+      const r = this._popupRectsPrev[k];
+      if (r && m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h) return false;
+    }
     // POPUP PREEMPTION: open popups own their screen rect (known from the
     // previous frame) — widgets beneath, drawn or hit-tested outside popup
     // content, must not hover or click there (e.g. a color-picker popup

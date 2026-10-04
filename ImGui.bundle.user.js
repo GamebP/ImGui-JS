@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.24
+// @version      1.0.25
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.24";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.25";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -549,6 +549,13 @@ class ImGuiContext {
     const w = this.current;
     const comboRect = this._comboRect;
     if (comboRect && m.x >= comboRect.x && m.x <= comboRect.x + comboRect.w && m.y >= comboRect.y && m.y <= comboRect.y + comboRect.h) return false;
+    // MENU PREEMPTION: open menu dropdowns own their rect; underlying
+    // widgets must not hover/click there (except the menu's own items).
+    if (this._popupRectsPrev) for (const k of Object.keys(this._popupRectsPrev)) {
+      if (k.charCodeAt(0) !== 109 || k.slice(0, 5) !== "menu:") continue;
+      const r = this._popupRectsPrev[k];
+      if (r && m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h) return false;
+    }
     // POPUP PREEMPTION: open popups own their screen rect (known from the
     // previous frame) — widgets beneath, drawn or hit-tested outside popup
     // content, must not hover or click there (e.g. a color-picker popup
@@ -2167,7 +2174,9 @@ const measure = (s) => (ImGui._measure ? ImGui._measure(s) : String(s).length * 
 function emit(op) { const w = W(); if (w) w.drawList.push(op); }
 function menuClickSuppressed() {
   const cc = C();
-  return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
+  // Chrome (window close/move/resize) and menu-bar toggles, tabs and menu
+  // items stay interactive — the suppression is only for *content* widgets.
+  return false;
 }
 function ensure() {
   const c = C();
@@ -2254,7 +2263,7 @@ function wrapBeginEnd() {
     if (!c._iniLoaded) { c._iniLoaded = true; tryLoadIni(c); }
     // Consume left clicks for the popup layer BEFORE any widget or chrome
     // hit-testing runs (uses previous frame's popup rects).
-    c._suppressChrome = popupConsumesClick();
+    c._suppressChrome = popupConsumesClick() || Object.values(c._menuOpen || {}).some(Boolean);
     const r = origBegin.call(this, name, pOpen, flags);
     const w = this.current;
     if (w) {
@@ -2874,8 +2883,12 @@ function BeginMenu(label) {
   const id = w.getID("menu:" + label);
   c.itemAdd(x, y, tw, 22, id);
   const h = c.hovered(x, y, tw, 22);
-  if (h && ((c.io.MouseClicked[0] && !menuClickSuppressed()) || c._menuOpen[label])) { c._menuOpen[label] = !c._menuOpen[label]; c.anyWindowHovered = true; }
-  else if (h) c.anyWindowHovered = true;
+  if (h && c.io.MouseClicked[0]) {
+    const wasOpen = !!c._menuOpen[label];
+    for (const k of Object.keys(c._menuOpen)) c._menuOpen[k] = false; // one top menu at a time
+    c._menuOpen[label] = !wasOpen;
+    c.anyWindowHovered = true;
+  } else if (h) c.anyWindowHovered = true;
   const open = !!c._menuOpen[label];
   emit({ t: "rectFilled", x, y, w: tw, h: 22, r: 4, col: open || h ? c.style.Colors[ImGui.Col.HeaderHovered] : [0, 0, 0, 0] });
   emit({ t: "text", str: shown, x: x + 8, y: y + 4, col: c.style.Colors[ImGui.Col.Text] });
@@ -2887,6 +2900,7 @@ function BeginMenu(label) {
       label, outerCursor: { ...w.dc.cursorPos }, outerPrev: { ...w.dc.cursorPosPrevLine },
       outerStart: { ...w.dc.cursorStartPos },
       outerLine: { currH: w.dc.currLineHeight, used: w.dc._lineUsed, lw: w.dc.lastItemWidth },
+      drawStart: w.drawList.length, ddX: x, ddY: y + 26,
     });
     w.dc.cursorPos.x = x; w.dc.cursorPos.y = y + 26; w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
     w.dc.cursorStartPos = { x, y: y + 26 }; // dropdown items wrap in-column
@@ -2902,6 +2916,27 @@ function EndMenu() {
   PopID();
   const saved = c._menuStack.pop();
   if (saved) {
+    // Wrap the dropdown's items in a framed popup box so the menu reads as
+    // one surface (Dear ImGui menus draw PopupBg+border behind MenuItems).
+    if (typeof saved.drawStart === "number" && saved.drawStart < w.drawList.length) {
+      const inner = w.drawList.splice(saved.drawStart);
+      let minY = Infinity, maxR = saved.ddX + 170, maxY = saved.ddY;
+      for (const op of inner) {
+        if (op.t === "rectFilled" || op.t === "rect" || op.t === "image") { minY = Math.min(minY, op.y); maxR = Math.max(maxR, op.x + op.w); maxY = Math.max(maxY, op.y + op.h); }
+        else if (op.t === "text") { minY = Math.min(minY, op.y); maxR = Math.max(maxR, op.x + measure(op.str || "")); maxY = Math.max(maxY, op.y + 16); }
+        else if (op.t === "line") { maxR = Math.max(maxR, op.x1, op.x2); maxY = Math.max(maxY, op.y1, op.y2); }
+      }
+      if (minY === Infinity) minY = saved.ddY;
+      const bx = saved.ddX, by = minY - 4, bw = Math.max(120, maxR - bx + 8), bh = Math.max(24, maxY - by + 4);
+      w.drawList.splice(saved.drawStart, 0,
+        { t: "rectFilled", x: bx, y: by, w: bw, h: bh, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.PopupBg] },
+        { t: "rect", x: bx, y: by, w: bw, h: bh, r: c.style.PopupRounding, col: c.style.Colors[ImGui.Col.Border], th: 1 },
+        ...inner);
+      // Record the rect so the popup/click-preemption maps can shield the
+      // widgets behind the open menu from activating on the same click.
+      c._popupRects = c._popupRects || {};
+      c._popupRects["menu:" + saved.label] = { x: bx, y: by, w: bw, h: bh };
+    }
     // Restore the menubar row (dropdown was an overlay, not document flow).
     w.dc.cursorPos.x = saved.outerCursor.x; w.dc.cursorPos.y = saved.outerCursor.y;
     w.dc.cursorPosPrevLine = { ...saved.outerPrev };
@@ -2928,7 +2963,11 @@ function MenuItem(label, shortcut = "", selected = false, enabled = true) {
   if (h) { emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] }); c.anyWindowHovered = true; }
   emit({ t: "text", str: (selected ? "● " : "") + shown, x: x + 8, y: y + 3, col: enabled ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled] });
   if (shortcut) emit({ t: "text", str: shortcut, x: x + wd - measure(shortcut) - 8, y: y + 3, col: c.style.Colors[ImGui.Col.TextDisabled] });
-  return enabled && h && c.io.MouseClicked[0] && !menuClickSuppressed();
+  const clicked = enabled && h && c.io.MouseClicked[0] && !menuClickSuppressed();
+  if (clicked) { // selecting an item closes the whole menu chain
+    for (const k of Object.keys(c._menuOpen)) c._menuOpen[k] = false;
+  }
+  return clicked;
 }
 
 // ---------- tab bar (imgui_widgets.cpp BeginTabBar/BeginTabItem) ----------
@@ -4059,7 +4098,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.24"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.25"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
