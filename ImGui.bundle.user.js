@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.37
+// @version      1.0.39
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.37";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.39";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1017,7 +1017,17 @@ class CanvasRenderer {
     ctx.restore();
   }
   drawOp(ctx, st, op) {
+    if (!op || !op.t) return;
     switch (op.t) {
+      case "pushClip":
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(op.x, op.y, Math.max(0, op.w), Math.max(0, op.h));
+        ctx.clip();
+        break;
+      case "popClip":
+        ctx.restore();
+        break;
       case "childClip": {
         // Child sub-panel: clip its inner ops to its own bounds so nothing
         // overflowing the border leaks into the parent window's layout.
@@ -1577,9 +1587,50 @@ function InputText(label, text, flags = 0, hint = "") {
   return { changed, text: deactivated ? finalVal : currentVal };
 }
 function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
-  // simplified: single-line box taller
-  const r = InputText(label, text);
-  return r;
+  const c = ctx(), w = cur(); if (!w) return { changed: false, text };
+  const st = c.style;
+  const tw = textW(ImGui.findRenderedTextEnd(label));
+  const ht = Math.max(40, hArg > 0 ? hArg : 60);
+  // Reserve the full tall box FIRST so following widgets never overlap it.
+  c.beforeItemPlacement(0, ht);
+  const bw = wArg > 0 ? wArg : Math.max(120, contentAvail() - tw - 16);
+  const wd = bw + tw + 12;
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(wd, ht);
+  const id = w.getID(label);
+  c.itemAdd(x, y, wd, ht, id);
+  const h = c.hovered(x, y, bw, ht);
+  if (h) c.anyWindowHovered = true;
+  const isActive = c.activeId === id && c.activeKind === "text";
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+    c.activeId = id; c.activeKind = "text";
+    c.activePayload = { value: String(text || ""), cursorPos: String(text || "").length, commit: false, multiline: true };
+    if (ImGui._backendFocusText) ImGui._backendFocusText(c.activePayload.value, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+  }
+  let deactivated = false, finalVal = String(text || "");
+  if (isActive && ((c.io.MouseClicked[0] && !h) || (c.activePayload && c.activePayload.commit))) {
+    finalVal = c.activePayload ? c.activePayload.value : String(text || "");
+    c.activeId = 0; c.activeKind = null; c.activePayload = null;
+    if (ImGui._backendBlurText) ImGui._backendBlurText();
+    deactivated = true;
+  }
+  const activeNow = isActive && !deactivated;
+  let currentVal = activeNow && c.activePayload ? c.activePayload.value : String(text || "");
+  if (activeNow && c.io.InputChars) { currentVal += c.io.InputChars; if (c.activePayload) c.activePayload.value = currentVal; }
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
+  emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
+  const lineH = st.FontSize + 2;
+  const lines = String(currentVal).split("\n");
+  const maxLines = Math.max(1, Math.floor((ht - 6) / lineH));
+  for (let i = 0; i < Math.min(lines.length, maxLines); i++) {
+    let s = lines[i];
+    while (s.length > 0 && textW(s) > (bw - 12)) s = s.slice(0, -1);
+    emit({ t: "text", str: s, x: x + st.FramePadding.x + 2, y: y + 3 + i * lineH, col: st.Colors[ImGui.Col.Text] });
+  }
+  if (currentVal === "") emit({ t: "text", str: "(empty)", x: x + st.FramePadding.x + 2, y: y + 3, col: st.Colors[ImGui.Col.TextDisabled] });
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 3, col: st.Colors[ImGui.Col.Text] });
+  const changed = deactivated ? (finalVal !== text) : (activeNow && currentVal !== text);
+  return { changed, text: deactivated ? finalVal : currentVal };
 }
 
 // ---------- color (native canvas picker via popup — no detached DOM) ----------
@@ -1767,6 +1818,9 @@ function CollapsingHeader(label, flags = 0) {
   return open;
 }
 function TreeNode(label) {
+  // Delegate so PushID/Indent balance exactly with TreePop (PopID+Unindent).
+  // TreeNodeEx lives in extended.js (loaded after this file); resolve lazily.
+  if (ImGui.TreeNodeEx) return ImGui.TreeNodeEx(label, 0);
   const open = CollapsingHeader(label);
   if (open) Indent();
   return open;
@@ -1820,6 +1874,8 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
     indent: w._indent || 0,
     lineUsed: w.dc._lineUsed,
     currLineHeight: w.dc.currLineHeight,
+    fixedH: hArg > 0, // fixed-height boxes never auto-grow (scroll/clip instead)
+    parentMaxPosY: w.dc.cursorMaxPos.y, // parent extent before child content
     bounds: { x, y, w: wd, h: ht },
     clipMark: w.drawList.length,
     bgIndex: bgIndex,
@@ -1842,7 +1898,7 @@ function EndChild() {
   // grow the box + border to fit before wrapping the inner ops — otherwise
   // the overflow would clip silently and the parent cursor wouldn't advance.
   let boxH = st ? st.bounds.h : 0;
-  if (st) {
+  if (st && !st.fixedH) {
     const contentH = (w.dc.cursorMaxPos.y - st.bounds.y) + 6; // content + bottom padding
     if (contentH > boxH) {
       boxH = contentH;
@@ -1868,12 +1924,16 @@ function EndChild() {
     w.dc.cursorStartPos = { ...st.cursorStartPos };
   }
   if (b) {
+    const boxH = st.bounds.h;
+    // Snap: the parent continues exactly below the child's OUTER box.
+    // Never Math.max with the live cursor — clipped child content (or a
+    // clipper tail reservation at ~200000px) must not leak into the parent.
     w.dc.cursorPos.x = b.x;
-    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, b.y + b.h + c.style.ItemSpacing.y);
+    w.dc.cursorPos.y = b.y + boxH + c.style.ItemSpacing.y;
     w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
     w.dc.currLineHeight = 0; w.dc._lineUsed = false;
     w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
-    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, b.y + b.h);
+    w.dc.cursorMaxPos.y = Math.max(st.parentMaxPosY || 0, b.y + boxH);
   }
   w._childBounds = null;
 }
@@ -2851,7 +2911,17 @@ function PopItemWidth() { ensure()._itemWidthStack.pop(); }
 // ---------- style stacks + themes ----------
 function PushStyleColor(col, val) { const c = ensure(); c._styleColorStack.push([col, c.style.Colors[col]]); c.style.Colors[col] = val; }
 function PopStyleColor(n = 1) { const c = ensure(); for (let i = 0; i < n; i++) { const e = c._styleColorStack.pop(); if (e) c.style.Colors[e[0]] = e[1]; } }
-function PushStyleVar(key, val) { const c = ensure(); c._styleVarStack.push([key, c.style[key]]); c.style[key] = val; }
+const StyleVar = { Alpha: 0, DisabledAlpha: 1, WindowPadding: 2, WindowRounding: 3, WindowBorderSize: 4, WindowMinSize: 5, WindowTitleAlign: 6, ChildRounding: 7, ChildBorderSize: 8, PopupRounding: 9, PopupBorderSize: 10, FramePadding: 11, FrameRounding: 12, FrameBorderSize: 13, ItemSpacing: 14, ItemInnerSpacing: 15, IndentSpacing: 16, CellPadding: 17, ScrollbarSize: 18, ScrollbarRounding: 19, GrabMinSize: 20, GrabRounding: 21, TabRounding: 22, TabBorderSize: 23, TabBarBorderSize: 24, TabBarOverlineSize: 25, TableAngledHeadersAngle: 26, TableAngledHeadersTextAlign: 27, TreeLinesSize: 28, TreeLinesRounding: 29, SeparatorTextBorderSize: 30, SeparatorTextAlign: 31, SeparatorTextPadding: 32, COUNT: 33 };
+const _StyleVarNames = ["Alpha", "DisabledAlpha", "WindowPadding", "WindowRounding", "WindowBorderSize", "WindowMinSize", "WindowTitleAlign", "ChildRounding", "ChildBorderSize", "PopupRounding", "PopupBorderSize", "FramePadding", "FrameRounding", "FrameBorderSize", "ItemSpacing", "ItemInnerSpacing", "IndentSpacing", "CellPadding", "ScrollbarSize", "ScrollbarRounding", "GrabMinSize", "GrabRounding", "TabRounding", "TabBorderSize", "TabBarBorderSize", "TabBarOverlineSize", "TableAngledHeadersAngle", "TableAngledHeadersTextAlign", "TreeLinesSize", "TreeLinesRounding", "SeparatorTextBorderSize", "SeparatorTextAlign", "SeparatorTextPadding"];
+function _styleVarKey(idx) { return (typeof idx === "number") ? (_StyleVarNames[idx] || ("_var" + idx)) : idx; }
+function _cloneVar(v) {
+  if (Array.isArray(v)) return { x: Number(v[0]) || 0, y: Number(v[1]) || 0 };
+  if (v && typeof v === "object") return { x: Number(v.x) || 0, y: Number(v.y) || 0 };
+  return v;
+}
+function PushStyleVar(idx, val) { const c = ensure(); const key = _styleVarKey(idx); c._styleVarStack.push([key, _cloneVar(c.style[key])]); c.style[key] = _cloneVar(val); }
+function PushStyleVarX(idx, x) { const c = ensure(); const key = _styleVarKey(idx); const cur = c.style[key] || { x: 0, y: 0 }; c._styleVarStack.push([key, _cloneVar(cur)]); c.style[key] = { x, y: cur.y }; }
+function PushStyleVarY(idx, y) { const c = ensure(); const key = _styleVarKey(idx); const cur = c.style[key] || { x: 0, y: 0 }; c._styleVarStack.push([key, _cloneVar(cur)]); c.style[key] = { x: cur.x, y }; }
 function PopStyleVar(n = 1) { const c = ensure(); for (let i = 0; i < n; i++) { const e = c._styleVarStack.pop(); if (e) c.style[e[0]] = e[1]; } }
 function GetStyleColorVec4(col) { return ensure().style.Colors[col]; }
 function GetColorU32(col, alphaMul = 1) {
@@ -3008,8 +3078,8 @@ function GetWindowHeight() { return GetWindowSize().y; }
 function IsWindowCollapsed() { const w = W(); return w ? !!w.collapsed : false; }
 function IsWindowAppearing() { const w = W(); return w ? !!w.appearing : false; }
 function SetScrollHereYExtended() { /* widgets.js impl wins; keep alias for compat */ }
-function PushClipRect() {}
-function PopClipRect() {}
+function PushClipRect(x, y, w, h) { const win = W(); if (win) win.drawList.push({ t: "pushClip", x, y, w, h }); }
+function PopClipRect() { const win = W(); if (win) win.drawList.push({ t: "popClip" }); }
 function PushFont() {}
 function PopFont() {}
 function SetWindowFontScale() {}
@@ -3161,12 +3231,13 @@ function __clipViewportH() {
   return Math.max(40, h || 400);
 }
 class ImGuiListClipper {
-  constructor() { this.DisplayStart = 0; this.DisplayEnd = 0; this.ItemsCount = -1; this.ItemsHeight = -1; this._step = -1; this._startY = 0; this._h = 20; this._baseScroll = 0; }
+  constructor() { this.DisplayStart = 0; this.DisplayEnd = 0; this.ItemsCount = -1; this.ItemsHeight = -1; this._step = -1; this._startY = 0; this._baseMax = 0; this._h = 20; this._baseScroll = 0; }
   Begin(count, items_height = -1) {
     const c = ensure(), w = W();
     this.ItemsCount = count | 0; this.ItemsHeight = items_height;
     this._step = 0;
     this._startY = w ? w.dc.cursorPos.y : 0;
+    this._baseMax = w ? w.dc.cursorMaxPos.y : 0;
     this._baseScroll = (w && w.scrollY) || 0;
     this._h = items_height > 0 ? items_height : (c.style.FontSize + c.style.ItemSpacing.y) || 20;
     this.DisplayStart = 0; this.DisplayEnd = Math.min(1, this.ItemsCount);
@@ -3180,12 +3251,28 @@ class ImGuiListClipper {
     w.dc.currLineHeight = 0; w.dc._lineUsed = false;
     w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, y);
   }
+  _reserveTail() {
+    const w = W(); if (!w) return;
+    const endY = this._startY + this.ItemsCount * this._h;
+    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, endY);
+    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, endY);
+  }
   Step() {
     const w = W();
-    if (!w || this._step < 0) return false;
+    if (!w || this._step < 0 || this.ItemsCount <= 0) { this._step = -1; return false; }
     if (this._step === 0) {
+      // First pass: caller submits DisplayStart..DisplayEnd (item 0).
+      // Measuring happens on the NEXT step, after item 0 advanced cursorMaxPos.
+      this._step = 1;
+      return true;
+    }
+    if (this._step === 1) {
+      // Measure per-item height from what item 0 actually consumed
+      // (cursorMaxPos tracks bottom extent even without a line feed).
       if (this.ItemsHeight <= 0) {
-        const grew = w.dc.cursorPos.y - this._startY;
+        const grew = w.dc.cursorMaxPos.y - Math.max(this._startY, this._baseMax);
         const n = Math.max(1, this.DisplayEnd - this.DisplayStart);
         const measured = grew / Math.max(1, n);
         if (measured > 1 && measured < 500) this._h = measured;
@@ -3197,20 +3284,21 @@ class ImGuiListClipper {
       let last = Math.ceil((off + vh + 4) / this._h);
       first = Math.max(0, Math.min(this.ItemsCount, first));
       last = Math.max(first + 1, Math.min(this.ItemsCount, last));
-      this.DisplayStart = first; this.DisplayEnd = last;
-      this.SeekCursorForItem(first);
-      this._step = 1;
+      if (first === 0) {
+        // Item 0 was already submitted in step 0 — continue after it.
+        this.DisplayStart = 1; this.DisplayEnd = last;
+      } else {
+        this.DisplayStart = first; this.DisplayEnd = last;
+        this.SeekCursorForItem(first);
+      }
+      this._step = 2;
       return true;
     }
-    const endY = this._startY + this.ItemsCount * this._h;
-    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, endY);
-    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
-    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
-    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, endY);
+    this._reserveTail();
     this._step = -1;
     return false;
   }
-  End() { if (this._step === 1) this.Step(); else this._step = -1; }
+  End() { if (this._step >= 0) this._reserveTail(); this._step = -1; }
 }
 // ---------- TableSetBgColor (CellBg + row band) ----------
 function __tblCss(col) {
@@ -3995,7 +4083,7 @@ wrapEditTrack();
 
 Object.assign(ImGui, {
   PushID, PopID, GetID, GetItemRect, BeginGroup, EndGroup, BeginDisabled, EndDisabled,
-  PushItemWidth, PopItemWidth, PushStyleColor, PopStyleColor, PushStyleVar, PopStyleVar,
+  PushItemWidth, PopItemWidth, PushStyleColor, PopStyleColor, PushStyleVar, PopStyleVar, PushStyleVarX, PushStyleVarY, StyleVar,
   GetStyleColorVec4, GetColorU32, StyleColorsDark, StyleColorsClassic, StyleColorsLight,
   SetCursorPos, SetCursorPosX, SetCursorPosY, GetCursorPos, GetCursorScreenPos, SetCursorScreenPos,
   GetContentRegionAvail, GetContentRegionMax, CalcTextSize, AlignTextToFramePadding,
@@ -4745,7 +4833,13 @@ const Backend = {
     this.hiddenInput = inp;
     inp.addEventListener("input", () => { if (this.textCommit) this.textCommit(inp.value); });
     inp.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === "Escape") { this.blurText(); }
+      const cc = ImGui.GetContext();
+      if (e.key === "Enter" && cc.activePayload && cc.activePayload.multiline) {
+        e.preventDefault();
+        cc.activePayload.value += "\n";
+        cc.activePayload.cursorPos = cc.activePayload.value.length;
+        try { inp.value = cc.activePayload.value; } catch { /* ignore */ }
+      } else if (e.key === "Enter" || e.key === "Escape") { this.blurText(); }
       e.stopPropagation();
     });
     // New contract: no coordinates — the DOM box is never shown or moved.
@@ -4798,7 +4892,16 @@ const Backend = {
           e.preventDefault();
           cc.activePayload.value = cc.activePayload.value.slice(0, -1);
           cc.activePayload.cursorPos = Math.max(0, (cc.activePayload.cursorPos || cc.activePayload.value.length) - 1);
-        } else if (e.key === "Enter" || e.key === "Escape") {
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          if (cc.activePayload.multiline) {
+            cc.activePayload.value += "\n";
+            cc.activePayload.cursorPos = cc.activePayload.value.length;
+          } else {
+            cc.activePayload.commit = true;
+            this.blurText();
+          }
+        } else if (e.key === "Escape") {
           e.preventDefault();
           cc.activePayload.commit = true;
           this.blurText();
@@ -4915,7 +5018,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.37"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.39"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

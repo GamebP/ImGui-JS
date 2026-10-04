@@ -438,9 +438,50 @@ function InputText(label, text, flags = 0, hint = "") {
   return { changed, text: deactivated ? finalVal : currentVal };
 }
 function InputTextMultiline(label, text, wArg = 0, hArg = 60) {
-  // simplified: single-line box taller
-  const r = InputText(label, text);
-  return r;
+  const c = ctx(), w = cur(); if (!w) return { changed: false, text };
+  const st = c.style;
+  const tw = textW(ImGui.findRenderedTextEnd(label));
+  const ht = Math.max(40, hArg > 0 ? hArg : 60);
+  // Reserve the full tall box FIRST so following widgets never overlap it.
+  c.beforeItemPlacement(0, ht);
+  const bw = wArg > 0 ? wArg : Math.max(120, contentAvail() - tw - 16);
+  const wd = bw + tw + 12;
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(wd, ht);
+  const id = w.getID(label);
+  c.itemAdd(x, y, wd, ht, id);
+  const h = c.hovered(x, y, bw, ht);
+  if (h) c.anyWindowHovered = true;
+  const isActive = c.activeId === id && c.activeKind === "text";
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+    c.activeId = id; c.activeKind = "text";
+    c.activePayload = { value: String(text || ""), cursorPos: String(text || "").length, commit: false, multiline: true };
+    if (ImGui._backendFocusText) ImGui._backendFocusText(c.activePayload.value, (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+  }
+  let deactivated = false, finalVal = String(text || "");
+  if (isActive && ((c.io.MouseClicked[0] && !h) || (c.activePayload && c.activePayload.commit))) {
+    finalVal = c.activePayload ? c.activePayload.value : String(text || "");
+    c.activeId = 0; c.activeKind = null; c.activePayload = null;
+    if (ImGui._backendBlurText) ImGui._backendBlurText();
+    deactivated = true;
+  }
+  const activeNow = isActive && !deactivated;
+  let currentVal = activeNow && c.activePayload ? c.activePayload.value : String(text || "");
+  if (activeNow && c.io.InputChars) { currentVal += c.io.InputChars; if (c.activePayload) c.activePayload.value = currentVal; }
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
+  emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
+  const lineH = st.FontSize + 2;
+  const lines = String(currentVal).split("\n");
+  const maxLines = Math.max(1, Math.floor((ht - 6) / lineH));
+  for (let i = 0; i < Math.min(lines.length, maxLines); i++) {
+    let s = lines[i];
+    while (s.length > 0 && textW(s) > (bw - 12)) s = s.slice(0, -1);
+    emit({ t: "text", str: s, x: x + st.FramePadding.x + 2, y: y + 3 + i * lineH, col: st.Colors[ImGui.Col.Text] });
+  }
+  if (currentVal === "") emit({ t: "text", str: "(empty)", x: x + st.FramePadding.x + 2, y: y + 3, col: st.Colors[ImGui.Col.TextDisabled] });
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 8, y: y + 3, col: st.Colors[ImGui.Col.Text] });
+  const changed = deactivated ? (finalVal !== text) : (activeNow && currentVal !== text);
+  return { changed, text: deactivated ? finalVal : currentVal };
 }
 
 // ---------- color (native canvas picker via popup — no detached DOM) ----------
@@ -628,6 +669,9 @@ function CollapsingHeader(label, flags = 0) {
   return open;
 }
 function TreeNode(label) {
+  // Delegate so PushID/Indent balance exactly with TreePop (PopID+Unindent).
+  // TreeNodeEx lives in extended.js (loaded after this file); resolve lazily.
+  if (ImGui.TreeNodeEx) return ImGui.TreeNodeEx(label, 0);
   const open = CollapsingHeader(label);
   if (open) Indent();
   return open;
@@ -681,6 +725,8 @@ function BeginChild(id, wArg = 0, hArg = 0, border = false) {
     indent: w._indent || 0,
     lineUsed: w.dc._lineUsed,
     currLineHeight: w.dc.currLineHeight,
+    fixedH: hArg > 0, // fixed-height boxes never auto-grow (scroll/clip instead)
+    parentMaxPosY: w.dc.cursorMaxPos.y, // parent extent before child content
     bounds: { x, y, w: wd, h: ht },
     clipMark: w.drawList.length,
     bgIndex: bgIndex,
@@ -703,7 +749,7 @@ function EndChild() {
   // grow the box + border to fit before wrapping the inner ops — otherwise
   // the overflow would clip silently and the parent cursor wouldn't advance.
   let boxH = st ? st.bounds.h : 0;
-  if (st) {
+  if (st && !st.fixedH) {
     const contentH = (w.dc.cursorMaxPos.y - st.bounds.y) + 6; // content + bottom padding
     if (contentH > boxH) {
       boxH = contentH;
@@ -729,12 +775,16 @@ function EndChild() {
     w.dc.cursorStartPos = { ...st.cursorStartPos };
   }
   if (b) {
+    const boxH = st.bounds.h;
+    // Snap: the parent continues exactly below the child's OUTER box.
+    // Never Math.max with the live cursor — clipped child content (or a
+    // clipper tail reservation at ~200000px) must not leak into the parent.
     w.dc.cursorPos.x = b.x;
-    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, b.y + b.h + c.style.ItemSpacing.y);
+    w.dc.cursorPos.y = b.y + boxH + c.style.ItemSpacing.y;
     w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
     w.dc.currLineHeight = 0; w.dc._lineUsed = false;
     w.dc.lastItemWidth = 0; w.dc.lastItemHeight = 0;
-    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, b.y + b.h);
+    w.dc.cursorMaxPos.y = Math.max(st.parentMaxPosY || 0, b.y + boxH);
   }
   w._childBounds = null;
 }

@@ -178,7 +178,17 @@ class CanvasRenderer {
     ctx.restore();
   }
   drawOp(ctx, st, op) {
+    if (!op || !op.t) return;
     switch (op.t) {
+      case "pushClip":
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(op.x, op.y, Math.max(0, op.w), Math.max(0, op.h));
+        ctx.clip();
+        break;
+      case "popClip":
+        ctx.restore();
+        break;
       case "childClip": {
         // Child sub-panel: clip its inner ops to its own bounds so nothing
         // overflowing the border leaks into the parent window's layout.

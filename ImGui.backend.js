@@ -42,7 +42,13 @@ const Backend = {
     this.hiddenInput = inp;
     inp.addEventListener("input", () => { if (this.textCommit) this.textCommit(inp.value); });
     inp.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === "Escape") { this.blurText(); }
+      const cc = ImGui.GetContext();
+      if (e.key === "Enter" && cc.activePayload && cc.activePayload.multiline) {
+        e.preventDefault();
+        cc.activePayload.value += "\n";
+        cc.activePayload.cursorPos = cc.activePayload.value.length;
+        try { inp.value = cc.activePayload.value; } catch { /* ignore */ }
+      } else if (e.key === "Enter" || e.key === "Escape") { this.blurText(); }
       e.stopPropagation();
     });
     // New contract: no coordinates — the DOM box is never shown or moved.
@@ -95,7 +101,16 @@ const Backend = {
           e.preventDefault();
           cc.activePayload.value = cc.activePayload.value.slice(0, -1);
           cc.activePayload.cursorPos = Math.max(0, (cc.activePayload.cursorPos || cc.activePayload.value.length) - 1);
-        } else if (e.key === "Enter" || e.key === "Escape") {
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          if (cc.activePayload.multiline) {
+            cc.activePayload.value += "\n";
+            cc.activePayload.cursorPos = cc.activePayload.value.length;
+          } else {
+            cc.activePayload.commit = true;
+            this.blurText();
+          }
+        } else if (e.key === "Escape") {
           e.preventDefault();
           cc.activePayload.commit = true;
           this.blurText();

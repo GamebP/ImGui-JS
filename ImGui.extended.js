@@ -328,7 +328,17 @@ function PopItemWidth() { ensure()._itemWidthStack.pop(); }
 // ---------- style stacks + themes ----------
 function PushStyleColor(col, val) { const c = ensure(); c._styleColorStack.push([col, c.style.Colors[col]]); c.style.Colors[col] = val; }
 function PopStyleColor(n = 1) { const c = ensure(); for (let i = 0; i < n; i++) { const e = c._styleColorStack.pop(); if (e) c.style.Colors[e[0]] = e[1]; } }
-function PushStyleVar(key, val) { const c = ensure(); c._styleVarStack.push([key, c.style[key]]); c.style[key] = val; }
+const StyleVar = { Alpha: 0, DisabledAlpha: 1, WindowPadding: 2, WindowRounding: 3, WindowBorderSize: 4, WindowMinSize: 5, WindowTitleAlign: 6, ChildRounding: 7, ChildBorderSize: 8, PopupRounding: 9, PopupBorderSize: 10, FramePadding: 11, FrameRounding: 12, FrameBorderSize: 13, ItemSpacing: 14, ItemInnerSpacing: 15, IndentSpacing: 16, CellPadding: 17, ScrollbarSize: 18, ScrollbarRounding: 19, GrabMinSize: 20, GrabRounding: 21, TabRounding: 22, TabBorderSize: 23, TabBarBorderSize: 24, TabBarOverlineSize: 25, TableAngledHeadersAngle: 26, TableAngledHeadersTextAlign: 27, TreeLinesSize: 28, TreeLinesRounding: 29, SeparatorTextBorderSize: 30, SeparatorTextAlign: 31, SeparatorTextPadding: 32, COUNT: 33 };
+const _StyleVarNames = ["Alpha", "DisabledAlpha", "WindowPadding", "WindowRounding", "WindowBorderSize", "WindowMinSize", "WindowTitleAlign", "ChildRounding", "ChildBorderSize", "PopupRounding", "PopupBorderSize", "FramePadding", "FrameRounding", "FrameBorderSize", "ItemSpacing", "ItemInnerSpacing", "IndentSpacing", "CellPadding", "ScrollbarSize", "ScrollbarRounding", "GrabMinSize", "GrabRounding", "TabRounding", "TabBorderSize", "TabBarBorderSize", "TabBarOverlineSize", "TableAngledHeadersAngle", "TableAngledHeadersTextAlign", "TreeLinesSize", "TreeLinesRounding", "SeparatorTextBorderSize", "SeparatorTextAlign", "SeparatorTextPadding"];
+function _styleVarKey(idx) { return (typeof idx === "number") ? (_StyleVarNames[idx] || ("_var" + idx)) : idx; }
+function _cloneVar(v) {
+  if (Array.isArray(v)) return { x: Number(v[0]) || 0, y: Number(v[1]) || 0 };
+  if (v && typeof v === "object") return { x: Number(v.x) || 0, y: Number(v.y) || 0 };
+  return v;
+}
+function PushStyleVar(idx, val) { const c = ensure(); const key = _styleVarKey(idx); c._styleVarStack.push([key, _cloneVar(c.style[key])]); c.style[key] = _cloneVar(val); }
+function PushStyleVarX(idx, x) { const c = ensure(); const key = _styleVarKey(idx); const cur = c.style[key] || { x: 0, y: 0 }; c._styleVarStack.push([key, _cloneVar(cur)]); c.style[key] = { x, y: cur.y }; }
+function PushStyleVarY(idx, y) { const c = ensure(); const key = _styleVarKey(idx); const cur = c.style[key] || { x: 0, y: 0 }; c._styleVarStack.push([key, _cloneVar(cur)]); c.style[key] = { x: cur.x, y }; }
 function PopStyleVar(n = 1) { const c = ensure(); for (let i = 0; i < n; i++) { const e = c._styleVarStack.pop(); if (e) c.style[e[0]] = e[1]; } }
 function GetStyleColorVec4(col) { return ensure().style.Colors[col]; }
 function GetColorU32(col, alphaMul = 1) {
@@ -485,8 +495,8 @@ function GetWindowHeight() { return GetWindowSize().y; }
 function IsWindowCollapsed() { const w = W(); return w ? !!w.collapsed : false; }
 function IsWindowAppearing() { const w = W(); return w ? !!w.appearing : false; }
 function SetScrollHereYExtended() { /* widgets.js impl wins; keep alias for compat */ }
-function PushClipRect() {}
-function PopClipRect() {}
+function PushClipRect(x, y, w, h) { const win = W(); if (win) win.drawList.push({ t: "pushClip", x, y, w, h }); }
+function PopClipRect() { const win = W(); if (win) win.drawList.push({ t: "popClip" }); }
 function PushFont() {}
 function PopFont() {}
 function SetWindowFontScale() {}
@@ -638,12 +648,13 @@ function __clipViewportH() {
   return Math.max(40, h || 400);
 }
 class ImGuiListClipper {
-  constructor() { this.DisplayStart = 0; this.DisplayEnd = 0; this.ItemsCount = -1; this.ItemsHeight = -1; this._step = -1; this._startY = 0; this._h = 20; this._baseScroll = 0; }
+  constructor() { this.DisplayStart = 0; this.DisplayEnd = 0; this.ItemsCount = -1; this.ItemsHeight = -1; this._step = -1; this._startY = 0; this._baseMax = 0; this._h = 20; this._baseScroll = 0; }
   Begin(count, items_height = -1) {
     const c = ensure(), w = W();
     this.ItemsCount = count | 0; this.ItemsHeight = items_height;
     this._step = 0;
     this._startY = w ? w.dc.cursorPos.y : 0;
+    this._baseMax = w ? w.dc.cursorMaxPos.y : 0;
     this._baseScroll = (w && w.scrollY) || 0;
     this._h = items_height > 0 ? items_height : (c.style.FontSize + c.style.ItemSpacing.y) || 20;
     this.DisplayStart = 0; this.DisplayEnd = Math.min(1, this.ItemsCount);
@@ -657,12 +668,28 @@ class ImGuiListClipper {
     w.dc.currLineHeight = 0; w.dc._lineUsed = false;
     w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, y);
   }
+  _reserveTail() {
+    const w = W(); if (!w) return;
+    const endY = this._startY + this.ItemsCount * this._h;
+    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, endY);
+    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, endY);
+  }
   Step() {
     const w = W();
-    if (!w || this._step < 0) return false;
+    if (!w || this._step < 0 || this.ItemsCount <= 0) { this._step = -1; return false; }
     if (this._step === 0) {
+      // First pass: caller submits DisplayStart..DisplayEnd (item 0).
+      // Measuring happens on the NEXT step, after item 0 advanced cursorMaxPos.
+      this._step = 1;
+      return true;
+    }
+    if (this._step === 1) {
+      // Measure per-item height from what item 0 actually consumed
+      // (cursorMaxPos tracks bottom extent even without a line feed).
       if (this.ItemsHeight <= 0) {
-        const grew = w.dc.cursorPos.y - this._startY;
+        const grew = w.dc.cursorMaxPos.y - Math.max(this._startY, this._baseMax);
         const n = Math.max(1, this.DisplayEnd - this.DisplayStart);
         const measured = grew / Math.max(1, n);
         if (measured > 1 && measured < 500) this._h = measured;
@@ -674,20 +701,21 @@ class ImGuiListClipper {
       let last = Math.ceil((off + vh + 4) / this._h);
       first = Math.max(0, Math.min(this.ItemsCount, first));
       last = Math.max(first + 1, Math.min(this.ItemsCount, last));
-      this.DisplayStart = first; this.DisplayEnd = last;
-      this.SeekCursorForItem(first);
-      this._step = 1;
+      if (first === 0) {
+        // Item 0 was already submitted in step 0 — continue after it.
+        this.DisplayStart = 1; this.DisplayEnd = last;
+      } else {
+        this.DisplayStart = first; this.DisplayEnd = last;
+        this.SeekCursorForItem(first);
+      }
+      this._step = 2;
       return true;
     }
-    const endY = this._startY + this.ItemsCount * this._h;
-    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, endY);
-    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
-    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
-    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, endY);
+    this._reserveTail();
     this._step = -1;
     return false;
   }
-  End() { if (this._step === 1) this.Step(); else this._step = -1; }
+  End() { if (this._step >= 0) this._reserveTail(); this._step = -1; }
 }
 // ---------- TableSetBgColor (CellBg + row band) ----------
 function __tblCss(col) {
@@ -1472,7 +1500,7 @@ wrapEditTrack();
 
 Object.assign(ImGui, {
   PushID, PopID, GetID, GetItemRect, BeginGroup, EndGroup, BeginDisabled, EndDisabled,
-  PushItemWidth, PopItemWidth, PushStyleColor, PopStyleColor, PushStyleVar, PopStyleVar,
+  PushItemWidth, PopItemWidth, PushStyleColor, PopStyleColor, PushStyleVar, PopStyleVar, PushStyleVarX, PushStyleVarY, StyleVar,
   GetStyleColorVec4, GetColorU32, StyleColorsDark, StyleColorsClassic, StyleColorsLight,
   SetCursorPos, SetCursorPosX, SetCursorPosY, GetCursorPos, GetCursorScreenPos, SetCursorScreenPos,
   GetContentRegionAvail, GetContentRegionMax, CalcTextSize, AlignTextToFramePadding,
