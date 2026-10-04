@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.46";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.47";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -38,6 +38,18 @@ const WindowFlags = {
   NoInputs: (1 << 9) | (1 << 16) | (1 << 17),
 };
 const Cond = { None: 0, Always: 1, Once: 2, FirstUseEver: 4, Appearing: 8 };
+// Text alignment anchors for Button/Selectable (normalized 2D vectors:
+// 0.0 is start, 0.5 is center, 1.0 is end on each axis).
+const Align = {
+  Center: [0.5, 0.5],
+  Left: [0.0, 0.5], CenterLeft: [0.0, 0.5],
+  Right: [1.0, 0.5], CenterRight: [1.0, 0.5],
+  Top: [0.5, 0.0], CenterTop: [0.5, 0.0],
+  Bottom: [0.5, 1.0], CenterBottom: [0.5, 1.0],
+  TopLeft: [0.0, 0.0], TopRight: [1.0, 0.0],
+  BottomLeft: [0.0, 1.0], BottomRight: [1.0, 1.0],
+};
+const TextAlign = Align;
 const Col = {
   Text: 0, TextDisabled: 1, WindowBg: 2, ChildBg: 3, PopupBg: 4, Border: 5,
   BorderShadow: 6, FrameBg: 7, FrameBgHovered: 8, FrameBgActive: 9,
@@ -152,6 +164,8 @@ function makeStyleDark() {
     CellPadding: { x: 4, y: 2 },
     IndentSpacing: 21, ScrollbarSize: 14, ScrollbarRounding: 9,
     GrabMinSize: 12, GrabRounding: 0, FrameBorderShadow: 0,
+    ButtonTextAlign: { x: 0.5, y: 0.5 },
+    SelectableTextAlign: { x: 0.0, y: 0.5 },
     TitleBarHeight: 13 + 3 * 2, // FontSize + FramePadding.y * 2 (imgui.cpp)
     Colors: [],
   };
@@ -643,7 +657,7 @@ function GetCurrentContext() { return _ctx; }
 function SetCurrentContext(ctx) { _ctx = ctx; return _ctx; }
 
 const ImGuiBase = {
-  VERSION: IMGUI_VERSION, WindowFlags, Cond, Col,
+  VERSION: IMGUI_VERSION, WindowFlags, Cond, Col, Align, TextAlign,
   hashStr, findRenderedTextEnd, colToCss, lerpCol, applyStyleDark,
   CreateContext, GetContext, GetIO, GetStyle, SetDebugMode, IsDebugMode,
   GetVersion, NewFrame, EndFrame, Render, DestroyContext, GetCurrentContext, SetCurrentContext,

@@ -76,6 +76,32 @@ function frameCol(base, hov, act, h, held) {
   const c = ctx(), st = c.style;
   return h ? (held ? st.Colors[act] : st.Colors[hov]) : st.Colors[base];
 }
+// Resolve an alignment anchor to {x,y} in the unit square. Accepts an
+// ImGui.Align vector ([ax, ay]), a plain {x, y} object, or null to use the
+// style default. Components clamp to the unit interval.
+function _num01(v, d) {
+  v = Number(v);
+  if (!Number.isFinite(v)) return d;
+  return Math.max(0, Math.min(1, v));
+}
+function resolveAlign(a, fallback) {
+  const fb = fallback || { x: 0.5, y: 0.5 };
+  if (Array.isArray(a)) return { x: _num01(a[0], fb.x), y: _num01(a[1], fb.y) };
+  if (a && typeof a === "object") return { x: _num01(a.x, fb.x), y: _num01(a.y, fb.y) };
+  return { x: fb.x, y: fb.y };
+}
+// Aligned label placement inside a box at (x, y) sized (wd, ht) with inner
+// padding (padX, padY): tx = x + padX + (usableW - tw) * alignX (same for y
+// with FontSize as the text height). Rounds to whole pixels for crisp text.
+function alignedTextPos(x, y, wd, ht, tw, padX, padY, al) {
+  const st = ctx().style;
+  const usableW = Math.max(0, wd - padX * 2);
+  const usableH = Math.max(0, ht - padY * 2);
+  return {
+    x: Math.round(x + padX + (usableW - tw) * al.x),
+    y: Math.round(y + padY + (usableH - st.FontSize) * al.y),
+  };
+}
 
 // ---------- layout ----------
 function SameLine(offX = 0, spacing = -1) { ctx().sameLine(offX, spacing); }
@@ -172,7 +198,7 @@ function BulletText(str) {
 }
 
 // ---------- button ----------
-function Button(label, wArg = 0, hArg = 0) {
+function Button(label, wArg = 0, hArg = 0, align = null) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
   const shown = ImGui.findRenderedTextEnd(label);
@@ -193,7 +219,9 @@ function Button(label, wArg = 0, hArg = 0) {
     ? ImGui.Animation.Color("btn:" + id, targetCol, 0.12)
     : targetCol;
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.FrameRounding, col: btnCol });
-  emit({ t: "text", str: shown, x: x + (wd - tw) / 2, y: y + (ht - st.FontSize) / 2 - 1, col: st.Colors[ImGui.Col.Text] });
+  const al = resolveAlign(align, st.ButtonTextAlign);
+  const tp = alignedTextPos(x, y, wd, ht, tw, st.FramePadding.x, st.FramePadding.y, al);
+  emit({ t: "text", str: shown, x: tp.x, y: tp.y, col: st.Colors[ImGui.Col.Text] });
   return bb.pressed;
 }
 function SmallButton(label) { return Button(label, 0, 20); }
@@ -634,7 +662,7 @@ function Combo(label, current, items, a, b) {
   }
   return { changed, index };
 }
-function Selectable(label, selected = false, flags = 0, sizeArg) {
+function Selectable(label, selected = false, flags = 0, sizeArg, align = null) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
   const F = ImGui.SelectableFlags || {};
@@ -652,7 +680,9 @@ function Selectable(label, selected = false, flags = 0, sizeArg) {
   const hl = !!(flags & (F.Highlight || 0));
   if (selected) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.Header] });
   else if (hov || hl) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.HeaderHovered] });
-  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + 8, y: y + 3, col: st.Colors[disabled ? ImGui.Col.TextDisabled : ImGui.Col.Text] });
+  const al = resolveAlign(align, st.SelectableTextAlign);
+  const tp = alignedTextPos(x, y, wd, ht, textW(ImGui.findRenderedTextEnd(label)), st.FramePadding.x, st.FramePadding.y, al);
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: tp.x, y: tp.y, col: st.Colors[disabled ? ImGui.Col.TextDisabled : ImGui.Col.Text] });
   if (bb.pressed && !(flags & ((F.DontClosePopups || 0) | (F.NoAutoClosePopups || 0)))) {
     if (c._popupBoxStack && c._popupBoxStack.length && ImGui.CloseCurrentPopup) ImGui.CloseCurrentPopup();
     else if (c.comboOpen) c.comboOpen = 0;

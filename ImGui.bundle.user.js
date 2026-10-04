@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.46
+// @version      1.0.47
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.46";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.47";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -53,6 +53,18 @@ const WindowFlags = {
   NoInputs: (1 << 9) | (1 << 16) | (1 << 17),
 };
 const Cond = { None: 0, Always: 1, Once: 2, FirstUseEver: 4, Appearing: 8 };
+// Text alignment anchors for Button/Selectable (normalized 2D vectors:
+// 0.0 is start, 0.5 is center, 1.0 is end on each axis).
+const Align = {
+  Center: [0.5, 0.5],
+  Left: [0.0, 0.5], CenterLeft: [0.0, 0.5],
+  Right: [1.0, 0.5], CenterRight: [1.0, 0.5],
+  Top: [0.5, 0.0], CenterTop: [0.5, 0.0],
+  Bottom: [0.5, 1.0], CenterBottom: [0.5, 1.0],
+  TopLeft: [0.0, 0.0], TopRight: [1.0, 0.0],
+  BottomLeft: [0.0, 1.0], BottomRight: [1.0, 1.0],
+};
+const TextAlign = Align;
 const Col = {
   Text: 0, TextDisabled: 1, WindowBg: 2, ChildBg: 3, PopupBg: 4, Border: 5,
   BorderShadow: 6, FrameBg: 7, FrameBgHovered: 8, FrameBgActive: 9,
@@ -167,6 +179,8 @@ function makeStyleDark() {
     CellPadding: { x: 4, y: 2 },
     IndentSpacing: 21, ScrollbarSize: 14, ScrollbarRounding: 9,
     GrabMinSize: 12, GrabRounding: 0, FrameBorderShadow: 0,
+    ButtonTextAlign: { x: 0.5, y: 0.5 },
+    SelectableTextAlign: { x: 0.0, y: 0.5 },
     TitleBarHeight: 13 + 3 * 2, // FontSize + FramePadding.y * 2 (imgui.cpp)
     Colors: [],
   };
@@ -658,7 +672,7 @@ function GetCurrentContext() { return _ctx; }
 function SetCurrentContext(ctx) { _ctx = ctx; return _ctx; }
 
 const ImGuiBase = {
-  VERSION: IMGUI_VERSION, WindowFlags, Cond, Col,
+  VERSION: IMGUI_VERSION, WindowFlags, Cond, Col, Align, TextAlign,
   hashStr, findRenderedTextEnd, colToCss, lerpCol, applyStyleDark,
   CreateContext, GetContext, GetIO, GetStyle, SetDebugMode, IsDebugMode,
   GetVersion, NewFrame, EndFrame, Render, DestroyContext, GetCurrentContext, SetCurrentContext,
@@ -1272,6 +1286,32 @@ function frameCol(base, hov, act, h, held) {
   const c = ctx(), st = c.style;
   return h ? (held ? st.Colors[act] : st.Colors[hov]) : st.Colors[base];
 }
+// Resolve an alignment anchor to {x,y} in the unit square. Accepts an
+// ImGui.Align vector ([ax, ay]), a plain {x, y} object, or null to use the
+// style default. Components clamp to the unit interval.
+function _num01(v, d) {
+  v = Number(v);
+  if (!Number.isFinite(v)) return d;
+  return Math.max(0, Math.min(1, v));
+}
+function resolveAlign(a, fallback) {
+  const fb = fallback || { x: 0.5, y: 0.5 };
+  if (Array.isArray(a)) return { x: _num01(a[0], fb.x), y: _num01(a[1], fb.y) };
+  if (a && typeof a === "object") return { x: _num01(a.x, fb.x), y: _num01(a.y, fb.y) };
+  return { x: fb.x, y: fb.y };
+}
+// Aligned label placement inside a box at (x, y) sized (wd, ht) with inner
+// padding (padX, padY): tx = x + padX + (usableW - tw) * alignX (same for y
+// with FontSize as the text height). Rounds to whole pixels for crisp text.
+function alignedTextPos(x, y, wd, ht, tw, padX, padY, al) {
+  const st = ctx().style;
+  const usableW = Math.max(0, wd - padX * 2);
+  const usableH = Math.max(0, ht - padY * 2);
+  return {
+    x: Math.round(x + padX + (usableW - tw) * al.x),
+    y: Math.round(y + padY + (usableH - st.FontSize) * al.y),
+  };
+}
 
 // ---------- layout ----------
 function SameLine(offX = 0, spacing = -1) { ctx().sameLine(offX, spacing); }
@@ -1368,7 +1408,7 @@ function BulletText(str) {
 }
 
 // ---------- button ----------
-function Button(label, wArg = 0, hArg = 0) {
+function Button(label, wArg = 0, hArg = 0, align = null) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
   const shown = ImGui.findRenderedTextEnd(label);
@@ -1389,7 +1429,9 @@ function Button(label, wArg = 0, hArg = 0) {
     ? ImGui.Animation.Color("btn:" + id, targetCol, 0.12)
     : targetCol;
   emit({ t: "rectFilled", x, y, w: wd, h: ht, r: st.FrameRounding, col: btnCol });
-  emit({ t: "text", str: shown, x: x + (wd - tw) / 2, y: y + (ht - st.FontSize) / 2 - 1, col: st.Colors[ImGui.Col.Text] });
+  const al = resolveAlign(align, st.ButtonTextAlign);
+  const tp = alignedTextPos(x, y, wd, ht, tw, st.FramePadding.x, st.FramePadding.y, al);
+  emit({ t: "text", str: shown, x: tp.x, y: tp.y, col: st.Colors[ImGui.Col.Text] });
   return bb.pressed;
 }
 function SmallButton(label) { return Button(label, 0, 20); }
@@ -1830,7 +1872,7 @@ function Combo(label, current, items, a, b) {
   }
   return { changed, index };
 }
-function Selectable(label, selected = false, flags = 0, sizeArg) {
+function Selectable(label, selected = false, flags = 0, sizeArg, align = null) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
   const F = ImGui.SelectableFlags || {};
@@ -1848,7 +1890,9 @@ function Selectable(label, selected = false, flags = 0, sizeArg) {
   const hl = !!(flags & (F.Highlight || 0));
   if (selected) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.Header] });
   else if (hov || hl) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.HeaderHovered] });
-  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + 8, y: y + 3, col: st.Colors[disabled ? ImGui.Col.TextDisabled : ImGui.Col.Text] });
+  const al = resolveAlign(align, st.SelectableTextAlign);
+  const tp = alignedTextPos(x, y, wd, ht, textW(ImGui.findRenderedTextEnd(label)), st.FramePadding.x, st.FramePadding.y, al);
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: tp.x, y: tp.y, col: st.Colors[disabled ? ImGui.Col.TextDisabled : ImGui.Col.Text] });
   if (bb.pressed && !(flags & ((F.DontClosePopups || 0) | (F.NoAutoClosePopups || 0)))) {
     if (c._popupBoxStack && c._popupBoxStack.length && ImGui.CloseCurrentPopup) ImGui.CloseCurrentPopup();
     else if (c.comboOpen) c.comboOpen = 0;
@@ -3189,8 +3233,8 @@ function PopItemWidth() { ensure()._itemWidthStack.pop(); }
 // ---------- style stacks + themes ----------
 function PushStyleColor(col, val) { const c = ensure(); c._styleColorStack.push([col, c.style.Colors[col]]); c.style.Colors[col] = val; }
 function PopStyleColor(n = 1) { const c = ensure(); for (let i = 0; i < n; i++) { const e = c._styleColorStack.pop(); if (e) c.style.Colors[e[0]] = e[1]; } }
-const StyleVar = { Alpha: 0, DisabledAlpha: 1, WindowPadding: 2, WindowRounding: 3, WindowBorderSize: 4, WindowMinSize: 5, WindowTitleAlign: 6, ChildRounding: 7, ChildBorderSize: 8, PopupRounding: 9, PopupBorderSize: 10, FramePadding: 11, FrameRounding: 12, FrameBorderSize: 13, ItemSpacing: 14, ItemInnerSpacing: 15, IndentSpacing: 16, CellPadding: 17, ScrollbarSize: 18, ScrollbarRounding: 19, GrabMinSize: 20, GrabRounding: 21, TabRounding: 22, TabBorderSize: 23, TabBarBorderSize: 24, TabBarOverlineSize: 25, TableAngledHeadersAngle: 26, TableAngledHeadersTextAlign: 27, TreeLinesSize: 28, TreeLinesRounding: 29, SeparatorTextBorderSize: 30, SeparatorTextAlign: 31, SeparatorTextPadding: 32, COUNT: 33 };
-const _StyleVarNames = ["Alpha", "DisabledAlpha", "WindowPadding", "WindowRounding", "WindowBorderSize", "WindowMinSize", "WindowTitleAlign", "ChildRounding", "ChildBorderSize", "PopupRounding", "PopupBorderSize", "FramePadding", "FrameRounding", "FrameBorderSize", "ItemSpacing", "ItemInnerSpacing", "IndentSpacing", "CellPadding", "ScrollbarSize", "ScrollbarRounding", "GrabMinSize", "GrabRounding", "TabRounding", "TabBorderSize", "TabBarBorderSize", "TabBarOverlineSize", "TableAngledHeadersAngle", "TableAngledHeadersTextAlign", "TreeLinesSize", "TreeLinesRounding", "SeparatorTextBorderSize", "SeparatorTextAlign", "SeparatorTextPadding"];
+const StyleVar = { Alpha: 0, DisabledAlpha: 1, WindowPadding: 2, WindowRounding: 3, WindowBorderSize: 4, WindowMinSize: 5, WindowTitleAlign: 6, ChildRounding: 7, ChildBorderSize: 8, PopupRounding: 9, PopupBorderSize: 10, FramePadding: 11, FrameRounding: 12, FrameBorderSize: 13, ItemSpacing: 14, ItemInnerSpacing: 15, IndentSpacing: 16, CellPadding: 17, ScrollbarSize: 18, ScrollbarRounding: 19, GrabMinSize: 20, GrabRounding: 21, TabRounding: 22, TabBorderSize: 23, TabBarBorderSize: 24, TabBarOverlineSize: 25, TableAngledHeadersAngle: 26, TableAngledHeadersTextAlign: 27, TreeLinesSize: 28, TreeLinesRounding: 29, SeparatorTextBorderSize: 30, SeparatorTextAlign: 31, SeparatorTextPadding: 32, ButtonTextAlign: 33, SelectableTextAlign: 34, COUNT: 35 };
+const _StyleVarNames = ["Alpha", "DisabledAlpha", "WindowPadding", "WindowRounding", "WindowBorderSize", "WindowMinSize", "WindowTitleAlign", "ChildRounding", "ChildBorderSize", "PopupRounding", "PopupBorderSize", "FramePadding", "FrameRounding", "FrameBorderSize", "ItemSpacing", "ItemInnerSpacing", "IndentSpacing", "CellPadding", "ScrollbarSize", "ScrollbarRounding", "GrabMinSize", "GrabRounding", "TabRounding", "TabBorderSize", "TabBarBorderSize", "TabBarOverlineSize", "TableAngledHeadersAngle", "TableAngledHeadersTextAlign", "TreeLinesSize", "TreeLinesRounding", "SeparatorTextBorderSize", "SeparatorTextAlign", "SeparatorTextPadding", "ButtonTextAlign", "SelectableTextAlign"];
 function _styleVarKey(idx) { return (typeof idx === "number") ? (_StyleVarNames[idx] || ("_var" + idx)) : idx; }
 function _cloneVar(v) {
   if (Array.isArray(v)) return { x: Number(v[0]) || 0, y: Number(v[1]) || 0 };
@@ -5560,7 +5604,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.46"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.47"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -5633,6 +5677,16 @@ function MY_MENU() {
     ImGui.SameLine();
     if (ImGui.SmallButton("Reset")) S.counter = 0;
 
+    // --- text alignment: 9 anchors via ImGui.Align (or {x, y}, or style) ---
+    if (ImGui.Button("Left", 90, 0, ImGui.Align.CenterLeft)) S.counter++;
+    ImGui.SameLine();
+    if (ImGui.Button("Center", 90, 0, ImGui.Align.Center)) S.counter++;
+    ImGui.SameLine();
+    if (ImGui.Button("Right", 90, 0, ImGui.Align.CenterRight)) S.counter++;
+    ImGui.PushStyleVar(ImGui.StyleVar.ButtonTextAlign, [0, 0.5]);
+    if (ImGui.Button("Styled left (PushStyleVar)")) S.counter++;
+    ImGui.PopStyleVar();
+
     // --- checkbox: returns {changed, checked} ---
     const c = ImGui.Checkbox("Enable ESP", S.checked);
     S.checked = c.checked;
@@ -5697,7 +5751,7 @@ function DASHBOARD_MENU() {
   // Left column: navigation sidebar
   if (ImGui.BeginChild("##sidebar", 120, 0, true)) {
     DASHBOARD_TABS.forEach((tab, idx) => {
-      if (ImGui.Selectable(tab, S.dashTab === idx, 0, [110, 28])) S.dashTab = idx;
+      if (ImGui.Selectable(tab, S.dashTab === idx, 0, [110, 28], ImGui.Align.CenterLeft)) S.dashTab = idx;
     });
   }
   ImGui.EndChild();

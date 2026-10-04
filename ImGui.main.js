@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Main Menu
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.46
+// @version      1.0.47
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey (Canvas2D). Drag the demo windows, edit MY_MENU below to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -10,15 +10,15 @@
 // @run-at       document-idle
 // @downloadURL   https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
 // @updateURL     https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.46
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.46
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.46
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.46
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.46
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.46
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.46
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.46
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.46
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.47
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.47
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.47
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.47
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.47
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.47
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.47
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.47
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.47
 // ==/UserScript==
 
 /* ============================================================================
@@ -57,7 +57,7 @@
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.46"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.47"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -130,6 +130,16 @@ function MY_MENU() {
     ImGui.SameLine();
     if (ImGui.SmallButton("Reset")) S.counter = 0;
 
+    // --- text alignment: 9 anchors via ImGui.Align (or {x, y}, or style) ---
+    if (ImGui.Button("Left", 90, 0, ImGui.Align.CenterLeft)) S.counter++;
+    ImGui.SameLine();
+    if (ImGui.Button("Center", 90, 0, ImGui.Align.Center)) S.counter++;
+    ImGui.SameLine();
+    if (ImGui.Button("Right", 90, 0, ImGui.Align.CenterRight)) S.counter++;
+    ImGui.PushStyleVar(ImGui.StyleVar.ButtonTextAlign, [0, 0.5]);
+    if (ImGui.Button("Styled left (PushStyleVar)")) S.counter++;
+    ImGui.PopStyleVar();
+
     // --- checkbox: returns {changed, checked} ---
     const c = ImGui.Checkbox("Enable ESP", S.checked);
     S.checked = c.checked;
@@ -194,7 +204,7 @@ function DASHBOARD_MENU() {
   // Left column: navigation sidebar
   if (ImGui.BeginChild("##sidebar", 120, 0, true)) {
     DASHBOARD_TABS.forEach((tab, idx) => {
-      if (ImGui.Selectable(tab, S.dashTab === idx, 0, [110, 28])) S.dashTab = idx;
+      if (ImGui.Selectable(tab, S.dashTab === idx, 0, [110, 28], ImGui.Align.CenterLeft)) S.dashTab = idx;
     });
   }
   ImGui.EndChild();
