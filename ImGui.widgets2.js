@@ -31,7 +31,14 @@ function contentAvail() {
   return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
 }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
-function itemWidthOverride() { const c = ctx(); const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0; }
+function itemWidthOverride() {
+  const c = ctx();
+  if (c._nextItemWidth !== undefined && c._nextItemWidth !== null) {
+    const w = c._nextItemWidth; c._nextItemWidth = undefined;
+    if (w !== 0) return w > 0 ? w : 0;
+  }
+  const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0;
+}
 function clickSuppressed() {
   const cc = ctx();
   return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);

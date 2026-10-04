@@ -64,7 +64,14 @@ function formatValue(fmt, v) {
   if (m[2] === 'g') return Number(+v).toPrecision(Math.max(1, prec || 6)).replace(/\.?0+$/, '');
   return (+v).toFixed(prec);
 }
-function itemWidthOverride() { const c = ctx(); const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0; }
+function itemWidthOverride() {
+  const c = ctx();
+  if (c._nextItemWidth !== undefined && c._nextItemWidth !== null) {
+    const w = c._nextItemWidth; c._nextItemWidth = undefined;
+    if (w !== 0) return w > 0 ? w : 0;
+  }
+  const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0;
+}
 function frameCol(base, hov, act, h, held) {
   const c = ctx(), st = c.style;
   return h ? (held ? st.Colors[act] : st.Colors[hov]) : st.Colors[base];
@@ -489,7 +496,15 @@ function BeginCombo(label, preview) {
   return c.comboOpen === id;
 }
 function EndCombo() { const c = ctx(); c._comboAnchor = null; }
-function Combo(label, current, items) {
+function Combo(label, current, items, a, b) {
+  // C++ overloads: items as "A\0B\0C\0\0" string, or (getter, userData, count).
+  if (typeof items === "string") items = items.split("\0").filter((s) => s.length > 0);
+  else if (typeof items === "function") {
+    const getter = items, userData = a, count = b | 0;
+    const arr = [];
+    for (let i = 0; i < count; i++) arr.push(String(getter(userData, i)));
+    items = arr;
+  }
   const preview = items[current] !== undefined ? items[current] : "";
   let changed = false, index = current;
   if (BeginCombo(label, preview)) {
@@ -542,22 +557,32 @@ function Combo(label, current, items) {
   }
   return { changed, index };
 }
-function Selectable(label, selected = false) {
+function Selectable(label, selected = false, flags = 0, sizeArg) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const ht = 20;
+  const F = ImGui.SelectableFlags || {};
+  const ht = (sizeArg && sizeArg[1] > 0) ? sizeArg[1] : 20;
   c.beforeItemPlacement(0, ht);
-  const wd = contentAvail();
+  const wd = (sizeArg && sizeArg[0] > 0) ? sizeArg[0] : contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
-  const bb = c.buttonBehavior(id, x, y, wd, ht);
+  const disabled = !!(flags & (F.Disabled || 0));
+  const hov = disabled ? false : c.hovered(x, y, wd, ht);
+  if (hov) c.anyWindowHovered = true;
+  const bb = disabled ? { pressed: false, hovered: false, held: false } : c.buttonBehavior(id, x, y, wd, ht);
+  const hl = !!(flags & (F.Highlight || 0));
   if (selected) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.Header] });
-  else if (bb.hovered) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.HeaderHovered] });
-  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + 8, y: y + 3, col: st.Colors[ImGui.Col.Text] });
-  return bb.pressed;
+  else if (hov || hl) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.HeaderHovered] });
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + 8, y: y + 3, col: st.Colors[disabled ? ImGui.Col.TextDisabled : ImGui.Col.Text] });
+  if (bb.pressed && !(flags & ((F.DontClosePopups || 0) | (F.NoAutoClosePopups || 0)))) {
+    if (c._popupBoxStack && c._popupBoxStack.length && ImGui.CloseCurrentPopup) ImGui.CloseCurrentPopup();
+    else if (c.comboOpen) c.comboOpen = 0;
+  }
+  return bb.pressed && !disabled;
 }
+const SelectableFlags = { DontClosePopups: 1 << 0, NoAutoClosePopups: 1 << 0, SpanAllColumns: 1 << 1, AllowDoubleClick: 1 << 2, Disabled: 1 << 3, AllowOverlap: 1 << 4, Highlight: 1 << 5 };
 function ListBox(label, current, items, hItems = 4) {
   Text(label);
   let idx = current, changed = false;
@@ -747,7 +772,7 @@ Object.assign(ImGui, {
   SliderFloat, SliderInt, DragFloat,
   InputText, InputTextMultiline,
   ColorEdit3, ColorEdit4,
-  BeginCombo, EndCombo, Combo, Selectable, ListBox, ProgressBar,
+  BeginCombo, EndCombo, Combo, Selectable, SelectableFlags, ListBox, ProgressBar,
   CollapsingHeader, TreeNode, TreePop,
   BeginChild, EndChild,
   Begin, End, SetNextWindowPos, SetNextWindowSize, SetNextWindowCollapsed, IsItemHovered,

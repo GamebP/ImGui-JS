@@ -447,6 +447,37 @@ function GetContentRegionMax() {
 }
 function CalcTextSize(text) { return { x: measure(text), y: 16 }; }
 function AlignTextToFramePadding() { const w = W(); if (w) w.dc.cursorPos.y += 4; }
+// ---------- layout metrics (imgui.cpp:11834-11858; imgui_widgets.cpp:7311) ----------
+function GetFontSize() { return ensure().style.FontSize; }
+function GetTextLineHeight() { return ensure().style.FontSize; }
+function GetTextLineHeightWithSpacing() { const st = ensure().style; return st.FontSize + st.ItemSpacing.y; }
+function GetFrameHeight() { const st = ensure().style; return st.FontSize + st.FramePadding.y * 2; }
+function GetFrameHeightWithSpacing() { const st = ensure().style; return st.FontSize + st.FramePadding.y * 2 + st.ItemSpacing.y; }
+function GetTreeNodeToLabelSpacing() { const st = ensure().style; return st.FontSize + st.FramePadding.x * 2; }
+function GetCursorStartPos() {
+  const w = W(); if (!w) return { x: 0, y: 0 };
+  const s = w.dc.cursorStartPos;
+  return { x: s.x - w.pos.x - w.padding.x, y: s.y - (w.pos.y + w.titleH + w.padding.y) };
+}
+function GetItemRectMin() { const r = ensure().lastItem.rect; return r ? { x: r.x, y: r.y } : { x: 0, y: 0 }; }
+function GetItemRectMax() { const r = ensure().lastItem.rect; return r ? { x: r.x + r.w, y: r.y + r.h } : { x: 0, y: 0 }; }
+function GetItemRectSize() { const r = ensure().lastItem.rect; return r ? { x: r.w, y: r.h } : { x: 0, y: 0 }; }
+function SetNextItemWidth(wd) { ensure()._nextItemWidth = wd; }
+function CalcItemWidth() {
+  const c = ensure();
+  let w = (c._nextItemWidth !== undefined && c._nextItemWidth !== null) ? c._nextItemWidth : 0;
+  if (!w && c._itemWidthStack.length) w = c._itemWidthStack[c._itemWidthStack.length - 1];
+  if (!w) w = GetContentRegionAvail().x;
+  if (w < 0) w = Math.max(1, GetContentRegionAvail().x + w);
+  return Math.trunc(w);
+}
+function GetWindowContentRegionMin() { const w = W(); if (!w) return { x: 0, y: 0 }; return { x: w.dc.cursorStartPos.x - w.pos.x, y: w.dc.cursorStartPos.y - w.pos.y }; }
+function GetWindowContentRegionMax() {
+  const w = W(); if (!w) return { x: 0, y: 0 };
+  const c = ensure();
+  const sb = (w.scrollMax > 0 && !(w.flags & ImGui.WindowFlags.NoScrollbar)) ? (c.style.ScrollbarSize + 2) : 0;
+  return { x: w.sizeFull.x - w.padding.x - sb, y: w.sizeFull.y - w.padding.y };
+}
 function GetWindowPos() { const w = W(); return w ? { ...w.pos } : { x: 0, y: 0 }; }
 function GetWindowSize() { const w = W(); return w ? { ...w.sizeFull } : { x: 0, y: 0 }; }
 function GetWindowWidth() { return GetWindowSize().x; }
@@ -552,7 +583,144 @@ function OpenPopup(id, ax, ay) {
   if (ax === "center" || ay === "center") c._popupAnchor[key] = { center: true };
   else c._popupAnchor[key] = (ax !== undefined && ay !== undefined) ? { x: ax, y: ay } : { x: m.x, y: m.y };
 }
-function OpenPopupOnItemClick(id) { if (IsItemClicked(1)) OpenPopup(id); }
+function OpenPopupOnItemClick(id, button = 1) { if (IsItemClicked(button)) OpenPopup(id); }
+
+// ---------- draw-list facade (GetWindowDrawList / fg / bg) ----------
+function _dlEmit(target, op) { if (target) target.push(op); }
+function _ngonPts(cx, cy, r, n) {
+  const pts = []; n = n || 3;
+  for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2 - Math.PI / 2; pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }); }
+  return pts;
+}
+function GetWindowDrawList() {
+  const w = W(); if (!w) return null;
+  const dl = w.drawList;
+  return {
+    AddLine(p1, p2, col, th)      { _dlEmit(dl, { t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+    AddRect(p1, p2, col, r, th)   { _dlEmit(dl, { t: "rect", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col, th: th || 1 }); },
+    AddRectFilled(p1, p2, col, r) { _dlEmit(dl, { t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddRectFilledMultiColor(p1, p2, tl, tr, br, bl) { _dlEmit(dl, { t: "rectGradient", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, tl, tr, br, bl }); },
+    AddCircle(cx, cy, r, col, th) { _dlEmit(dl, { t: "circle", x: cx, y: cy, r, col, th: th || 1 }); },
+    AddCircleFilled(cx, cy, r, col) { _dlEmit(dl, { t: "circleFilled", x: cx, y: cy, r, col }); },
+    AddTriangle(p1, p2, p3, col, th)    { _dlEmit(dl, { t: "polyline", pts: [p1, p2, p3], col, th: th || 1, closed: true }); },
+    AddTriangleFilled(p1, p2, p3, col)  { _dlEmit(dl, { t: "polygon", pts: [p1, p2, p3], col }); },
+    AddNgon(cx, cy, r, col, n, th)      { _dlEmit(dl, { t: "polyline", pts: _ngonPts(cx, cy, r, n), col, th: th || 1, closed: true }); },
+    AddNgonFilled(cx, cy, r, col, n)    { _dlEmit(dl, { t: "polygon", pts: _ngonPts(cx, cy, r, n), col }); },
+    AddBezierCubic(p1, p2, p3, p4, col, th) { _dlEmit(dl, { t: "bezierCubic", p1, p2, p3, p4, col, th: th || 1 }); },
+    AddBezierQuadratic(p1, p2, p3, col, th) { _dlEmit(dl, { t: "bezierQuad", p1, p2, p3, col, th: th || 1 }); },
+    AddText(x, y, col, str)             { _dlEmit(dl, { t: "text", str, x, y, col }); },
+    AddPolyline(pts, col, th, closed)   { _dlEmit(dl, { t: "polyline", pts: pts.slice(), col, th: th || 1, closed: !!closed }); },
+    AddConvexPolyFilled(pts, col)       { _dlEmit(dl, { t: "polygon", pts: pts.slice(), col }); },
+  };
+}
+function GetBackgroundDrawList() {
+  const c = ensure(); c._bgOps = c._bgOps || []; const a = c._bgOps;
+  return {
+    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
+    AddLine(p1, p2, col, th) { a.push({ t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+  };
+}
+function GetForegroundDrawList() {
+  const c = ensure(); c._overlayOps = c._overlayOps || []; const a = c._overlayOps;
+  return {
+    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
+    AddLine(p1, p2, col, th) { a.push({ t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+  };
+}
+// ---------- ImGuiListClipper (uniform-height virtualization) ----------
+function __clipViewportH() {
+  const c = ensure(), w = W(); if (!w) return 400;
+  const h = (c._childStack && c._childStack.length)
+    ? c._childStack[c._childStack.length - 1].bounds.h - 12
+    : w.sizeFull.y - (w.titleH || 0) - (w.padding ? w.padding.y * 2 : 16);
+  return Math.max(40, h || 400);
+}
+class ImGuiListClipper {
+  constructor() { this.DisplayStart = 0; this.DisplayEnd = 0; this.ItemsCount = -1; this.ItemsHeight = -1; this._step = -1; this._startY = 0; this._h = 20; this._baseScroll = 0; }
+  Begin(count, items_height = -1) {
+    const c = ensure(), w = W();
+    this.ItemsCount = count | 0; this.ItemsHeight = items_height;
+    this._step = 0;
+    this._startY = w ? w.dc.cursorPos.y : 0;
+    this._baseScroll = (w && w.scrollY) || 0;
+    this._h = items_height > 0 ? items_height : (c.style.FontSize + c.style.ItemSpacing.y) || 20;
+    this.DisplayStart = 0; this.DisplayEnd = Math.min(1, this.ItemsCount);
+    return this;
+  }
+  SeekCursorForItem(idx) {
+    const w = W(); if (!w) return;
+    idx = Math.max(0, Math.min(this.ItemsCount, idx));
+    const y = this._startY + idx * this._h;
+    w.dc.cursorPos.y = y; w.dc.cursorPosPrevLine = { x: w.dc.cursorPos.x, y };
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, y);
+  }
+  Step() {
+    const w = W();
+    if (!w || this._step < 0) return false;
+    if (this._step === 0) {
+      if (this.ItemsHeight <= 0) {
+        const grew = w.dc.cursorPos.y - this._startY;
+        const n = Math.max(1, this.DisplayEnd - this.DisplayStart);
+        const measured = grew / Math.max(1, n);
+        if (measured > 1 && measured < 500) this._h = measured;
+      }
+      if (this.ItemsCount <= 1) { this._step = -1; return false; }
+      const vh = __clipViewportH();
+      const off = (w.scrollY || 0) - this._baseScroll;
+      let first = Math.floor((off - 4) / this._h);
+      let last = Math.ceil((off + vh + 4) / this._h);
+      first = Math.max(0, Math.min(this.ItemsCount, first));
+      last = Math.max(first + 1, Math.min(this.ItemsCount, last));
+      this.DisplayStart = first; this.DisplayEnd = last;
+      this.SeekCursorForItem(first);
+      this._step = 1;
+      return true;
+    }
+    const endY = this._startY + this.ItemsCount * this._h;
+    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, endY);
+    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, endY);
+    this._step = -1;
+    return false;
+  }
+  End() { if (this._step === 1) this.Step(); else this._step = -1; }
+}
+// ---------- TableSetBgColor (CellBg + row band) ----------
+function __tblCss(col) {
+  if (col == null) return "rgba(0,0,0,0)";
+  if (typeof col === "string") return col;
+  if (Array.isArray(col)) {
+    const f = (v) => Math.round(Math.max(0, Math.min(1, v)) * 255);
+    return `rgba(${f(col[0])},${f(col[1])},${f(col[2])},${col.length > 3 ? col[3] : 1})`;
+  }
+  if (typeof col === "number") {
+    const r = col & 255, g = (col >> 8) & 255, b = (col >> 16) & 255, a = ((col >>> 24) & 255) / 255;
+    return `rgba(${r},${g},${b},${a.toFixed(3)})`;
+  }
+  return "rgba(0,0,0,0)";
+}
+function TableSetBgColor(target, color, column_n = -1) {
+  const c = ensure(), w = W(); if (!w || !c._table) return;
+  const t = c._table;
+  const css = __tblCss(color);
+  const rowY = (t.rowY !== undefined) ? t.rowY : t.startY;
+  const h = t.rowH || 22;
+  if (target === 0) {
+    const cur = (t._orderMap && t.col >= 0 && t._orderMap[t.col] !== undefined) ? t._orderMap[t.col] : t.col;
+    const col = column_n < 0 ? cur : column_n;
+    const x = t.x + (t.offsets ? t.offsets[col] || 0 : col * (t.avail / t.cols));
+    const cw = t.widths ? t.widths[col] : t.avail / t.cols;
+    emit({ t: "rectFilled", x, y: rowY, w: cw, h, r: 0, css });
+  } else {
+    emit({ t: "rectFilled", x: t.x, y: rowY, w: t.avail, h, r: 0, css });
+  }
+}
+const TableBgTarget = { None: 0, RowBg0: 1, RowBg1: 2, CellBg: 0, RowBg: 1, ColumnBg: 2 };
+// ---------- draw-list facade PLACEHOLDER ----------
 function IsPopupOpen(id) { const c = ensure(); return c._popupStack.includes(String(id)); }
 function _anyModalOpen(c) {
   return c._popupStack.some((k) => {
@@ -699,7 +867,7 @@ function popupBoxEnd(modal) {
   const m = c.io.MousePos;
   const inside = m.x >= b.x && m.x <= b.x + boxW && m.y >= b.y && m.y <= b.y + h;
   if (c.io.MouseClicked[0] && !inside && !modal) { c._swallowNextPress = c.frame + 1; ClosePopup(b.key); }
-  if (c.io.KeysDown["Escape"]) ClosePopup(b.key);
+  if (c.io.KeysDown["Escape"] && !modal) ClosePopup(b.key);
   // Refresh the lock with the exact frame rect (or clear it right away if
   // this modal was just closed — ClosePopup/CloseCurrentPopup also clear).
   if (modal) c._activeModalRect = c._popupStack.includes(b.key) ? { x: b.x, y: b.y, w: boxW, h } : null;
@@ -1097,11 +1265,12 @@ function tableInnerVerticals(t) {
     emit({ t: "line", x1: lx, y1: y0, x2: lx, y2: y1, col: c.style.Colors[ImGui.Col.TableBorderLight], th: 1 });
   }
 }
-function TableNextRow() {
+function TableNextRow(row_flags = 0, min_row_height = 0) {
   const c = ensure(), w = W(); if (!w || !c._table) return;
   const t = c._table;
   tableLayout(t);
   t.row++; t.col = -1;
+  t.rowH = Math.max(22, min_row_height || 0);
   const y = t.startY + (t.row * t.rowH);
   // row bg (accept real RowBg bit and legacy lite value 1)
   const rowBg = (t.flags & TableFlags.RowBg) || (t.flags & 1);
@@ -1307,6 +1476,13 @@ Object.assign(ImGui, {
   GetStyleColorVec4, GetColorU32, StyleColorsDark, StyleColorsClassic, StyleColorsLight,
   SetCursorPos, SetCursorPosX, SetCursorPosY, GetCursorPos, GetCursorScreenPos, SetCursorScreenPos,
   GetContentRegionAvail, GetContentRegionMax, CalcTextSize, AlignTextToFramePadding,
+  GetFontSize, GetTextLineHeight, GetTextLineHeightWithSpacing,
+  GetFrameHeight, GetFrameHeightWithSpacing, GetTreeNodeToLabelSpacing,
+  GetCursorStartPos, GetItemRectMin, GetItemRectMax, GetItemRectSize,
+  SetNextItemWidth, CalcItemWidth,
+  GetWindowContentRegionMin, GetWindowContentRegionMax,
+  GetWindowDrawList, GetBackgroundDrawList, GetForegroundDrawList,
+  ImGuiListClipper,
   GetWindowPos, GetWindowSize, GetWindowWidth, GetWindowHeight, IsWindowCollapsed, IsWindowAppearing,
   PushClipRect, PopClipRect, PushFont, PopFont, SetWindowFontScale,
   IsItemActive, IsItemClicked, IsItemEdited, IsItemDeactivated, IsItemDeactivatedAfterEdit,
@@ -1321,6 +1497,7 @@ Object.assign(ImGui, {
   BeginTabBar, EndTabBar, BeginTabItem, EndTabItem, TabItemButton,
   BeginTable, EndTable, TableSetupColumn, TableHeadersRow, TableNextRow, TableNextColumn,
   TableSetColumnIndex, TableHeader, TableGetColumnIndex, TableGetRowIndex, TableGetColumnCount, TableFlags,
+  TableSetBgColor, TableBgTarget,
   TableGetSortSpecs, TableClearSort, TableSetColumnOrder,
   Columns, NextColumn, TreeNodeEx, TreePush, TreePop, SetNextItemOpen, TreeNodeGetOpen,
   BeginDragDropSource, SetDragDropPayload, EndDragDropSource, BeginDragDropTarget, AcceptDragDropPayload, EndDragDropTarget,

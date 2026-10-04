@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.36";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.37";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -261,6 +261,7 @@ class ImGuiContext {
     }
     this.frame++;
     this._frameEnded = false;
+    this._nextItemWidth = undefined; // a width set on a no-item frame must not leak
     this.windowStack.length = 0;
     this.current = null;
     this.anyWindowHovered = false;

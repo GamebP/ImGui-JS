@@ -38,6 +38,17 @@ class CanvasRenderer {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
+    // Background draw-list layer (GetBackgroundDrawList): below all windows.
+    if (imguiCtx._bgOps && imguiCtx._bgOps.length) {
+      const st = imguiCtx.style;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, W, H);
+      ctx.clip();
+      for (const op of imguiCtx._bgOps) this.drawOp(ctx, st, op);
+      ctx.restore();
+      imguiCtx._bgOps.length = 0;
+    }
     const wins = [...imguiCtx.windows.values()]
       .filter((w) => w.open !== false)
       .sort((a, b) => a.z - b.z);
@@ -235,6 +246,28 @@ class CanvasRenderer {
         ctx.fillStyle = op.css || css(op.col);
         ctx.beginPath(); ctx.arc(op.x, op.y, op.r, 0, Math.PI * 2); ctx.fill();
         break;
+      case "circle": // AddCircle: stroke-only ring (notify icons emit this)
+        ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
+        ctx.beginPath(); ctx.arc(op.x, op.y, Math.max(0.1, op.r), 0, Math.PI * 2); ctx.stroke();
+        break;
+      case "bezierCubic":
+        ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
+        ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(op.p1.x, op.p1.y);
+        ctx.bezierCurveTo(op.p2.x, op.p2.y, op.p3.x, op.p3.y, op.p4.x, op.p4.y); ctx.stroke();
+        break;
+      case "bezierQuad":
+        ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
+        ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(op.p1.x, op.p1.y);
+        ctx.quadraticCurveTo(op.p2.x, op.p2.y, op.p3.x, op.p3.y); ctx.stroke();
+        break;
+      case "rectGradient": { // AddRectFilledMultiColor: horizontal tl->tr blend
+        const g = ctx.createLinearGradient(op.x, 0, op.x + op.w, 0);
+        g.addColorStop(0, css(op.tl)); g.addColorStop(1, css(op.tr));
+        ctx.fillStyle = g; ctx.fillRect(op.x, op.y, op.w, op.h);
+        break;
+      }
       case "text": {
         ctx.fillStyle = op.css || css(op.col);
         ctx.font = op.font || "13px -apple-system,Segoe UI,Roboto,Arial,sans-serif";

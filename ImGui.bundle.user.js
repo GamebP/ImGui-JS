@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.36
+// @version      1.0.37
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.36";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.37";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -276,6 +276,7 @@ class ImGuiContext {
     }
     this.frame++;
     this._frameEnded = false;
+    this._nextItemWidth = undefined; // a width set on a no-item frame must not leak
     this.windowStack.length = 0;
     this.current = null;
     this.anyWindowHovered = false;
@@ -876,6 +877,17 @@ class CanvasRenderer {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
+    // Background draw-list layer (GetBackgroundDrawList): below all windows.
+    if (imguiCtx._bgOps && imguiCtx._bgOps.length) {
+      const st = imguiCtx.style;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, W, H);
+      ctx.clip();
+      for (const op of imguiCtx._bgOps) this.drawOp(ctx, st, op);
+      ctx.restore();
+      imguiCtx._bgOps.length = 0;
+    }
     const wins = [...imguiCtx.windows.values()]
       .filter((w) => w.open !== false)
       .sort((a, b) => a.z - b.z);
@@ -1073,6 +1085,28 @@ class CanvasRenderer {
         ctx.fillStyle = op.css || css(op.col);
         ctx.beginPath(); ctx.arc(op.x, op.y, op.r, 0, Math.PI * 2); ctx.fill();
         break;
+      case "circle": // AddCircle: stroke-only ring (notify icons emit this)
+        ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
+        ctx.beginPath(); ctx.arc(op.x, op.y, Math.max(0.1, op.r), 0, Math.PI * 2); ctx.stroke();
+        break;
+      case "bezierCubic":
+        ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
+        ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(op.p1.x, op.p1.y);
+        ctx.bezierCurveTo(op.p2.x, op.p2.y, op.p3.x, op.p3.y, op.p4.x, op.p4.y); ctx.stroke();
+        break;
+      case "bezierQuad":
+        ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
+        ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(op.p1.x, op.p1.y);
+        ctx.quadraticCurveTo(op.p2.x, op.p2.y, op.p3.x, op.p3.y); ctx.stroke();
+        break;
+      case "rectGradient": { // AddRectFilledMultiColor: horizontal tl->tr blend
+        const g = ctx.createLinearGradient(op.x, 0, op.x + op.w, 0);
+        g.addColorStop(0, css(op.tl)); g.addColorStop(1, css(op.tr));
+        ctx.fillStyle = g; ctx.fillRect(op.x, op.y, op.w, op.h);
+        break;
+      }
       case "text": {
         ctx.fillStyle = op.css || css(op.col);
         ctx.font = op.font || "13px -apple-system,Segoe UI,Roboto,Arial,sans-serif";
@@ -1169,7 +1203,14 @@ function formatValue(fmt, v) {
   if (m[2] === 'g') return Number(+v).toPrecision(Math.max(1, prec || 6)).replace(/\.?0+$/, '');
   return (+v).toFixed(prec);
 }
-function itemWidthOverride() { const c = ctx(); const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0; }
+function itemWidthOverride() {
+  const c = ctx();
+  if (c._nextItemWidth !== undefined && c._nextItemWidth !== null) {
+    const w = c._nextItemWidth; c._nextItemWidth = undefined;
+    if (w !== 0) return w > 0 ? w : 0;
+  }
+  const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0;
+}
 function frameCol(base, hov, act, h, held) {
   const c = ctx(), st = c.style;
   return h ? (held ? st.Colors[act] : st.Colors[hov]) : st.Colors[base];
@@ -1594,7 +1635,15 @@ function BeginCombo(label, preview) {
   return c.comboOpen === id;
 }
 function EndCombo() { const c = ctx(); c._comboAnchor = null; }
-function Combo(label, current, items) {
+function Combo(label, current, items, a, b) {
+  // C++ overloads: items as "A\0B\0C\0\0" string, or (getter, userData, count).
+  if (typeof items === "string") items = items.split("\0").filter((s) => s.length > 0);
+  else if (typeof items === "function") {
+    const getter = items, userData = a, count = b | 0;
+    const arr = [];
+    for (let i = 0; i < count; i++) arr.push(String(getter(userData, i)));
+    items = arr;
+  }
   const preview = items[current] !== undefined ? items[current] : "";
   let changed = false, index = current;
   if (BeginCombo(label, preview)) {
@@ -1647,22 +1696,32 @@ function Combo(label, current, items) {
   }
   return { changed, index };
 }
-function Selectable(label, selected = false) {
+function Selectable(label, selected = false, flags = 0, sizeArg) {
   const c = ctx(), w = cur(); if (!w) return false;
   const st = c.style;
-  const ht = 20;
+  const F = ImGui.SelectableFlags || {};
+  const ht = (sizeArg && sizeArg[1] > 0) ? sizeArg[1] : 20;
   c.beforeItemPlacement(0, ht);
-  const wd = contentAvail();
+  const wd = (sizeArg && sizeArg[0] > 0) ? sizeArg[0] : contentAvail();
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
   const id = w.getID(label);
   c.itemAdd(x, y, wd, ht, id);
-  const bb = c.buttonBehavior(id, x, y, wd, ht);
+  const disabled = !!(flags & (F.Disabled || 0));
+  const hov = disabled ? false : c.hovered(x, y, wd, ht);
+  if (hov) c.anyWindowHovered = true;
+  const bb = disabled ? { pressed: false, hovered: false, held: false } : c.buttonBehavior(id, x, y, wd, ht);
+  const hl = !!(flags & (F.Highlight || 0));
   if (selected) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.Header] });
-  else if (bb.hovered) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.HeaderHovered] });
-  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + 8, y: y + 3, col: st.Colors[ImGui.Col.Text] });
-  return bb.pressed;
+  else if (hov || hl) emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: st.Colors[ImGui.Col.HeaderHovered] });
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + 8, y: y + 3, col: st.Colors[disabled ? ImGui.Col.TextDisabled : ImGui.Col.Text] });
+  if (bb.pressed && !(flags & ((F.DontClosePopups || 0) | (F.NoAutoClosePopups || 0)))) {
+    if (c._popupBoxStack && c._popupBoxStack.length && ImGui.CloseCurrentPopup) ImGui.CloseCurrentPopup();
+    else if (c.comboOpen) c.comboOpen = 0;
+  }
+  return bb.pressed && !disabled;
 }
+const SelectableFlags = { DontClosePopups: 1 << 0, NoAutoClosePopups: 1 << 0, SpanAllColumns: 1 << 1, AllowDoubleClick: 1 << 2, Disabled: 1 << 3, AllowOverlap: 1 << 4, Highlight: 1 << 5 };
 function ListBox(label, current, items, hItems = 4) {
   Text(label);
   let idx = current, changed = false;
@@ -1852,7 +1911,7 @@ Object.assign(ImGui, {
   SliderFloat, SliderInt, DragFloat,
   InputText, InputTextMultiline,
   ColorEdit3, ColorEdit4,
-  BeginCombo, EndCombo, Combo, Selectable, ListBox, ProgressBar,
+  BeginCombo, EndCombo, Combo, Selectable, SelectableFlags, ListBox, ProgressBar,
   CollapsingHeader, TreeNode, TreePop,
   BeginChild, EndChild,
   Begin, End, SetNextWindowPos, SetNextWindowSize, SetNextWindowCollapsed, IsItemHovered,
@@ -1899,7 +1958,14 @@ function contentAvail() {
   return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
 }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
-function itemWidthOverride() { const c = ctx(); const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0; }
+function itemWidthOverride() {
+  const c = ctx();
+  if (c._nextItemWidth !== undefined && c._nextItemWidth !== null) {
+    const w = c._nextItemWidth; c._nextItemWidth = undefined;
+    if (w !== 0) return w > 0 ? w : 0;
+  }
+  const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0;
+}
 function clickSuppressed() {
   const cc = ctx();
   return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
@@ -2904,6 +2970,37 @@ function GetContentRegionMax() {
 }
 function CalcTextSize(text) { return { x: measure(text), y: 16 }; }
 function AlignTextToFramePadding() { const w = W(); if (w) w.dc.cursorPos.y += 4; }
+// ---------- layout metrics (imgui.cpp:11834-11858; imgui_widgets.cpp:7311) ----------
+function GetFontSize() { return ensure().style.FontSize; }
+function GetTextLineHeight() { return ensure().style.FontSize; }
+function GetTextLineHeightWithSpacing() { const st = ensure().style; return st.FontSize + st.ItemSpacing.y; }
+function GetFrameHeight() { const st = ensure().style; return st.FontSize + st.FramePadding.y * 2; }
+function GetFrameHeightWithSpacing() { const st = ensure().style; return st.FontSize + st.FramePadding.y * 2 + st.ItemSpacing.y; }
+function GetTreeNodeToLabelSpacing() { const st = ensure().style; return st.FontSize + st.FramePadding.x * 2; }
+function GetCursorStartPos() {
+  const w = W(); if (!w) return { x: 0, y: 0 };
+  const s = w.dc.cursorStartPos;
+  return { x: s.x - w.pos.x - w.padding.x, y: s.y - (w.pos.y + w.titleH + w.padding.y) };
+}
+function GetItemRectMin() { const r = ensure().lastItem.rect; return r ? { x: r.x, y: r.y } : { x: 0, y: 0 }; }
+function GetItemRectMax() { const r = ensure().lastItem.rect; return r ? { x: r.x + r.w, y: r.y + r.h } : { x: 0, y: 0 }; }
+function GetItemRectSize() { const r = ensure().lastItem.rect; return r ? { x: r.w, y: r.h } : { x: 0, y: 0 }; }
+function SetNextItemWidth(wd) { ensure()._nextItemWidth = wd; }
+function CalcItemWidth() {
+  const c = ensure();
+  let w = (c._nextItemWidth !== undefined && c._nextItemWidth !== null) ? c._nextItemWidth : 0;
+  if (!w && c._itemWidthStack.length) w = c._itemWidthStack[c._itemWidthStack.length - 1];
+  if (!w) w = GetContentRegionAvail().x;
+  if (w < 0) w = Math.max(1, GetContentRegionAvail().x + w);
+  return Math.trunc(w);
+}
+function GetWindowContentRegionMin() { const w = W(); if (!w) return { x: 0, y: 0 }; return { x: w.dc.cursorStartPos.x - w.pos.x, y: w.dc.cursorStartPos.y - w.pos.y }; }
+function GetWindowContentRegionMax() {
+  const w = W(); if (!w) return { x: 0, y: 0 };
+  const c = ensure();
+  const sb = (w.scrollMax > 0 && !(w.flags & ImGui.WindowFlags.NoScrollbar)) ? (c.style.ScrollbarSize + 2) : 0;
+  return { x: w.sizeFull.x - w.padding.x - sb, y: w.sizeFull.y - w.padding.y };
+}
 function GetWindowPos() { const w = W(); return w ? { ...w.pos } : { x: 0, y: 0 }; }
 function GetWindowSize() { const w = W(); return w ? { ...w.sizeFull } : { x: 0, y: 0 }; }
 function GetWindowWidth() { return GetWindowSize().x; }
@@ -3009,7 +3106,144 @@ function OpenPopup(id, ax, ay) {
   if (ax === "center" || ay === "center") c._popupAnchor[key] = { center: true };
   else c._popupAnchor[key] = (ax !== undefined && ay !== undefined) ? { x: ax, y: ay } : { x: m.x, y: m.y };
 }
-function OpenPopupOnItemClick(id) { if (IsItemClicked(1)) OpenPopup(id); }
+function OpenPopupOnItemClick(id, button = 1) { if (IsItemClicked(button)) OpenPopup(id); }
+
+// ---------- draw-list facade (GetWindowDrawList / fg / bg) ----------
+function _dlEmit(target, op) { if (target) target.push(op); }
+function _ngonPts(cx, cy, r, n) {
+  const pts = []; n = n || 3;
+  for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2 - Math.PI / 2; pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }); }
+  return pts;
+}
+function GetWindowDrawList() {
+  const w = W(); if (!w) return null;
+  const dl = w.drawList;
+  return {
+    AddLine(p1, p2, col, th)      { _dlEmit(dl, { t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+    AddRect(p1, p2, col, r, th)   { _dlEmit(dl, { t: "rect", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col, th: th || 1 }); },
+    AddRectFilled(p1, p2, col, r) { _dlEmit(dl, { t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddRectFilledMultiColor(p1, p2, tl, tr, br, bl) { _dlEmit(dl, { t: "rectGradient", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, tl, tr, br, bl }); },
+    AddCircle(cx, cy, r, col, th) { _dlEmit(dl, { t: "circle", x: cx, y: cy, r, col, th: th || 1 }); },
+    AddCircleFilled(cx, cy, r, col) { _dlEmit(dl, { t: "circleFilled", x: cx, y: cy, r, col }); },
+    AddTriangle(p1, p2, p3, col, th)    { _dlEmit(dl, { t: "polyline", pts: [p1, p2, p3], col, th: th || 1, closed: true }); },
+    AddTriangleFilled(p1, p2, p3, col)  { _dlEmit(dl, { t: "polygon", pts: [p1, p2, p3], col }); },
+    AddNgon(cx, cy, r, col, n, th)      { _dlEmit(dl, { t: "polyline", pts: _ngonPts(cx, cy, r, n), col, th: th || 1, closed: true }); },
+    AddNgonFilled(cx, cy, r, col, n)    { _dlEmit(dl, { t: "polygon", pts: _ngonPts(cx, cy, r, n), col }); },
+    AddBezierCubic(p1, p2, p3, p4, col, th) { _dlEmit(dl, { t: "bezierCubic", p1, p2, p3, p4, col, th: th || 1 }); },
+    AddBezierQuadratic(p1, p2, p3, col, th) { _dlEmit(dl, { t: "bezierQuad", p1, p2, p3, col, th: th || 1 }); },
+    AddText(x, y, col, str)             { _dlEmit(dl, { t: "text", str, x, y, col }); },
+    AddPolyline(pts, col, th, closed)   { _dlEmit(dl, { t: "polyline", pts: pts.slice(), col, th: th || 1, closed: !!closed }); },
+    AddConvexPolyFilled(pts, col)       { _dlEmit(dl, { t: "polygon", pts: pts.slice(), col }); },
+  };
+}
+function GetBackgroundDrawList() {
+  const c = ensure(); c._bgOps = c._bgOps || []; const a = c._bgOps;
+  return {
+    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
+    AddLine(p1, p2, col, th) { a.push({ t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+  };
+}
+function GetForegroundDrawList() {
+  const c = ensure(); c._overlayOps = c._overlayOps || []; const a = c._overlayOps;
+  return {
+    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
+    AddLine(p1, p2, col, th) { a.push({ t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+  };
+}
+// ---------- ImGuiListClipper (uniform-height virtualization) ----------
+function __clipViewportH() {
+  const c = ensure(), w = W(); if (!w) return 400;
+  const h = (c._childStack && c._childStack.length)
+    ? c._childStack[c._childStack.length - 1].bounds.h - 12
+    : w.sizeFull.y - (w.titleH || 0) - (w.padding ? w.padding.y * 2 : 16);
+  return Math.max(40, h || 400);
+}
+class ImGuiListClipper {
+  constructor() { this.DisplayStart = 0; this.DisplayEnd = 0; this.ItemsCount = -1; this.ItemsHeight = -1; this._step = -1; this._startY = 0; this._h = 20; this._baseScroll = 0; }
+  Begin(count, items_height = -1) {
+    const c = ensure(), w = W();
+    this.ItemsCount = count | 0; this.ItemsHeight = items_height;
+    this._step = 0;
+    this._startY = w ? w.dc.cursorPos.y : 0;
+    this._baseScroll = (w && w.scrollY) || 0;
+    this._h = items_height > 0 ? items_height : (c.style.FontSize + c.style.ItemSpacing.y) || 20;
+    this.DisplayStart = 0; this.DisplayEnd = Math.min(1, this.ItemsCount);
+    return this;
+  }
+  SeekCursorForItem(idx) {
+    const w = W(); if (!w) return;
+    idx = Math.max(0, Math.min(this.ItemsCount, idx));
+    const y = this._startY + idx * this._h;
+    w.dc.cursorPos.y = y; w.dc.cursorPosPrevLine = { x: w.dc.cursorPos.x, y };
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, y);
+  }
+  Step() {
+    const w = W();
+    if (!w || this._step < 0) return false;
+    if (this._step === 0) {
+      if (this.ItemsHeight <= 0) {
+        const grew = w.dc.cursorPos.y - this._startY;
+        const n = Math.max(1, this.DisplayEnd - this.DisplayStart);
+        const measured = grew / Math.max(1, n);
+        if (measured > 1 && measured < 500) this._h = measured;
+      }
+      if (this.ItemsCount <= 1) { this._step = -1; return false; }
+      const vh = __clipViewportH();
+      const off = (w.scrollY || 0) - this._baseScroll;
+      let first = Math.floor((off - 4) / this._h);
+      let last = Math.ceil((off + vh + 4) / this._h);
+      first = Math.max(0, Math.min(this.ItemsCount, first));
+      last = Math.max(first + 1, Math.min(this.ItemsCount, last));
+      this.DisplayStart = first; this.DisplayEnd = last;
+      this.SeekCursorForItem(first);
+      this._step = 1;
+      return true;
+    }
+    const endY = this._startY + this.ItemsCount * this._h;
+    w.dc.cursorPos.y = Math.max(w.dc.cursorPos.y, endY);
+    w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+    w.dc.currLineHeight = 0; w.dc._lineUsed = false;
+    w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, endY);
+    this._step = -1;
+    return false;
+  }
+  End() { if (this._step === 1) this.Step(); else this._step = -1; }
+}
+// ---------- TableSetBgColor (CellBg + row band) ----------
+function __tblCss(col) {
+  if (col == null) return "rgba(0,0,0,0)";
+  if (typeof col === "string") return col;
+  if (Array.isArray(col)) {
+    const f = (v) => Math.round(Math.max(0, Math.min(1, v)) * 255);
+    return `rgba(${f(col[0])},${f(col[1])},${f(col[2])},${col.length > 3 ? col[3] : 1})`;
+  }
+  if (typeof col === "number") {
+    const r = col & 255, g = (col >> 8) & 255, b = (col >> 16) & 255, a = ((col >>> 24) & 255) / 255;
+    return `rgba(${r},${g},${b},${a.toFixed(3)})`;
+  }
+  return "rgba(0,0,0,0)";
+}
+function TableSetBgColor(target, color, column_n = -1) {
+  const c = ensure(), w = W(); if (!w || !c._table) return;
+  const t = c._table;
+  const css = __tblCss(color);
+  const rowY = (t.rowY !== undefined) ? t.rowY : t.startY;
+  const h = t.rowH || 22;
+  if (target === 0) {
+    const cur = (t._orderMap && t.col >= 0 && t._orderMap[t.col] !== undefined) ? t._orderMap[t.col] : t.col;
+    const col = column_n < 0 ? cur : column_n;
+    const x = t.x + (t.offsets ? t.offsets[col] || 0 : col * (t.avail / t.cols));
+    const cw = t.widths ? t.widths[col] : t.avail / t.cols;
+    emit({ t: "rectFilled", x, y: rowY, w: cw, h, r: 0, css });
+  } else {
+    emit({ t: "rectFilled", x: t.x, y: rowY, w: t.avail, h, r: 0, css });
+  }
+}
+const TableBgTarget = { None: 0, RowBg0: 1, RowBg1: 2, CellBg: 0, RowBg: 1, ColumnBg: 2 };
+// ---------- draw-list facade PLACEHOLDER ----------
 function IsPopupOpen(id) { const c = ensure(); return c._popupStack.includes(String(id)); }
 function _anyModalOpen(c) {
   return c._popupStack.some((k) => {
@@ -3156,7 +3390,7 @@ function popupBoxEnd(modal) {
   const m = c.io.MousePos;
   const inside = m.x >= b.x && m.x <= b.x + boxW && m.y >= b.y && m.y <= b.y + h;
   if (c.io.MouseClicked[0] && !inside && !modal) { c._swallowNextPress = c.frame + 1; ClosePopup(b.key); }
-  if (c.io.KeysDown["Escape"]) ClosePopup(b.key);
+  if (c.io.KeysDown["Escape"] && !modal) ClosePopup(b.key);
   // Refresh the lock with the exact frame rect (or clear it right away if
   // this modal was just closed — ClosePopup/CloseCurrentPopup also clear).
   if (modal) c._activeModalRect = c._popupStack.includes(b.key) ? { x: b.x, y: b.y, w: boxW, h } : null;
@@ -3554,11 +3788,12 @@ function tableInnerVerticals(t) {
     emit({ t: "line", x1: lx, y1: y0, x2: lx, y2: y1, col: c.style.Colors[ImGui.Col.TableBorderLight], th: 1 });
   }
 }
-function TableNextRow() {
+function TableNextRow(row_flags = 0, min_row_height = 0) {
   const c = ensure(), w = W(); if (!w || !c._table) return;
   const t = c._table;
   tableLayout(t);
   t.row++; t.col = -1;
+  t.rowH = Math.max(22, min_row_height || 0);
   const y = t.startY + (t.row * t.rowH);
   // row bg (accept real RowBg bit and legacy lite value 1)
   const rowBg = (t.flags & TableFlags.RowBg) || (t.flags & 1);
@@ -3764,6 +3999,13 @@ Object.assign(ImGui, {
   GetStyleColorVec4, GetColorU32, StyleColorsDark, StyleColorsClassic, StyleColorsLight,
   SetCursorPos, SetCursorPosX, SetCursorPosY, GetCursorPos, GetCursorScreenPos, SetCursorScreenPos,
   GetContentRegionAvail, GetContentRegionMax, CalcTextSize, AlignTextToFramePadding,
+  GetFontSize, GetTextLineHeight, GetTextLineHeightWithSpacing,
+  GetFrameHeight, GetFrameHeightWithSpacing, GetTreeNodeToLabelSpacing,
+  GetCursorStartPos, GetItemRectMin, GetItemRectMax, GetItemRectSize,
+  SetNextItemWidth, CalcItemWidth,
+  GetWindowContentRegionMin, GetWindowContentRegionMax,
+  GetWindowDrawList, GetBackgroundDrawList, GetForegroundDrawList,
+  ImGuiListClipper,
   GetWindowPos, GetWindowSize, GetWindowWidth, GetWindowHeight, IsWindowCollapsed, IsWindowAppearing,
   PushClipRect, PopClipRect, PushFont, PopFont, SetWindowFontScale,
   IsItemActive, IsItemClicked, IsItemEdited, IsItemDeactivated, IsItemDeactivatedAfterEdit,
@@ -3778,6 +4020,7 @@ Object.assign(ImGui, {
   BeginTabBar, EndTabBar, BeginTabItem, EndTabItem, TabItemButton,
   BeginTable, EndTable, TableSetupColumn, TableHeadersRow, TableNextRow, TableNextColumn,
   TableSetColumnIndex, TableHeader, TableGetColumnIndex, TableGetRowIndex, TableGetColumnCount, TableFlags,
+  TableSetBgColor, TableBgTarget,
   TableGetSortSpecs, TableClearSort, TableSetColumnOrder,
   Columns, NextColumn, TreeNodeEx, TreePush, TreePop, SetNextItemOpen, TreeNodeGetOpen,
   BeginDragDropSource, SetDragDropPayload, EndDragDropSource, BeginDragDropTarget, AcceptDragDropPayload, EndDragDropTarget,
@@ -4672,7 +4915,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.36"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.37"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
