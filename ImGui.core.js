@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.54";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.55";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -669,6 +669,17 @@ class ImGuiContext {
       const top = w.pos.y + w.titleH;
       const bot = w.pos.y + w.sizeFull.y;
       if (m.y >= top && m.y <= bot) mouseY += w.scrollY;
+    }
+    // Scrolled child panels translate their content up by their scroll
+    // offset (see childClip sy); hit testing follows the same translation
+    // for every enclosing child so clicks land on visible rows 1:1.
+    const cstack = this._childStack;
+    if (cstack && cstack.length && w) {
+      const top = w.pos.y + w.titleH;
+      const bot = w.pos.y + w.sizeFull.y;
+      if (m.y >= top && m.y <= bot) {
+        for (const fr of cstack) if (fr.scroll) mouseY += fr.scroll;
+      }
     }
     return m.x >= x && m.x <= x + wd && mouseY >= y && mouseY <= y + ht;
   }

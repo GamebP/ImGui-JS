@@ -89,11 +89,17 @@ class CanvasRenderer {
       const isDragging = (c.activeKind === "move" && c.activePayload && c.activePayload.win === w);
       const focused = (c.focusedWindow === w) || isDragging;
       const active = focused;
+      const r = st.WindowRounding;
       ctx.save();
+      // Clip strictly to the window rounded silhouette first: the old square
+      // clip plus oversized fill let square blue corners poke past the border
+      // and bleed below the separator into the body.
       ctx.beginPath();
-      ctx.rect(x, y, ww, w.titleH + st.WindowRounding);
+      roundRectPath(ctx, x, y, ww, hh, r);
       ctx.clip();
-      roundRectPath(ctx, x, y, ww, w.titleH + st.WindowRounding, st.WindowRounding);
+      // Fill exactly the title strip, edge to edge with the inner border.
+      ctx.beginPath();
+      ctx.rect(x, y, ww, w.titleH);
       ctx.fillStyle = css(st.Colors[w.collapsed ? ImGui.Col.TitleBgCollapsed : (active ? ImGui.Col.TitleBgActive : ImGui.Col.TitleBg)]);
       ctx.fill();
       ctx.restore();
@@ -207,11 +213,13 @@ class CanvasRenderer {
         break;
       case "childClip": {
         // Child sub-panel: clip its inner ops to its own bounds so nothing
-        // overflowing the border leaks into the parent window's layout.
+        // overflowing the border leaks into the parent window's layout. A
+        // scrolled child (op.sy) translates content up under the same clip.
         ctx.save();
         ctx.beginPath();
         ctx.rect(op.x, op.y, op.w, op.h);
         ctx.clip();
+        if (op.sy) ctx.translate(0, -op.sy);
         if (op.ops) for (const o of op.ops) this.drawOp(ctx, st, o);
         ctx.restore();
         break;

@@ -1024,7 +1024,18 @@ function listBoxImpl(label, items, hItems, multi, selection) {
   const end = max > 0 ? Math.min(n, start + Math.ceil(viewH / pitch) + 1) : n;
   let changed = false;
   if (BeginChild(label + "##box", 0, viewH, true)) {
-    if (start > 0) Dummy(0, start * pitch);
+    // True viewport scroll: rows keep natural positions (top offset shifts
+    // the cursor directly, never through Dummy, whose itemSize would inflate
+    // the line height and drift every following row) while EndChild
+    // translates content up by sc under the box clip. Hit testing follows
+    // via the child stack scroll (see hovered()).
+    const stack = c._childStack;
+    if (stack && stack.length) stack[stack.length - 1].scroll = sc;
+    if (start > 0) {
+      w.dc.cursorPos.y += start * pitch;
+      w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+      w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, w.dc.cursorPos.y);
+    }
     for (let i = start; i < end; i++) {
       if (multi) {
         if (Selectable(items[i], selection.has(i))) {
@@ -1036,13 +1047,25 @@ function listBoxImpl(label, items, hItems, multi, selection) {
         }
       }
     }
-    if (end < n) Dummy(0, (n - end) * pitch);
   }
   EndChild();
-  // Record this frame box for next frame hover, wheel, and trap checks.
+  // Record this frame box for next frame hover, wheel, and trap checks, and
+  // draw the scrollbar thumb when scrolling is live.
   const ops = w.drawList;
   for (let k = ops.length - 1; k >= 0; k--) {
-    if (ops[k].t === "childClip") { c._listBoxRects[sid] = { x: ops[k].x, y: ops[k].y, w: ops[k].w, h: ops[k].h }; break; }
+    if (ops[k].t === "childClip") {
+      const b = ops[k];
+      c._listBoxRects[sid] = { x: b.x, y: b.y, w: b.w, h: b.h };
+      if (max > 0) {
+        const st = c.style;
+        const trackX = b.x + b.w - 11, trackY = b.y + 2, trackH = Math.max(1, b.h - 4);
+        const thumbH = Math.max(14, trackH * (viewH / fitH));
+        const thumbY = trackY + (trackH - thumbH) * (max > 0 ? sc / max : 0);
+        w.drawList.push({ t: "rectFilled", x: trackX, y: trackY, w: 7, h: trackH, r: 3, col: st.Colors[ImGui.Col.ScrollbarBg] });
+        w.drawList.push({ t: "rectFilled", x: trackX, y: thumbY, w: 7, h: thumbH, r: 3, col: st.Colors[ImGui.Col.ScrollbarGrab] });
+      }
+      break;
+    }
   }
   return { changed, single: selection, selection };
 }
@@ -1239,10 +1262,12 @@ function EndChild() {
   }
   // Clip the child's inner ops to its own box before popping state. This
   // replaces the items that overflowed the border with a nested clip group,
-  // so nested children produce nested groups (innermost clipped first).
+  // so nested children produce nested groups (innermost clipped first). A
+  // scrolled child carries its offset so the renderer translates content up
+  // under the same clip (hit testing mirrors it via the child stack).
   if (typeof st.clipMark === "number" && st.clipMark < w.drawList.length) {
     const innerOps = w.drawList.splice(st.clipMark, w.drawList.length - st.clipMark);
-    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: b.x, y: b.y, w: b.w, h: boxH, ops: innerOps });
+    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: b.x, y: b.y, w: b.w, h: boxH, sy: st.scroll || 0, ops: innerOps });
   }
   // Restore the outer scope even if inner code left it unbalanced.
   w._indent = st.indent || 0;

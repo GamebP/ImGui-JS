@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.54
+// @version      1.0.55
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.54";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.55";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -685,6 +685,17 @@ class ImGuiContext {
       const bot = w.pos.y + w.sizeFull.y;
       if (m.y >= top && m.y <= bot) mouseY += w.scrollY;
     }
+    // Scrolled child panels translate their content up by their scroll
+    // offset (see childClip sy); hit testing follows the same translation
+    // for every enclosing child so clicks land on visible rows 1:1.
+    const cstack = this._childStack;
+    if (cstack && cstack.length && w) {
+      const top = w.pos.y + w.titleH;
+      const bot = w.pos.y + w.sizeFull.y;
+      if (m.y >= top && m.y <= bot) {
+        for (const fr of cstack) if (fr.scroll) mouseY += fr.scroll;
+      }
+    }
     return m.x >= x && m.x <= x + wd && mouseY >= y && mouseY <= y + ht;
   }
   buttonBehavior(id, x, y, wd, ht) {
@@ -1009,11 +1020,17 @@ class CanvasRenderer {
       const isDragging = (c.activeKind === "move" && c.activePayload && c.activePayload.win === w);
       const focused = (c.focusedWindow === w) || isDragging;
       const active = focused;
+      const r = st.WindowRounding;
       ctx.save();
+      // Clip strictly to the window rounded silhouette first: the old square
+      // clip plus oversized fill let square blue corners poke past the border
+      // and bleed below the separator into the body.
       ctx.beginPath();
-      ctx.rect(x, y, ww, w.titleH + st.WindowRounding);
+      roundRectPath(ctx, x, y, ww, hh, r);
       ctx.clip();
-      roundRectPath(ctx, x, y, ww, w.titleH + st.WindowRounding, st.WindowRounding);
+      // Fill exactly the title strip, edge to edge with the inner border.
+      ctx.beginPath();
+      ctx.rect(x, y, ww, w.titleH);
       ctx.fillStyle = css(st.Colors[w.collapsed ? ImGui.Col.TitleBgCollapsed : (active ? ImGui.Col.TitleBgActive : ImGui.Col.TitleBg)]);
       ctx.fill();
       ctx.restore();
@@ -1127,11 +1144,13 @@ class CanvasRenderer {
         break;
       case "childClip": {
         // Child sub-panel: clip its inner ops to its own bounds so nothing
-        // overflowing the border leaks into the parent window's layout.
+        // overflowing the border leaks into the parent window's layout. A
+        // scrolled child (op.sy) translates content up under the same clip.
         ctx.save();
         ctx.beginPath();
         ctx.rect(op.x, op.y, op.w, op.h);
         ctx.clip();
+        if (op.sy) ctx.translate(0, -op.sy);
         if (op.ops) for (const o of op.ops) this.drawOp(ctx, st, o);
         ctx.restore();
         break;
@@ -2295,7 +2314,18 @@ function listBoxImpl(label, items, hItems, multi, selection) {
   const end = max > 0 ? Math.min(n, start + Math.ceil(viewH / pitch) + 1) : n;
   let changed = false;
   if (BeginChild(label + "##box", 0, viewH, true)) {
-    if (start > 0) Dummy(0, start * pitch);
+    // True viewport scroll: rows keep natural positions (top offset shifts
+    // the cursor directly, never through Dummy, whose itemSize would inflate
+    // the line height and drift every following row) while EndChild
+    // translates content up by sc under the box clip. Hit testing follows
+    // via the child stack scroll (see hovered()).
+    const stack = c._childStack;
+    if (stack && stack.length) stack[stack.length - 1].scroll = sc;
+    if (start > 0) {
+      w.dc.cursorPos.y += start * pitch;
+      w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
+      w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, w.dc.cursorPos.y);
+    }
     for (let i = start; i < end; i++) {
       if (multi) {
         if (Selectable(items[i], selection.has(i))) {
@@ -2307,13 +2337,25 @@ function listBoxImpl(label, items, hItems, multi, selection) {
         }
       }
     }
-    if (end < n) Dummy(0, (n - end) * pitch);
   }
   EndChild();
-  // Record this frame box for next frame hover, wheel, and trap checks.
+  // Record this frame box for next frame hover, wheel, and trap checks, and
+  // draw the scrollbar thumb when scrolling is live.
   const ops = w.drawList;
   for (let k = ops.length - 1; k >= 0; k--) {
-    if (ops[k].t === "childClip") { c._listBoxRects[sid] = { x: ops[k].x, y: ops[k].y, w: ops[k].w, h: ops[k].h }; break; }
+    if (ops[k].t === "childClip") {
+      const b = ops[k];
+      c._listBoxRects[sid] = { x: b.x, y: b.y, w: b.w, h: b.h };
+      if (max > 0) {
+        const st = c.style;
+        const trackX = b.x + b.w - 11, trackY = b.y + 2, trackH = Math.max(1, b.h - 4);
+        const thumbH = Math.max(14, trackH * (viewH / fitH));
+        const thumbY = trackY + (trackH - thumbH) * (max > 0 ? sc / max : 0);
+        w.drawList.push({ t: "rectFilled", x: trackX, y: trackY, w: 7, h: trackH, r: 3, col: st.Colors[ImGui.Col.ScrollbarBg] });
+        w.drawList.push({ t: "rectFilled", x: trackX, y: thumbY, w: 7, h: thumbH, r: 3, col: st.Colors[ImGui.Col.ScrollbarGrab] });
+      }
+      break;
+    }
   }
   return { changed, single: selection, selection };
 }
@@ -2510,10 +2552,12 @@ function EndChild() {
   }
   // Clip the child's inner ops to its own box before popping state. This
   // replaces the items that overflowed the border with a nested clip group,
-  // so nested children produce nested groups (innermost clipped first).
+  // so nested children produce nested groups (innermost clipped first). A
+  // scrolled child carries its offset so the renderer translates content up
+  // under the same clip (hit testing mirrors it via the child stack).
   if (typeof st.clipMark === "number" && st.clipMark < w.drawList.length) {
     const innerOps = w.drawList.splice(st.clipMark, w.drawList.length - st.clipMark);
-    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: b.x, y: b.y, w: b.w, h: boxH, ops: innerOps });
+    w.drawList.splice(st.clipMark, 0, { t: "childClip", x: b.x, y: b.y, w: b.w, h: boxH, sy: st.scroll || 0, ops: innerOps });
   }
   // Restore the outer scope even if inner code left it unbalanced.
   w._indent = st.indent || 0;
@@ -6642,7 +6686,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.54"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.55"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.modal.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -6746,10 +6790,6 @@ function MY_MENU() {
     // --- combo ---
     const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
     if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
-
-    // --- vertical rhythm: Spacing scales with style, Dummy takes exact px ---
-    ImGui.Spacing(); // standard dynamic gap (ItemSpacing.y x 2)
-    ImGui.Dummy(0, 10); // precise 10px vertical margin
 
     // --- collapsible section with real switches ---
     if (ImGui.CollapsingHeader("Features")) {
