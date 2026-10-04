@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Main Menu
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.56
+// @version      1.0.57
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey (Canvas2D). Drag the demo windows, edit MY_MENU below to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -10,16 +10,16 @@
 // @run-at       document-idle
 // @downloadURL   https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
 // @updateURL     https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.56
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.56
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.56
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.56
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.56
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.56
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.56
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.56
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.modal.js?v=1.0.56
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.56
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.57
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.57
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.57
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.57
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.57
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.57
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.57
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.57
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.modal.js?v=1.0.57
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.57
 // ==/UserScript==
 
 /* ============================================================================
@@ -59,7 +59,7 @@
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.56"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.57"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.modal.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -160,9 +160,9 @@ function MY_MENU() {
     // NOTE: native <input type=color> fires async; poll each frame:
     if (ce.changed) S.color = ce.color;
 
-    // --- Cheats ListBox (hItems = 0 fits all items statically, no scrollwheel) ---
-    const lb = ImGui.ListBox("Cheats", S.listIdx, S.listItems, 0);
-    if (lb.changed) S.listIdx = lb.index;
+    // --- Cheats Combo (compact dropdown, no window scrollbar) ---
+    const cb = ImGui.Combo("Cheats", S.listIdx, S.listItems);
+    if (cb.changed) S.listIdx = cb.index;
 
     // --- collapsible section with real switches ---
     if (ImGui.CollapsingHeader("Features")) {
@@ -321,9 +321,9 @@ function DEMO_WINDOW(dt) {
       ImGui.ProgressBar(S.progress, "progress " + Math.round(S.progress * 100) + "%");
       S.progress += dt * 0.05; if (S.progress > 1) S.progress = 0;
       ImGui.Spacing(); // standard dynamic gap before the cheat selector
-      // --- Cheats Combo (Weapon style dropdown) ---
-      const cb2 = ImGui.Combo("Cheats", S.listIdx, S.listItems);
-      if (cb2.changed) S.listIdx = cb2.index;
+      // --- Cheats ListBox (hItems = 0 fits all items statically, no scrollwheel) ---
+      const lb = ImGui.ListBox("Cheats", S.listIdx, S.listItems, 0);
+      if (lb.changed) S.listIdx = lb.index;
     }
     if (ImGui.CollapsingHeader("Layout")) {
       ImGui.Text("SameLine example:");
