@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.39
+// @version      1.0.40
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.39";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.40";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1776,7 +1776,14 @@ const SelectableFlags = { DontClosePopups: 1 << 0, NoAutoClosePopups: 1 << 0, Sp
 function ListBox(label, current, items, hItems = 4) {
   Text(label);
   let idx = current, changed = false;
-  if (BeginChild(label + "##box", 0, items.length * 22 + 8, true)) {
+  // Exact metrics: child inner top pad 6 + rows of 20px Selectables joined by
+  // 4px ItemSpacing + 6px bottom pad. Always fit ALL items: fixed-height
+  // children clip (no child scrolling yet), so honoring hItems by shrinking
+  // would strand items unreachable. hItems stays for API compatibility.
+  const c = ctx();
+  const rowH = 20, gapY = c.style.ItemSpacing.y, padY = 12;
+  const targetH = padY + items.length * rowH + Math.max(0, items.length - 1) * gapY;
+  if (BeginChild(label + "##box", 0, targetH, true)) {
     for (let i = 0; i < items.length; i++) {
       if (Selectable(items[i], i === idx)) { idx = i; changed = true; }
     }
@@ -3821,13 +3828,12 @@ function TableHeadersRow() {
     TableSetColumnIndex(i);
     const nm = c._table.names[canon] || ("C" + canon);
     const cw = c._table.widths[canon];
-    const hh = c.style.FontSize + c.style.FramePadding.y * 2;
-    const hx = w.dc.cursorPos.x - c.style.CellPadding.x - 0;
-    // Header hover + click => cycle sort asc/desc/off (Sortable)
+    // Full-height banner cell: meets the bottom divider with no gap, and the
+    // vertical grid lines (drawn by tableInnerVerticals below) run through it.
     const sortDir = (c._table.sort && c._table.sort.col === canon) ? c._table.sort.dir : null;
-    const hy = w.dc.cursorPos.y - 2;
-    const h = w.dc.cursorPos.x <= c.io.MousePos.x && c.io.MousePos.x <= w.dc.cursorPos.x + cw && hy <= c.io.MousePos.y && c.io.MousePos.y <= hy + hh;
-    emit({ t: "rectFilled", x: w.dc.cursorPos.x - c.style.CellPadding.x, y: hy, w: cw, h: hh, r: 3, col: c.style.Colors[h ? ImGui.Col.TableHeaderBg : ImGui.Col.TableHeaderBg] });
+    const hy = c._table.rowY, hh = c._table.rowH;
+    const h = c.io.MousePos.x >= w.dc.cursorPos.x - c.style.CellPadding.x && c.io.MousePos.x <= w.dc.cursorPos.x - c.style.CellPadding.x + cw && c.io.MousePos.y >= hy && c.io.MousePos.y <= hy + hh;
+    emit({ t: "rectFilled", x: w.dc.cursorPos.x - c.style.CellPadding.x, y: hy, w: cw, h: hh, r: 0, col: c.style.Colors[ImGui.Col.TableHeaderBg] });
     const arrow = sortDir === "asc" ? " ▲" : sortDir === "desc" ? " ▼" : "";
     emit({ t: "text", str: nm + arrow, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.Text] });
     if (h && c.io.MouseClicked[0] && (c._table.flags & TableFlags.Sortable)) {
@@ -3900,7 +3906,8 @@ function TableSetColumnIndex(n) {
   // Visual index n may map through a (hidden) reordered column table; the
   // canonical column supplies the width/offset used by every cell getter.
   const canon = (t._orderMap && t._orderMap[n] !== undefined) ? t._orderMap[n] : n;
-  w.dc.cursorPos.x = t.x + t.offsets[canon] + c.style.CellPadding.x; w.dc.cursorPos.y = t.rowY || t.y;
+  w.dc.cursorPos.x = t.x + t.offsets[canon] + c.style.CellPadding.x;
+  w.dc.cursorPos.y = (t.rowY || t.y) + (c.style.CellPadding.y || 0);
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc._lockFeed = true;
@@ -5018,7 +5025,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.39"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.40"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

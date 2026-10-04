@@ -627,7 +627,14 @@ const SelectableFlags = { DontClosePopups: 1 << 0, NoAutoClosePopups: 1 << 0, Sp
 function ListBox(label, current, items, hItems = 4) {
   Text(label);
   let idx = current, changed = false;
-  if (BeginChild(label + "##box", 0, items.length * 22 + 8, true)) {
+  // Exact metrics: child inner top pad 6 + rows of 20px Selectables joined by
+  // 4px ItemSpacing + 6px bottom pad. Always fit ALL items: fixed-height
+  // children clip (no child scrolling yet), so honoring hItems by shrinking
+  // would strand items unreachable. hItems stays for API compatibility.
+  const c = ctx();
+  const rowH = 20, gapY = c.style.ItemSpacing.y, padY = 12;
+  const targetH = padY + items.length * rowH + Math.max(0, items.length - 1) * gapY;
+  if (BeginChild(label + "##box", 0, targetH, true)) {
     for (let i = 0; i < items.length; i++) {
       if (Selectable(items[i], i === idx)) { idx = i; changed = true; }
     }

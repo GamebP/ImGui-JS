@@ -1238,13 +1238,12 @@ function TableHeadersRow() {
     TableSetColumnIndex(i);
     const nm = c._table.names[canon] || ("C" + canon);
     const cw = c._table.widths[canon];
-    const hh = c.style.FontSize + c.style.FramePadding.y * 2;
-    const hx = w.dc.cursorPos.x - c.style.CellPadding.x - 0;
-    // Header hover + click => cycle sort asc/desc/off (Sortable)
+    // Full-height banner cell: meets the bottom divider with no gap, and the
+    // vertical grid lines (drawn by tableInnerVerticals below) run through it.
     const sortDir = (c._table.sort && c._table.sort.col === canon) ? c._table.sort.dir : null;
-    const hy = w.dc.cursorPos.y - 2;
-    const h = w.dc.cursorPos.x <= c.io.MousePos.x && c.io.MousePos.x <= w.dc.cursorPos.x + cw && hy <= c.io.MousePos.y && c.io.MousePos.y <= hy + hh;
-    emit({ t: "rectFilled", x: w.dc.cursorPos.x - c.style.CellPadding.x, y: hy, w: cw, h: hh, r: 3, col: c.style.Colors[h ? ImGui.Col.TableHeaderBg : ImGui.Col.TableHeaderBg] });
+    const hy = c._table.rowY, hh = c._table.rowH;
+    const h = c.io.MousePos.x >= w.dc.cursorPos.x - c.style.CellPadding.x && c.io.MousePos.x <= w.dc.cursorPos.x - c.style.CellPadding.x + cw && c.io.MousePos.y >= hy && c.io.MousePos.y <= hy + hh;
+    emit({ t: "rectFilled", x: w.dc.cursorPos.x - c.style.CellPadding.x, y: hy, w: cw, h: hh, r: 0, col: c.style.Colors[ImGui.Col.TableHeaderBg] });
     const arrow = sortDir === "asc" ? " ▲" : sortDir === "desc" ? " ▼" : "";
     emit({ t: "text", str: nm + arrow, x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.Text] });
     if (h && c.io.MouseClicked[0] && (c._table.flags & TableFlags.Sortable)) {
@@ -1317,7 +1316,8 @@ function TableSetColumnIndex(n) {
   // Visual index n may map through a (hidden) reordered column table; the
   // canonical column supplies the width/offset used by every cell getter.
   const canon = (t._orderMap && t._orderMap[n] !== undefined) ? t._orderMap[n] : n;
-  w.dc.cursorPos.x = t.x + t.offsets[canon] + c.style.CellPadding.x; w.dc.cursorPos.y = t.rowY || t.y;
+  w.dc.cursorPos.x = t.x + t.offsets[canon] + c.style.CellPadding.x;
+  w.dc.cursorPos.y = (t.rowY || t.y) + (c.style.CellPadding.y || 0);
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc._lockFeed = true;
