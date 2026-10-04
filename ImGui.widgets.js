@@ -106,7 +106,16 @@ function alignedTextPos(x, y, wd, ht, tw, padX, padY, al) {
 // ---------- layout ----------
 function SameLine(offX = 0, spacing = -1) { ctx().sameLine(offX, spacing); }
 function NewLine() { const w = cur(); if (w) { ctx().newLineBreak(); } }
-function Spacing() { const w = cur(); if (!w) return; const c = ctx(); c.beforeItemPlacement(0, 4); c.itemSize(0, 4); }
+function Spacing(height = null) {
+  const c = ctx(), w = cur(); if (!w) return;
+  const st = c.style;
+  // Default gap is two item spacings (8px at default metrics): one closes the
+  // previous line, one opens clean air before the next widget. Pass an exact
+  // pixel count for custom gaps (Spacing(3), Spacing(12)).
+  const spacingH = (height !== null && height !== undefined) ? height : st.ItemSpacing.y * 2;
+  c.beforeItemPlacement(0, spacingH);
+  c.itemSize(0, spacingH);
+}
 function Separator() {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
@@ -691,7 +700,13 @@ function Selectable(label, selected = false, flags = 0, sizeArg, align = null) {
 }
 const SelectableFlags = { DontClosePopups: 1 << 0, NoAutoClosePopups: 1 << 0, SpanAllColumns: 1 << 1, AllowDoubleClick: 1 << 2, Disabled: 1 << 3, AllowOverlap: 1 << 4, Highlight: 1 << 5 };
 function ListBox(label, current, items, hItems = 4) {
-  Text(label);
+  // Breathing room between the label baseline and the child border so the
+  // outline never glues itself to the text. Skipped for ID only labels.
+  const shown = ImGui.findRenderedTextEnd(label);
+  if (shown.length > 0) {
+    Text(label);
+    Spacing(3);
+  }
   let idx = current, changed = false;
   // Exact metrics: child inner top pad 6 + rows of 20px Selectables joined by
   // 4px ItemSpacing + 6px bottom pad. Always fit ALL items: fixed-height

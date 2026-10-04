@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.47
+// @version      1.0.49
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.47";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.49";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1316,7 +1316,16 @@ function alignedTextPos(x, y, wd, ht, tw, padX, padY, al) {
 // ---------- layout ----------
 function SameLine(offX = 0, spacing = -1) { ctx().sameLine(offX, spacing); }
 function NewLine() { const w = cur(); if (w) { ctx().newLineBreak(); } }
-function Spacing() { const w = cur(); if (!w) return; const c = ctx(); c.beforeItemPlacement(0, 4); c.itemSize(0, 4); }
+function Spacing(height = null) {
+  const c = ctx(), w = cur(); if (!w) return;
+  const st = c.style;
+  // Default gap is two item spacings (8px at default metrics): one closes the
+  // previous line, one opens clean air before the next widget. Pass an exact
+  // pixel count for custom gaps (Spacing(3), Spacing(12)).
+  const spacingH = (height !== null && height !== undefined) ? height : st.ItemSpacing.y * 2;
+  c.beforeItemPlacement(0, spacingH);
+  c.itemSize(0, spacingH);
+}
 function Separator() {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
@@ -1901,7 +1910,13 @@ function Selectable(label, selected = false, flags = 0, sizeArg, align = null) {
 }
 const SelectableFlags = { DontClosePopups: 1 << 0, NoAutoClosePopups: 1 << 0, SpanAllColumns: 1 << 1, AllowDoubleClick: 1 << 2, Disabled: 1 << 3, AllowOverlap: 1 << 4, Highlight: 1 << 5 };
 function ListBox(label, current, items, hItems = 4) {
-  Text(label);
+  // Breathing room between the label baseline and the child border so the
+  // outline never glues itself to the text. Skipped for ID only labels.
+  const shown = ImGui.findRenderedTextEnd(label);
+  if (shown.length > 0) {
+    Text(label);
+    Spacing(3);
+  }
   let idx = current, changed = false;
   // Exact metrics: child inner top pad 6 + rows of 20px Selectables joined by
   // 4px ItemSpacing + 6px bottom pad. Always fit ALL items: fixed-height
@@ -5305,6 +5320,7 @@ const Backend = {
   canvas: null, renderer: null, hiddenInput: null,
   running: false, raf: 0, lastT: 0, userFn: null,
   textCommit: null,
+  hz: 60, // smoothed display refresh rate from rAF deltas (approx monitor Hz)
   // Menu visibility toggle (cheat-overlay QoL): the menu starts open; the
   // user can hide it with a hotkey so the page runs at full native speed.
   // Rebindable at runtime via `Backend.menuToggleKey` (e.g. from a KeyBind
@@ -5329,6 +5345,27 @@ const Backend = {
     if (this.canvas) this.canvas.style.display = this.menuVisible ? "block" : "none";
   },
   toggleMenu() { this.setMenuVisible(!this.menuVisible); },
+  // Release every held input. Browser reserved combos (Ctrl+Shift+S opens the
+  // Firefox screenshot tool, OS shortcuts, focus loss) can swallow keyup and
+  // mouseup events, which would otherwise stick in KeysDown and MouseDown and
+  // keep the monitor reporting them as held. Called on window blur, while the
+  // tab is hidden, and on demand from the Input Monitor clear button.
+  clearInputs() {
+    const io = ImGui.GetIO();
+    io.KeysDown = {};
+    io.InputChars = "";
+    for (let b = 0; b < 5; b++) io.AddMouseButtonEvent(b, false);
+  },
+  // Live snapshot for input monitors: currently held keyboard codes plus
+  // pressed mouse button names (M1..M5, same naming as KeyBind).
+  getHeldInputs() {
+    const io = ImGui.GetIO();
+    const names = ["M1", "M3", "M2", "M4", "M5"];
+    const keys = Object.keys(io.KeysDown).filter((k) => io.KeysDown[k]);
+    const buttons = [];
+    for (let b = 0; b < 5; b++) if (io.MouseDown[b]) buttons.push(names[b]);
+    return { keys, buttons };
+  },
 
   init(opts = {}) {
     const c = ImGui.GetContext();
@@ -5399,6 +5436,7 @@ const Backend = {
     window.addEventListener("blur", () => {
       io.AddMousePosEvent(-9999, -9999);
       for (let b = 0; b < 5; b++) io.AddMouseButtonEvent(b, false);
+      this.clearInputs(); // releases keys stuck by swallowed keyup events
     });
     // Right-clicks inside the UI (or while rebinding) must not open the
     // browser context menu — this is what makes M2 binds usable.
@@ -5525,9 +5563,14 @@ const Backend = {
     this.lastT = performance.now();
     const loop = (t) => {
       if (!this.running) return;
-      if (document.hidden) { this.raf = requestAnimationFrame(loop); return; }
+      // While hidden, keyup and mouseup events are lost, so drop all held
+      // state instead of letting keys stick until the next press.
+      if (document.hidden) { this.clearInputs(); this.raf = requestAnimationFrame(loop); return; }
       const dt = Math.min(0.1, (t - this.lastT) / 1000 || 1 / 60);
       this.lastT = t;
+      // Smoothed frame rate tracks the display refresh (60, 120, 144, 240 Hz).
+      const rawHz = 1 / Math.max(1e-3, dt);
+      this.hz = this.hz + (rawHz - this.hz) * 0.06;
       const c = ImGui.GetContext();
       // Menu toggled closed: halt UI work and release the page. State is kept
       // (nothing is destroyed) — rendering simply resumes on the next toggle.
@@ -5604,7 +5647,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.47"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.49"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -5709,6 +5752,10 @@ function MY_MENU() {
     const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
     if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
 
+    // --- vertical rhythm: Spacing scales with style, Dummy takes exact px ---
+    ImGui.Spacing(); // standard dynamic gap (ItemSpacing.y x 2)
+    ImGui.Dummy(0, 10); // precise 10px vertical margin
+
     // --- collapsible section with real switches ---
     if (ImGui.CollapsingHeader("Features")) {
       for (let i = 0; i < 3; i++) {
@@ -5795,6 +5842,15 @@ function DASHBOARD_MENU() {
         const saved = ImGui.StorageGet("[ImGui]demo-flags", null);
         if (saved) S.flags = { ...S.flags, ...saved };
       }
+      ImGui.SeparatorText("Input Monitor");
+      ImGui.Text("Monitor: " + (ImGui.Backend.hz || 60).toFixed(0) + " Hz");
+      const held = ImGui.Backend.getHeldInputs();
+      ImGui.TextColored(held.keys.length ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
+        "Keys: " + (held.keys.length ? held.keys.join(" + ") : "(none)"));
+      ImGui.TextColored(held.buttons.length ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
+        "Mouse: " + (held.buttons.length ? held.buttons.join(" + ") : "(none)"));
+      if (ImGui.SmallButton("Clear stuck keys")) ImGui.Backend.clearInputs();
+      ImGui.TextDisabled("Reserved browser combos can swallow key release. Focus loss auto clears.");
     } else {
       ImGui.SeparatorText("Menu Settings");
       const mk2 = ImGui.KeyBind("Menu Open/Close Key", S.menuKey);
@@ -5834,6 +5890,7 @@ function DEMO_WINDOW(dt) {
       const t = ImGui.InputText("HP", String(S.hp)); S.hp = parseInt(t.text) || 0;
       ImGui.ProgressBar(S.progress, "progress " + Math.round(S.progress * 100) + "%");
       S.progress += dt * 0.05; if (S.progress > 1) S.progress = 0;
+      ImGui.Spacing(); // standard dynamic gap before the list label
       const lb = ImGui.ListBox("Cheats", S.listIdx, S.listItems, 4);
       if (lb.changed) S.listIdx = lb.index;
     }

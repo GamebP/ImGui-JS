@@ -11,6 +11,7 @@ const Backend = {
   canvas: null, renderer: null, hiddenInput: null,
   running: false, raf: 0, lastT: 0, userFn: null,
   textCommit: null,
+  hz: 60, // smoothed display refresh rate from rAF deltas (approx monitor Hz)
   // Menu visibility toggle (cheat-overlay QoL): the menu starts open; the
   // user can hide it with a hotkey so the page runs at full native speed.
   // Rebindable at runtime via `Backend.menuToggleKey` (e.g. from a KeyBind
@@ -35,6 +36,27 @@ const Backend = {
     if (this.canvas) this.canvas.style.display = this.menuVisible ? "block" : "none";
   },
   toggleMenu() { this.setMenuVisible(!this.menuVisible); },
+  // Release every held input. Browser reserved combos (Ctrl+Shift+S opens the
+  // Firefox screenshot tool, OS shortcuts, focus loss) can swallow keyup and
+  // mouseup events, which would otherwise stick in KeysDown and MouseDown and
+  // keep the monitor reporting them as held. Called on window blur, while the
+  // tab is hidden, and on demand from the Input Monitor clear button.
+  clearInputs() {
+    const io = ImGui.GetIO();
+    io.KeysDown = {};
+    io.InputChars = "";
+    for (let b = 0; b < 5; b++) io.AddMouseButtonEvent(b, false);
+  },
+  // Live snapshot for input monitors: currently held keyboard codes plus
+  // pressed mouse button names (M1..M5, same naming as KeyBind).
+  getHeldInputs() {
+    const io = ImGui.GetIO();
+    const names = ["M1", "M3", "M2", "M4", "M5"];
+    const keys = Object.keys(io.KeysDown).filter((k) => io.KeysDown[k]);
+    const buttons = [];
+    for (let b = 0; b < 5; b++) if (io.MouseDown[b]) buttons.push(names[b]);
+    return { keys, buttons };
+  },
 
   init(opts = {}) {
     const c = ImGui.GetContext();
@@ -105,6 +127,7 @@ const Backend = {
     window.addEventListener("blur", () => {
       io.AddMousePosEvent(-9999, -9999);
       for (let b = 0; b < 5; b++) io.AddMouseButtonEvent(b, false);
+      this.clearInputs(); // releases keys stuck by swallowed keyup events
     });
     // Right-clicks inside the UI (or while rebinding) must not open the
     // browser context menu — this is what makes M2 binds usable.
@@ -231,9 +254,14 @@ const Backend = {
     this.lastT = performance.now();
     const loop = (t) => {
       if (!this.running) return;
-      if (document.hidden) { this.raf = requestAnimationFrame(loop); return; }
+      // While hidden, keyup and mouseup events are lost, so drop all held
+      // state instead of letting keys stick until the next press.
+      if (document.hidden) { this.clearInputs(); this.raf = requestAnimationFrame(loop); return; }
       const dt = Math.min(0.1, (t - this.lastT) / 1000 || 1 / 60);
       this.lastT = t;
+      // Smoothed frame rate tracks the display refresh (60, 120, 144, 240 Hz).
+      const rawHz = 1 / Math.max(1e-3, dt);
+      this.hz = this.hz + (rawHz - this.hz) * 0.06;
       const c = ImGui.GetContext();
       // Menu toggled closed: halt UI work and release the page. State is kept
       // (nothing is destroyed) — rendering simply resumes on the next toggle.

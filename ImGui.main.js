@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Main Menu
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.47
+// @version      1.0.49
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey (Canvas2D). Drag the demo windows, edit MY_MENU below to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -10,15 +10,15 @@
 // @run-at       document-idle
 // @downloadURL   https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
 // @updateURL     https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.47
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.47
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.47
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.47
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.47
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.47
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.47
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.47
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.47
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.49
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.49
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.49
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.49
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.49
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.49
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.49
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.49
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.49
 // ==/UserScript==
 
 /* ============================================================================
@@ -57,7 +57,7 @@
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.47"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.49"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -162,6 +162,10 @@ function MY_MENU() {
     const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
     if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
 
+    // --- vertical rhythm: Spacing scales with style, Dummy takes exact px ---
+    ImGui.Spacing(); // standard dynamic gap (ItemSpacing.y x 2)
+    ImGui.Dummy(0, 10); // precise 10px vertical margin
+
     // --- collapsible section with real switches ---
     if (ImGui.CollapsingHeader("Features")) {
       for (let i = 0; i < 3; i++) {
@@ -248,6 +252,15 @@ function DASHBOARD_MENU() {
         const saved = ImGui.StorageGet("[ImGui]demo-flags", null);
         if (saved) S.flags = { ...S.flags, ...saved };
       }
+      ImGui.SeparatorText("Input Monitor");
+      ImGui.Text("Monitor: " + (ImGui.Backend.hz || 60).toFixed(0) + " Hz");
+      const held = ImGui.Backend.getHeldInputs();
+      ImGui.TextColored(held.keys.length ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
+        "Keys: " + (held.keys.length ? held.keys.join(" + ") : "(none)"));
+      ImGui.TextColored(held.buttons.length ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
+        "Mouse: " + (held.buttons.length ? held.buttons.join(" + ") : "(none)"));
+      if (ImGui.SmallButton("Clear stuck keys")) ImGui.Backend.clearInputs();
+      ImGui.TextDisabled("Reserved browser combos can swallow key release. Focus loss auto clears.");
     } else {
       ImGui.SeparatorText("Menu Settings");
       const mk2 = ImGui.KeyBind("Menu Open/Close Key", S.menuKey);
@@ -287,6 +300,7 @@ function DEMO_WINDOW(dt) {
       const t = ImGui.InputText("HP", String(S.hp)); S.hp = parseInt(t.text) || 0;
       ImGui.ProgressBar(S.progress, "progress " + Math.round(S.progress * 100) + "%");
       S.progress += dt * 0.05; if (S.progress > 1) S.progress = 0;
+      ImGui.Spacing(); // standard dynamic gap before the list label
       const lb = ImGui.ListBox("Cheats", S.listIdx, S.listItems, 4);
       if (lb.changed) S.listIdx = lb.index;
     }
