@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.58
+// @version      1.0.59
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.58";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.59";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1470,11 +1470,22 @@ function contentAvail() {
   // Inside a child panel, the wrapping boundary is the child's inner right
   // edge, NOT the parent window's right edge (which would overflow the panel).
   const stack = c._childStack;
+  let avail;
   if (stack && stack.length > 0) {
     const t = stack[stack.length - 1];
-    return Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
+    avail = Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
+  } else {
+    avail = Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
   }
-  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
+  // Inside a table cell, cap at the cell inner right edge: without this a
+  // widthless Selectable (or Combo, Slider) spans the whole window, stealing
+  // clicks from later columns and painting across the row.
+  const tbl = c._table;
+  if (tbl && tbl._cell && tbl.col >= 0) {
+    const cellRight = tbl._cell.x0 + tbl._cell.w - c.style.CellPadding.x;
+    avail = Math.max(0, Math.min(avail, cellRight - w.dc.cursorPos.x));
+  }
+  return avail;
 }
 // Popup input preemption: while a popup owns the left click, underlying
 // widgets (empty popup-box stack) must not start interactions.
@@ -2790,11 +2801,22 @@ function contentAvail() {
   // Inside a child panel, the wrapping boundary is the child's inner right
   // edge, NOT the parent window's right edge (which would overflow the panel).
   const stack = c._childStack;
+  let avail;
   if (stack && stack.length > 0) {
     const t = stack[stack.length - 1];
-    return Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
+    avail = Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
+  } else {
+    avail = Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
   }
-  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
+  // Inside a table cell, cap at the cell inner right edge: without this a
+  // widthless Selectable (or Combo, Slider) spans the whole window, stealing
+  // clicks from later columns and painting across the row.
+  const tbl = c._table;
+  if (tbl && tbl._cell && tbl.col >= 0) {
+    const cellRight = tbl._cell.x0 + tbl._cell.w - c.style.CellPadding.x;
+    avail = Math.max(0, Math.min(avail, cellRight - w.dc.cursorPos.x));
+  }
+  return avail;
 }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
 function itemWidthOverride() {
@@ -4191,7 +4213,13 @@ function GetContentRegionAvail() {
   const c = ensure();
   const hasScrollbar = (w.scrollMax > 0) && !(w.flags & ImGui.WindowFlags.NoScrollbar);
   const scrollbarReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
-  return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
+  let availX = Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
+  // Cell aware like C++: inside a table cell the region ends at the cell.
+  const tbl = c._table;
+  if (tbl && tbl._cell && tbl.col >= 0) {
+    availX = Math.max(0, Math.min(availX, (tbl._cell.x0 + tbl._cell.w - c.style.CellPadding.x) - w.dc.cursorPos.x));
+  }
+  return { x: availX, y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
 }
 function GetContentRegionMax() {
   const w = W(); if (!w) return { x: 0, y: 0 };
@@ -4972,9 +5000,32 @@ const TableColumnFlags = {
   AlignTop: 1 << 20, AlignMiddle: 2 << 20, AlignBottom: 3 << 20,
   AlignMaskY: (1 << 20) | (2 << 20) | (3 << 20),
 };
-function TableSetupColumn(label, widthOrWeight = 0, flags = 0) {
+function TableSetupColumn(label, a = 0, b = 0) {
   const c = ensure();
-  if (c._table) { c._table.names.push(label); c._table._widths = c._table._widths || []; c._table._widths.push(widthOrWeight); c._table._colFlags = c._table._colFlags || []; c._table._colFlags.push(flags || 0); }
+  if (!c._table) return;
+  // Dual parameter order: C++ is (label, flags, width) while this port
+  // historically took (label, width, flags). Detect C++ order so both work:
+  // a bare small flag mask, or flags paired with a real width, reads C++.
+  // Plain widths (including bare (100, 0) style calls) keep JS order. In the
+  // genuinely ambiguous cell the C++ reading wins: misreading it as JS
+  // collapses every column to minimum width, while the reverse only restyles.
+  const FLAGMASK = 0x3F03FF; // low 10 flag bits plus align field bits 16-21
+  const aIsFlags = Number.isInteger(a) && a > 0 && (a & ~FLAGMASK) === 0;
+  const bHasAlign = Number.isInteger(b) && (b & 0xFF0000) !== 0;
+  const aHasAlign = Number.isInteger(a) && (a & 0xFF0000) !== 0;
+  let width = 0, flags = 0;
+  if (!aIsFlags) { width = a || 0; flags = b || 0; }
+  else if (bHasAlign) { width = a; flags = b; }
+  else if (b === 0 || b === undefined || b === null) {
+    if (a >= 64 && !aHasAlign) { width = a; flags = 0; }
+    else { width = 0; flags = a; }
+  } else if (a < 64 || aHasAlign) { width = b || 0; flags = a; }
+  else { width = a; flags = b || 0; }
+  c._table.names.push(label);
+  c._table._widths = c._table._widths || [];
+  c._table._widths.push(width);
+  c._table._colFlags = c._table._colFlags || [];
+  c._table._colFlags.push(flags || 0);
 }
 function tablePersistKey(t, kind) { return "imgui_table_" + t.id + "_" + kind; }
 function tableStateGet(t, kind) {
@@ -6694,7 +6745,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.58"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.59"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.modal.js", "ImGui.backend.js"];
 
 function libsPresent() {

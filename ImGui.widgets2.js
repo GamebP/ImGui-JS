@@ -24,11 +24,22 @@ function contentAvail() {
   // Inside a child panel, the wrapping boundary is the child's inner right
   // edge, NOT the parent window's right edge (which would overflow the panel).
   const stack = c._childStack;
+  let avail;
   if (stack && stack.length > 0) {
     const t = stack[stack.length - 1];
-    return Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
+    avail = Math.max(0, (t.bounds.x + t.bounds.w - 6) - w.dc.cursorPos.x);
+  } else {
+    avail = Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
   }
-  return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
+  // Inside a table cell, cap at the cell inner right edge: without this a
+  // widthless Selectable (or Combo, Slider) spans the whole window, stealing
+  // clicks from later columns and painting across the row.
+  const tbl = c._table;
+  if (tbl && tbl._cell && tbl.col >= 0) {
+    const cellRight = tbl._cell.x0 + tbl._cell.w - c.style.CellPadding.x;
+    avail = Math.max(0, Math.min(avail, cellRight - w.dc.cursorPos.x));
+  }
+  return avail;
 }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
 function itemWidthOverride() {

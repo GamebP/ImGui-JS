@@ -602,7 +602,13 @@ function GetContentRegionAvail() {
   const c = ensure();
   const hasScrollbar = (w.scrollMax > 0) && !(w.flags & ImGui.WindowFlags.NoScrollbar);
   const scrollbarReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
-  return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
+  let availX = Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
+  // Cell aware like C++: inside a table cell the region ends at the cell.
+  const tbl = c._table;
+  if (tbl && tbl._cell && tbl.col >= 0) {
+    availX = Math.max(0, Math.min(availX, (tbl._cell.x0 + tbl._cell.w - c.style.CellPadding.x) - w.dc.cursorPos.x));
+  }
+  return { x: availX, y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
 }
 function GetContentRegionMax() {
   const w = W(); if (!w) return { x: 0, y: 0 };
@@ -1383,9 +1389,32 @@ const TableColumnFlags = {
   AlignTop: 1 << 20, AlignMiddle: 2 << 20, AlignBottom: 3 << 20,
   AlignMaskY: (1 << 20) | (2 << 20) | (3 << 20),
 };
-function TableSetupColumn(label, widthOrWeight = 0, flags = 0) {
+function TableSetupColumn(label, a = 0, b = 0) {
   const c = ensure();
-  if (c._table) { c._table.names.push(label); c._table._widths = c._table._widths || []; c._table._widths.push(widthOrWeight); c._table._colFlags = c._table._colFlags || []; c._table._colFlags.push(flags || 0); }
+  if (!c._table) return;
+  // Dual parameter order: C++ is (label, flags, width) while this port
+  // historically took (label, width, flags). Detect C++ order so both work:
+  // a bare small flag mask, or flags paired with a real width, reads C++.
+  // Plain widths (including bare (100, 0) style calls) keep JS order. In the
+  // genuinely ambiguous cell the C++ reading wins: misreading it as JS
+  // collapses every column to minimum width, while the reverse only restyles.
+  const FLAGMASK = 0x3F03FF; // low 10 flag bits plus align field bits 16-21
+  const aIsFlags = Number.isInteger(a) && a > 0 && (a & ~FLAGMASK) === 0;
+  const bHasAlign = Number.isInteger(b) && (b & 0xFF0000) !== 0;
+  const aHasAlign = Number.isInteger(a) && (a & 0xFF0000) !== 0;
+  let width = 0, flags = 0;
+  if (!aIsFlags) { width = a || 0; flags = b || 0; }
+  else if (bHasAlign) { width = a; flags = b; }
+  else if (b === 0 || b === undefined || b === null) {
+    if (a >= 64 && !aHasAlign) { width = a; flags = 0; }
+    else { width = 0; flags = a; }
+  } else if (a < 64 || aHasAlign) { width = b || 0; flags = a; }
+  else { width = a; flags = b || 0; }
+  c._table.names.push(label);
+  c._table._widths = c._table._widths || [];
+  c._table._widths.push(width);
+  c._table._colFlags = c._table._colFlags || [];
+  c._table._colFlags.push(flags || 0);
 }
 function tablePersistKey(t, kind) { return "imgui_table_" + t.id + "_" + kind; }
 function tableStateGet(t, kind) {
