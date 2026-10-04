@@ -366,16 +366,17 @@ function TextDisabled(str) {
 function SeparatorText(label) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  c.beforeItemPlacement(0, 20);
+  c.beforeItemPlacement(0, 16);
   const bw = contentAvail();
-  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y + 2;
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   const tw = measure(label);
   // Centered section header: label mid-width, separator lines on both sides.
-  const tx = x + (bw - tw) / 2;
-  emit({ t: "text", str: label, x: tx, y, col: st.Colors[ImGui.Col.Text] });
-  if (tx - x > 10) emit({ t: "line", x1: x, y1: y + 8, x2: tx - 6, y2: y + 8, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  emit({ t: "line", x1: tx + tw + 6, y1: y + 8, x2: x + bw, y2: y + 8, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  c.itemSize(bw, 20);
+  const tx = Math.round(x + (bw - tw) / 2);
+  const lineY = Math.round(y + 16 / 2);
+  emit({ t: "text", str: label, x: tx, y: y + 1, col: st.Colors[ImGui.Col.Text] });
+  if (tx - x > 10) emit({ t: "line", x1: x, y1: lineY, x2: tx - 6, y2: lineY, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  emit({ t: "line", x1: tx + tw + 6, y1: lineY, x2: x + bw, y2: lineY, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  c.itemSize(bw, 16);
 }
 function Bullet() {
   const c = ctx(), w = cur(); if (!w) return;

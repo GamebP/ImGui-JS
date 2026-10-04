@@ -1167,11 +1167,11 @@ function Columns(count = 1) {
   }
   // Break to a fresh row BELOW the current item (SeparatorText left the
   // cursor mid-line), otherwise the first rowpaint overlaps the separator.
-  c.beforeItemPlacement(0, 4);
+  c.beforeItemPlacement(0, 0);
   const startPos = { ...w.dc.cursorStartPos };
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const startX = w.pos.x + w.padding.x + (w._indent || 0);
-  const startY = w.dc.cursorPos.y + 4;
+  const startY = w.dc.cursorPos.y;
   c._columns = { n: count, i: 0, x: startX, rowY: startY, rowHeight: 0, w: avail / count, startPos };
   w.dc.cursorPos.x = startX + C().style.CellPadding.x;
   w.dc.cursorPos.y = startY;

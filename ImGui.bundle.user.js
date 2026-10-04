@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.28
+// @version      1.0.29
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.28";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.29";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -2119,16 +2119,17 @@ function TextDisabled(str) {
 function SeparatorText(label) {
   const c = ctx(), w = cur(); if (!w) return;
   const st = c.style;
-  c.beforeItemPlacement(0, 20);
+  c.beforeItemPlacement(0, 16);
   const bw = contentAvail();
-  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y + 2;
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   const tw = measure(label);
   // Centered section header: label mid-width, separator lines on both sides.
-  const tx = x + (bw - tw) / 2;
-  emit({ t: "text", str: label, x: tx, y, col: st.Colors[ImGui.Col.Text] });
-  if (tx - x > 10) emit({ t: "line", x1: x, y1: y + 8, x2: tx - 6, y2: y + 8, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  emit({ t: "line", x1: tx + tw + 6, y1: y + 8, x2: x + bw, y2: y + 8, col: st.Colors[ImGui.Col.Separator], th: 1 });
-  c.itemSize(bw, 20);
+  const tx = Math.round(x + (bw - tw) / 2);
+  const lineY = Math.round(y + 16 / 2);
+  emit({ t: "text", str: label, x: tx, y: y + 1, col: st.Colors[ImGui.Col.Text] });
+  if (tx - x > 10) emit({ t: "line", x1: x, y1: lineY, x2: tx - 6, y2: lineY, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  emit({ t: "line", x1: tx + tw + 6, y1: lineY, x2: x + bw, y2: lineY, col: st.Colors[ImGui.Col.Separator], th: 1 });
+  c.itemSize(bw, 16);
 }
 function Bullet() {
   const c = ctx(), w = cur(); if (!w) return;
@@ -3326,11 +3327,11 @@ function Columns(count = 1) {
   }
   // Break to a fresh row BELOW the current item (SeparatorText left the
   // cursor mid-line), otherwise the first rowpaint overlaps the separator.
-  c.beforeItemPlacement(0, 4);
+  c.beforeItemPlacement(0, 0);
   const startPos = { ...w.dc.cursorStartPos };
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
   const startX = w.pos.x + w.padding.x + (w._indent || 0);
-  const startY = w.dc.cursorPos.y + 4;
+  const startY = w.dc.cursorPos.y;
   c._columns = { n: count, i: 0, x: startX, rowY: startY, rowHeight: 0, w: avail / count, startPos };
   w.dc.cursorPos.x = startX + C().style.CellPadding.x;
   w.dc.cursorPos.y = startY;
@@ -4192,7 +4193,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.28"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.29"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
