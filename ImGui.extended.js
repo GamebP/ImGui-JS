@@ -1208,14 +1208,50 @@ function tableLayout(t) {
   const n = t.cols;
   t.widths = new Array(n); t.offsets = new Array(n);
   const explicit = (t._widths || []).slice(0, n);
-  let fixed = 0, auto = 0;
-  for (let i = 0; i < n; i++) {
-    const v = explicit[i] || 0;
-    if (v > 0) { t.widths[i] = Math.max(v, pad * 2 + 10); fixed += t.widths[i]; } else auto++;
+  const colFlags = (t._colFlags || []);
+  // Sizing policy (imgui.h:2080): 0 = default (StretchSame when ScrollX off),
+  // 1 = FixedFit, 2 = FixedSame, 3 = StretchProp, 4 = StretchSame.
+  const sizing = ((t.flags >> 13) & 7) || 0;
+  const minW = pad * 2 + 10;
+  if (sizing === 2) {
+    // SizingFixedSame: every column gets the same width, explicit widths ignored.
+    for (let i = 0; i < n; i++) t.widths[i] = Math.max(minW, t.avail / n);
+  } else if (sizing === 3) {
+    // SizingStretchProp: explicit values are weights, unspecified weight 1.
+    // Per-column WidthFixed forces pixel interpretation instead.
+    let total = 0; const wt = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const f = colFlags[i] || 0;
+      if (f & (1 << 4)) { wt[i] = -Math.max(minW, explicit[i] || minW); }
+      else { wt[i] = explicit[i] > 0 ? explicit[i] : 1; total += wt[i]; }
+    }
+    let fixedPx = 0;
+    for (let i = 0; i < n; i++) if (wt[i] < 0) fixedPx += -wt[i];
+    const restW = Math.max(0, t.avail - fixedPx);
+    for (let i = 0; i < n; i++) t.widths[i] = wt[i] < 0 ? -wt[i] : Math.max(minW, restW * (total > 0 ? wt[i] / total : 1 / n));
+  } else if (sizing === 1) {
+    // SizingFixedFit: fixed columns keep pixels, auto columns fit header
+    // content; leftover space stays empty (no stretching).
+    for (let i = 0; i < n; i++) {
+      const v = explicit[i] || 0;
+      if (v > 0) t.widths[i] = Math.max(minW, v);
+      else {
+        const nm = (t.names && t.names[i]) || "";
+        t.widths[i] = Math.max(minW, measure(nm) + pad * 2 + 8);
+      }
+    }
+  } else {
+    // Default / SizingStretchSame: explicit widths are pixels, auto columns
+    // split the remainder equally (previous behavior, unchanged).
+    let fixed = 0, auto = 0;
+    for (let i = 0; i < n; i++) {
+      const v = explicit[i] || 0;
+      if (v > 0) { t.widths[i] = Math.max(v, minW); fixed += t.widths[i]; } else auto++;
+    }
+    const rest = Math.max(0, t.avail - fixed);
+    const each = auto > 0 ? Math.max(minW, rest / auto) : 0;
+    for (let i = 0; i < n; i++) if (!t.widths[i]) t.widths[i] = each;
   }
-  const rest = Math.max(0, t.avail - fixed);
-  const each = auto > 0 ? Math.max(pad * 2 + 10, rest / auto) : 0;
-  for (let i = 0; i < n; i++) if (!t.widths[i]) t.widths[i] = each;
   // User-resized columns (Resizable drag) override the auto widths and stay
   // fixed; the remaining space is still distributed to the auto columns.
   if (t._customWidths) {
