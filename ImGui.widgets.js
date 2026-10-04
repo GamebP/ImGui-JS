@@ -42,6 +42,15 @@ function clickSuppressed() {
   const cc = ctx();
   return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
 }
+function formatValue(fmt, v) {
+  const m = String(fmt).match(/%(?:\.(\d+))?([fdg])/);
+  if (!m) return String(v);
+  const prec = m[1] !== undefined ? +m[1] : (m[2] === 'd' ? 0 : 6);
+  if (m[2] === 'd') return Math.round(v).toFixed(0);
+  if (m[2] === 'g') return Number(+v).toPrecision(Math.max(1, prec || 6)).replace(/\.?0+$/, '');
+  return (+v).toFixed(prec);
+}
+function itemWidthOverride() { const c = ctx(); const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0; }
 function frameCol(base, hov, act, h, held) {
   const c = ctx(), st = c.style;
   return h ? (held ? st.Colors[act] : st.Colors[hov]) : st.Colors[base];
@@ -167,8 +176,23 @@ function Checkbox(label, checked) {
   return { changed, checked: ch };
 }
 function RadioButton(label, active) {
-  const pressed = Button((active ? "(●) " : "(○) ") + label);
-  return pressed;
+  const c = ctx(), w = cur(); if (!w) return false;
+  const st = c.style;
+  const rad = 8, gap = 6;
+  const tw = textW(ImGui.findRenderedTextEnd(label));
+  const wd = rad * 2 + gap + tw, ht = 20;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(wd, ht);
+  const id = w.getID(label);
+  c.itemAdd(x, y, wd, ht, id);
+  const bb = c.buttonBehavior(id, x, y, wd, ht);
+  const cy = y + 4 + rad / 2;
+  emit({ t: "circleFilled", x: x + rad / 2 + 2, y: cy, r: rad / 2 + 2, col: st.Colors[ImGui.Col.Border] });
+  emit({ t: "circleFilled", x: x + rad / 2 + 2, y: cy, r: rad / 2 + 1, col: st.Colors[bb.hovered ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg] });
+  if (active) emit({ t: "circleFilled", x: x + rad / 2 + 2, y: cy, r: 3, col: st.Colors[ImGui.Col.CheckMark] });
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + rad * 2 + gap, y: y + 2, col: st.Colors[ImGui.Col.Text] });
+  return bb.pressed;
 }
 
 // ---------- toggle switch (DeAr ImGui pill switch) ----------
@@ -244,6 +268,7 @@ function Toggle(label, checked) {
 // ---------- sliders / drags ----------
 function sliderBehavior(id, x, y, wd, ht, vmin, vmax, value) {
   const c = ctx();
+  if ((c._disabledDepth || 0) > 0) return { changed: false, value, hovered: false };
   const h = c.hovered(x, y, wd, ht);
   if (h) c.anyWindowHovered = true;
   let v = value, changed = false;
@@ -265,7 +290,8 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   c.beforeItemPlacement(0, 20);
-  const sliderW = Math.max(80, contentAvail() - tw - 70);
+  const ctlW = itemWidthOverride() || Math.max(80, contentAvail() - tw - 70);
+  const sliderW = Math.max(80, ctlW);
   const wd = sliderW + 8 + tw + 56, ht = 20;
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
@@ -275,12 +301,12 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   const grabT = (r.value - vmin) / Math.max(1e-6, vmax - vmin);
   emit({ t: "rectFilled", x, y: y + 6, w: sliderW, h: 8, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
   emit({ t: "rectFilled", x: x + grabT * (sliderW - 12), y: y + 3, w: 12, h: 14, r: 4, col: st.Colors[r.hovered || c.activeId === id ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
-  const valStr = Number(r.value).toFixed(3);
+  const valStr = formatValue(format, r.value);
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)}: ${valStr}`, x: x + sliderW + 10, y: y + 2, col: st.Colors[ImGui.Col.Text] });
   return r;
 }
 function SliderInt(label, value, vmin, vmax) {
-  const r = SliderFloat(label, value, vmin, vmax);
+  const r = SliderFloat(label, value, vmin, vmax, "%.0f");
   const iv = Math.round(r.value);
   return { changed: r.changed && iv !== value, value: iv };
 }
@@ -312,11 +338,12 @@ function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
 // ---------- input text (uses hidden DOM input managed by backend) ----------
 function InputText(label, text, flags = 0, hint = "") {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
+  if ((c._disabledDepth || 0) > 0) { c.beforeItemPlacement(0, c.style.FontSize + c.style.FramePadding.y * 2 + 2); const bw2 = itemWidthOverride() || 200; c.itemSize(bw2 + 80, 22); emit({ t: "text", str: ImGui.findRenderedTextEnd(label) + ": " + String(text||""), x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.TextDisabled] }); return { changed: false, text }; }
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
   c.beforeItemPlacement(0, ht);
-  const bw = Math.max(120, contentAvail() - tw - 16);
+  const bw = itemWidthOverride() ? itemWidthOverride() : Math.max(120, contentAvail() - tw - 16);
   const wd = bw + tw + 12;
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
@@ -430,7 +457,7 @@ function BeginCombo(label, preview) {
   const st = c.style;
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
   c.beforeItemPlacement(0, ht);
-  const bw = Math.max(140, contentAvail() - textW(label) - 20);
+  const bw = itemWidthOverride() ? Math.max(80, itemWidthOverride()) : Math.max(140, contentAvail() - textW(label) - 20);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw + textW(label) + 12, ht);
   const id = w.getID(label);
@@ -667,6 +694,22 @@ function End() { ctx().end(); }
 function SetNextWindowPos(x, y, cond) { ctx().setNextWindowPos(x, y, cond); }
 function SetNextWindowSize(wd, ht, cond) { ctx().setNextWindowSize(wd, ht, cond); }
 function SetNextWindowCollapsed(coll, cond) { ctx().setNextWindowCollapsed(coll, cond); }
+function SetNextWindowFocus(name = '') { ctx().setNextWindowFocus(name); }
+function SetNextWindowScroll(x, y) { ctx().setNextWindowScroll(x, y); }
+function SetNextWindowContentSize(w, h) { ctx().setNextWindowContentSize(w, h); }
+function SetNextWindowBgAlpha(a) { ctx().setNextWindowBgAlpha(a); }
+function SetWindowPos(x, y) { const w = cur(); if (w) w.pos = { x, y }; }
+function SetWindowSize(w2, h2) { const w = cur(); if (w) { w.size.x = w2; w.size.y = h2; w.sizeFull.x = w2; w.sizeFull.y = h2; } }
+function SetWindowCollapsed(c) { const w = cur(); if (w) w.collapsed = !!c; }
+function SetWindowFocus() { const w = cur(); if (w) w.z = ++globalThis.__IMGUI_WINSEQ__; }
+function GetScrollX() { const w = cur(); return 0; }
+function GetScrollY() { const w = cur(); return w ? (w.scrollY || 0) : 0; }
+function SetScrollX() {}
+function SetScrollY(y) { const w = cur(); if (w) w.scrollY = Math.max(0, y); }
+function GetScrollMaxX() { return 0; }
+function GetScrollMaxY() { const w = cur(); return w ? (w.scrollMax || 0) : 0; }
+function SetScrollHereX(center = true) {}
+function SetScrollHereY(center = true) { const w = cur(); if (w && w.scrollMax > 0 && ctx().lastItem.rect) { w.scrollY = Math.max(0, (ctx().lastItem.rect.y - w.pos.y - w.titleH) - w.sizeFull.y / 2); } }
 function IsItemHovered() { return ctx().isItemHovered(); }
 
 Object.assign(ImGui, {
@@ -681,6 +724,9 @@ Object.assign(ImGui, {
   CollapsingHeader, TreeNode, TreePop,
   BeginChild, EndChild,
   Begin, End, SetNextWindowPos, SetNextWindowSize, SetNextWindowCollapsed, IsItemHovered,
+  SetNextWindowFocus, SetNextWindowScroll, SetNextWindowContentSize, SetNextWindowBgAlpha,
+  SetWindowPos, SetWindowSize, SetWindowCollapsed, SetWindowFocus,
+  GetScrollX, GetScrollY, SetScrollX, SetScrollY, GetScrollMaxX, GetScrollMaxY, SetScrollHereX, SetScrollHereY,
   _measure: textW,
 });
 global.__IMGUI_WIDGETS__ = true;

@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.30";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.32";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -183,6 +183,7 @@ function makeIO() {
 
 // ---- window ----
 let __winSeq = 1;
+globalThis.__IMGUI_WINSEQ__ = 1;
 class ImGuiWindow {
   constructor(name, flags) {
     this.name = name;
@@ -193,7 +194,10 @@ class ImGuiWindow {
     this.sizeFull = { x: 340, y: 260 };
     this.collapsed = false;
     this.open = null; // bound bool or null
-    this.z = __winSeq++;
+    this._scrollY = 0; this._scrollMaxX = 0; this._scrollMaxY = 0;
+    this._nextBgAlpha = 1;
+    this._nextScroll = null; this._nextContentSize = null;
+    this.z = ++__winSeq; globalThis.__IMGUI_WINSEQ__ = __winSeq;
     this._userResizedX = false;
     this._userResizedY = false;
     // Draw-context layout state (imgui.cpp ImGuiWindowTempData / DC).
@@ -316,6 +320,10 @@ class ImGuiContext {
       w.collapsed = n.collapsed;
       if (n.collapsedCond === Cond.Once) w._nextApplied.collapsed = true;
     }
+    if (n.focus === true) { w.z = ++__winSeq; globalThis.__IMGUI_WINSEQ__ = __winSeq; } // raise window below capture
+    if (n.scroll && n.scroll.y !== undefined) w.scrollY = Math.max(0, n.scroll.y);
+    if (n.contentSize) { w._nextContentSize = n.contentSize; }
+    if (n.bgAlpha !== undefined) w._bgAlpha = n.bgAlpha;
   }
   setNextWindowPos(x, y, cond = Cond.Once) {
     this.nextData = this.nextData || {};
@@ -329,6 +337,22 @@ class ImGuiContext {
     this.nextData = this.nextData || {};
     this.nextData.collapsed = !!c; this.nextData.collapsedCond = cond;
   }
+  setNextWindowFocus(name = '') {
+    this.nextData = this.nextData || {};
+    this.nextData.focus = true;
+  }
+  setNextWindowScroll(x, y) {
+    this.nextData = this.nextData || {};
+    this.nextData.scroll = { x, y };
+  }
+  setNextWindowContentSize(w, h) {
+    this.nextData = this.nextData || {};
+    this.nextData.contentSize = { x: w, y: h };
+  }
+  setNextWindowBgAlpha(a) {
+    this.nextData = this.nextData || {};
+    this.nextData.bgAlpha = a;
+  }
   // -- Begin/End (cf. imgui.cpp:7527-8387, simplified) --
   begin(name, pOpen = null, flags = 0) {
     const io = this.io, st = this.style;
@@ -337,7 +361,7 @@ class ImGuiContext {
     this.applyNext(w, false);
     this.nextData = null;
     w.flags = flags;
-    w.z = __winSeq++;
+    w.z = ++__winSeq; globalThis.__IMGUI_WINSEQ__ = __winSeq;
     w.titleH = (flags & WindowFlags.NoTitleBar) ? 0 : st.TitleBarHeight;
     w.padding = { ...st.WindowPadding };
     w.drawList.length = 0;

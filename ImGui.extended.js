@@ -58,6 +58,9 @@ function ensure() {
     c._popupRolloverFrame = c.frame;
     c._popupRectsPrev = c._popupRects || {};
     c._popupRects = {};
+    // Reset overlay ops at frame start so no stale modal dim/popup frames
+    // persist after the popup closes (ghost dim artifact).
+    c._overlayOps = [];
     // MODAL LOCK — authoritative recompute at frame start, before ANY window
     // evaluates. A modal that was open last frame re-registers its screen
     // rect, so windows earlier in the frame loop than the modal's host are
@@ -426,13 +429,19 @@ function GetContentRegionAvail() {
   const scrollbarReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
   return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
 }
+function GetContentRegionMax() {
+  const w = W(); if (!w) return { x: 0, y: 0 };
+  return { x: w.sizeFull.x - w.padding.x * 2, y: w.sizeFull.y - w.titleH - w.padding.y * 2 };
+}
 function CalcTextSize(text) { return { x: measure(text), y: 16 }; }
 function AlignTextToFramePadding() { const w = W(); if (w) w.dc.cursorPos.y += 4; }
 function GetWindowPos() { const w = W(); return w ? { ...w.pos } : { x: 0, y: 0 }; }
 function GetWindowSize() { const w = W(); return w ? { ...w.sizeFull } : { x: 0, y: 0 }; }
 function GetWindowWidth() { return GetWindowSize().x; }
 function GetWindowHeight() { return GetWindowSize().y; }
-function SetScrollHereY() { /* best-effort: keep */ }
+function IsWindowCollapsed() { const w = W(); return w ? !!w.collapsed : false; }
+function IsWindowAppearing() { const w = W(); return w ? !!w.appearing : false; }
+function SetScrollHereYExtended() { /* widgets.js impl wins; keep alias for compat */ }
 function PushClipRect() {}
 function PopClipRect() {}
 function PushFont() {}
@@ -507,9 +516,11 @@ function EndTooltip() { ensure()._tooltip = null; }
 function SetTooltip(text) {
   if (BeginTooltip()) {
     const c = ensure();
-    emit({ t: "rectFilled", x: c._tooltip.x, y: c._tooltip.y, w: measure(text) + 16, h: 24, r: 4, col: c.style.Colors[ImGui.Col.PopupBg] });
-    emit({ t: "rect", x: c._tooltip.x, y: c._tooltip.y, w: measure(text) + 16, h: 24, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
-    emit({ t: "text", str: text, x: c._tooltip.x + 8, y: c._tooltip.y + 5, col: c.style.Colors[ImGui.Col.Text] });
+    const tw = measure(text) + 16;   // 8px horizontal padding each side
+    const th = 16 + 8;               // real text height + 4px vertical padding
+    emit({ t: "rectFilled", x: c._tooltip.x, y: c._tooltip.y, w: tw, h: th, r: 4, col: c.style.Colors[ImGui.Col.PopupBg] });
+    emit({ t: "rect", x: c._tooltip.x, y: c._tooltip.y, w: tw, h: th, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
+    emit({ t: "text", str: text, x: c._tooltip.x + 8, y: c._tooltip.y + (th - 16) / 2, col: c.style.Colors[ImGui.Col.Text] });
     EndTooltip();
   }
 }
@@ -683,6 +694,7 @@ function BeginPopupModal(name) { return popupBoxBegin(name, true); }
 function EndPopupModal() { popupBoxEnd(true); }
 function BeginPopupContextItem(id = "ctx") { if (IsItemClicked(1)) OpenPopup(id); return BeginPopup(id); }
 function BeginPopupContextWindow(id = "ctxwin") { const w = W(); if (w && w.contentHover && C().io.MouseClicked[1]) OpenPopup(id); return BeginPopup(id); }
+function BeginPopupContextVoid(id = 0) { const c = ensure(); if (c.io.MouseClicked[1] && !c.hoveredId) OpenPopup(id); return BeginPopup(id); }
 
 // ---------- menu bar / menus ----------
 function BeginMenuBar() {
@@ -802,7 +814,14 @@ function MenuItem(label, shortcut = "", selected = false, enabled = true) {
   c.itemAdd(x, y, wd, ht, id);
   const h = enabled && c.hovered(x, y, wd, ht);
   if (h) { emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] }); c.anyWindowHovered = true; }
-  emit({ t: "text", str: (selected ? "● " : "") + shown, x: x + 8, y: y + 3, col: enabled ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled] });
+  if (selected) {
+    const bx = x + 4, by = y + 4;
+    emit({ t: "rectFilled", x: bx, y: by, w: 14, h: 14, r: 4, col: c.style.Colors[ImGui.Col.FrameBg] });
+    emit({ t: "rect", x: bx, y: by, w: 14, h: 14, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
+    emit({ t: "line", x1: bx + 3, y1: by + 7, x2: bx + 6, y2: by + 10, col: c.style.Colors[ImGui.Col.CheckMark], th: 2.5 });
+    emit({ t: "line", x1: bx + 6, y1: by + 10, x2: bx + 11, y2: by + 3, col: c.style.Colors[ImGui.Col.CheckMark], th: 2.5 });
+  }
+  emit({ t: "text", str: shown, x: selected ? x + 26 : x + 8, y: y + 3, col: enabled ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled] });
   if (shortcut) emit({ t: "text", str: shortcut, x: x + wd - measure(shortcut) - 8, y: y + 3, col: c.style.Colors[ImGui.Col.TextDisabled] });
   const clicked = enabled && h && c.io.MouseClicked[0] && !menuClickSuppressed();
   if (clicked) { // selecting an item closes the whole menu chain
@@ -1271,16 +1290,16 @@ Object.assign(ImGui, {
   PushItemWidth, PopItemWidth, PushStyleColor, PopStyleColor, PushStyleVar, PopStyleVar,
   GetStyleColorVec4, GetColorU32, StyleColorsDark, StyleColorsClassic, StyleColorsLight,
   SetCursorPos, SetCursorPosX, SetCursorPosY, GetCursorPos, GetCursorScreenPos, SetCursorScreenPos,
-  GetContentRegionAvail, CalcTextSize, AlignTextToFramePadding,
-  GetWindowPos, GetWindowSize, GetWindowWidth, GetWindowHeight,
-  SetScrollHereY, PushClipRect, PopClipRect, PushFont, PopFont, SetWindowFontScale,
+  GetContentRegionAvail, GetContentRegionMax, CalcTextSize, AlignTextToFramePadding,
+  GetWindowPos, GetWindowSize, GetWindowWidth, GetWindowHeight, IsWindowCollapsed, IsWindowAppearing,
+  PushClipRect, PopClipRect, PushFont, PopFont, SetWindowFontScale,
   IsItemActive, IsItemClicked, IsItemEdited, IsItemDeactivated, IsItemDeactivatedAfterEdit,
   IsItemVisible, IsItemToggledOpen, IsWindowHovered, IsWindowFocused, IsRectVisible,
   SetKeyboardFocusHere, IsMouseClicked, IsMouseDown, IsMouseReleased, IsMouseDragging,
   GetMouseDragDelta, IsMouseHoveringRect, IsKeyDown, GetKeyPressedAmount,
   BeginTooltip, EndTooltip, SetTooltip, SetItemTooltip,
   OpenPopup, OpenPopupOnItemClick, IsPopupOpen, CloseCurrentPopup, ClosePopup,
-  BeginPopup, EndPopup, BeginPopupModal, EndPopupModal, BeginPopupContextItem, BeginPopupContextWindow,
+  BeginPopup, EndPopup, BeginPopupModal, EndPopupModal, BeginPopupContextItem, BeginPopupContextWindow, BeginPopupContextVoid,
   BeginMenuBar, EndMenuBar, BeginMainMenuBar, EndMainMenuBar, BeginMenu, EndMenu, MenuItem,
   BeginTabBar, EndTabBar, BeginTabItem, EndTabItem, TabItemButton,
   BeginTable, EndTable, TableSetupColumn, TableHeadersRow, TableNextRow, TableNextColumn,

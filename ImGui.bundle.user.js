@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.30
+// @version      1.0.32
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.30";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.32";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -198,6 +198,7 @@ function makeIO() {
 
 // ---- window ----
 let __winSeq = 1;
+globalThis.__IMGUI_WINSEQ__ = 1;
 class ImGuiWindow {
   constructor(name, flags) {
     this.name = name;
@@ -208,7 +209,10 @@ class ImGuiWindow {
     this.sizeFull = { x: 340, y: 260 };
     this.collapsed = false;
     this.open = null; // bound bool or null
-    this.z = __winSeq++;
+    this._scrollY = 0; this._scrollMaxX = 0; this._scrollMaxY = 0;
+    this._nextBgAlpha = 1;
+    this._nextScroll = null; this._nextContentSize = null;
+    this.z = ++__winSeq; globalThis.__IMGUI_WINSEQ__ = __winSeq;
     this._userResizedX = false;
     this._userResizedY = false;
     // Draw-context layout state (imgui.cpp ImGuiWindowTempData / DC).
@@ -331,6 +335,10 @@ class ImGuiContext {
       w.collapsed = n.collapsed;
       if (n.collapsedCond === Cond.Once) w._nextApplied.collapsed = true;
     }
+    if (n.focus === true) { w.z = ++__winSeq; globalThis.__IMGUI_WINSEQ__ = __winSeq; } // raise window below capture
+    if (n.scroll && n.scroll.y !== undefined) w.scrollY = Math.max(0, n.scroll.y);
+    if (n.contentSize) { w._nextContentSize = n.contentSize; }
+    if (n.bgAlpha !== undefined) w._bgAlpha = n.bgAlpha;
   }
   setNextWindowPos(x, y, cond = Cond.Once) {
     this.nextData = this.nextData || {};
@@ -344,6 +352,22 @@ class ImGuiContext {
     this.nextData = this.nextData || {};
     this.nextData.collapsed = !!c; this.nextData.collapsedCond = cond;
   }
+  setNextWindowFocus(name = '') {
+    this.nextData = this.nextData || {};
+    this.nextData.focus = true;
+  }
+  setNextWindowScroll(x, y) {
+    this.nextData = this.nextData || {};
+    this.nextData.scroll = { x, y };
+  }
+  setNextWindowContentSize(w, h) {
+    this.nextData = this.nextData || {};
+    this.nextData.contentSize = { x: w, y: h };
+  }
+  setNextWindowBgAlpha(a) {
+    this.nextData = this.nextData || {};
+    this.nextData.bgAlpha = a;
+  }
   // -- Begin/End (cf. imgui.cpp:7527-8387, simplified) --
   begin(name, pOpen = null, flags = 0) {
     const io = this.io, st = this.style;
@@ -352,7 +376,7 @@ class ImGuiContext {
     this.applyNext(w, false);
     this.nextData = null;
     w.flags = flags;
-    w.z = __winSeq++;
+    w.z = ++__winSeq; globalThis.__IMGUI_WINSEQ__ = __winSeq;
     w.titleH = (flags & WindowFlags.NoTitleBar) ? 0 : st.TitleBarHeight;
     w.padding = { ...st.WindowPadding };
     w.drawList.length = 0;
@@ -1105,6 +1129,15 @@ function clickSuppressed() {
   const cc = ctx();
   return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
 }
+function formatValue(fmt, v) {
+  const m = String(fmt).match(/%(?:\.(\d+))?([fdg])/);
+  if (!m) return String(v);
+  const prec = m[1] !== undefined ? +m[1] : (m[2] === 'd' ? 0 : 6);
+  if (m[2] === 'd') return Math.round(v).toFixed(0);
+  if (m[2] === 'g') return Number(+v).toPrecision(Math.max(1, prec || 6)).replace(/\.?0+$/, '');
+  return (+v).toFixed(prec);
+}
+function itemWidthOverride() { const c = ctx(); const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0; }
 function frameCol(base, hov, act, h, held) {
   const c = ctx(), st = c.style;
   return h ? (held ? st.Colors[act] : st.Colors[hov]) : st.Colors[base];
@@ -1230,8 +1263,23 @@ function Checkbox(label, checked) {
   return { changed, checked: ch };
 }
 function RadioButton(label, active) {
-  const pressed = Button((active ? "(●) " : "(○) ") + label);
-  return pressed;
+  const c = ctx(), w = cur(); if (!w) return false;
+  const st = c.style;
+  const rad = 8, gap = 6;
+  const tw = textW(ImGui.findRenderedTextEnd(label));
+  const wd = rad * 2 + gap + tw, ht = 20;
+  c.beforeItemPlacement(wd, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(wd, ht);
+  const id = w.getID(label);
+  c.itemAdd(x, y, wd, ht, id);
+  const bb = c.buttonBehavior(id, x, y, wd, ht);
+  const cy = y + 4 + rad / 2;
+  emit({ t: "circleFilled", x: x + rad / 2 + 2, y: cy, r: rad / 2 + 2, col: st.Colors[ImGui.Col.Border] });
+  emit({ t: "circleFilled", x: x + rad / 2 + 2, y: cy, r: rad / 2 + 1, col: st.Colors[bb.hovered ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg] });
+  if (active) emit({ t: "circleFilled", x: x + rad / 2 + 2, y: cy, r: 3, col: st.Colors[ImGui.Col.CheckMark] });
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + rad * 2 + gap, y: y + 2, col: st.Colors[ImGui.Col.Text] });
+  return bb.pressed;
 }
 
 // ---------- toggle switch (DeAr ImGui pill switch) ----------
@@ -1307,6 +1355,7 @@ function Toggle(label, checked) {
 // ---------- sliders / drags ----------
 function sliderBehavior(id, x, y, wd, ht, vmin, vmax, value) {
   const c = ctx();
+  if ((c._disabledDepth || 0) > 0) return { changed: false, value, hovered: false };
   const h = c.hovered(x, y, wd, ht);
   if (h) c.anyWindowHovered = true;
   let v = value, changed = false;
@@ -1328,7 +1377,8 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   c.beforeItemPlacement(0, 20);
-  const sliderW = Math.max(80, contentAvail() - tw - 70);
+  const ctlW = itemWidthOverride() || Math.max(80, contentAvail() - tw - 70);
+  const sliderW = Math.max(80, ctlW);
   const wd = sliderW + 8 + tw + 56, ht = 20;
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
@@ -1338,12 +1388,12 @@ function SliderFloat(label, value, vmin, vmax, format = "%.3f") {
   const grabT = (r.value - vmin) / Math.max(1e-6, vmax - vmin);
   emit({ t: "rectFilled", x, y: y + 6, w: sliderW, h: 8, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
   emit({ t: "rectFilled", x: x + grabT * (sliderW - 12), y: y + 3, w: 12, h: 14, r: 4, col: st.Colors[r.hovered || c.activeId === id ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
-  const valStr = Number(r.value).toFixed(3);
+  const valStr = formatValue(format, r.value);
   emit({ t: "text", str: `${ImGui.findRenderedTextEnd(label)}: ${valStr}`, x: x + sliderW + 10, y: y + 2, col: st.Colors[ImGui.Col.Text] });
   return r;
 }
 function SliderInt(label, value, vmin, vmax) {
-  const r = SliderFloat(label, value, vmin, vmax);
+  const r = SliderFloat(label, value, vmin, vmax, "%.0f");
   const iv = Math.round(r.value);
   return { changed: r.changed && iv !== value, value: iv };
 }
@@ -1375,11 +1425,12 @@ function DragFloat(label, value, speed = 0.05, vmin = 0, vmax = 0) {
 // ---------- input text (uses hidden DOM input managed by backend) ----------
 function InputText(label, text, flags = 0, hint = "") {
   const c = ctx(), w = cur(); if (!w) return { changed: false, text };
+  if ((c._disabledDepth || 0) > 0) { c.beforeItemPlacement(0, c.style.FontSize + c.style.FramePadding.y * 2 + 2); const bw2 = itemWidthOverride() || 200; c.itemSize(bw2 + 80, 22); emit({ t: "text", str: ImGui.findRenderedTextEnd(label) + ": " + String(text||""), x: w.dc.cursorPos.x, y: w.dc.cursorPos.y, col: c.style.Colors[ImGui.Col.TextDisabled] }); return { changed: false, text }; }
   const st = c.style;
   const tw = textW(ImGui.findRenderedTextEnd(label));
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
   c.beforeItemPlacement(0, ht);
-  const bw = Math.max(120, contentAvail() - tw - 16);
+  const bw = itemWidthOverride() ? itemWidthOverride() : Math.max(120, contentAvail() - tw - 16);
   const wd = bw + tw + 12;
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(wd, ht);
@@ -1493,7 +1544,7 @@ function BeginCombo(label, preview) {
   const st = c.style;
   const ht = st.FontSize + st.FramePadding.y * 2 + 2;
   c.beforeItemPlacement(0, ht);
-  const bw = Math.max(140, contentAvail() - textW(label) - 20);
+  const bw = itemWidthOverride() ? Math.max(80, itemWidthOverride()) : Math.max(140, contentAvail() - textW(label) - 20);
   const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
   c.itemSize(bw + textW(label) + 12, ht);
   const id = w.getID(label);
@@ -1730,6 +1781,22 @@ function End() { ctx().end(); }
 function SetNextWindowPos(x, y, cond) { ctx().setNextWindowPos(x, y, cond); }
 function SetNextWindowSize(wd, ht, cond) { ctx().setNextWindowSize(wd, ht, cond); }
 function SetNextWindowCollapsed(coll, cond) { ctx().setNextWindowCollapsed(coll, cond); }
+function SetNextWindowFocus(name = '') { ctx().setNextWindowFocus(name); }
+function SetNextWindowScroll(x, y) { ctx().setNextWindowScroll(x, y); }
+function SetNextWindowContentSize(w, h) { ctx().setNextWindowContentSize(w, h); }
+function SetNextWindowBgAlpha(a) { ctx().setNextWindowBgAlpha(a); }
+function SetWindowPos(x, y) { const w = cur(); if (w) w.pos = { x, y }; }
+function SetWindowSize(w2, h2) { const w = cur(); if (w) { w.size.x = w2; w.size.y = h2; w.sizeFull.x = w2; w.sizeFull.y = h2; } }
+function SetWindowCollapsed(c) { const w = cur(); if (w) w.collapsed = !!c; }
+function SetWindowFocus() { const w = cur(); if (w) w.z = ++globalThis.__IMGUI_WINSEQ__; }
+function GetScrollX() { const w = cur(); return 0; }
+function GetScrollY() { const w = cur(); return w ? (w.scrollY || 0) : 0; }
+function SetScrollX() {}
+function SetScrollY(y) { const w = cur(); if (w) w.scrollY = Math.max(0, y); }
+function GetScrollMaxX() { return 0; }
+function GetScrollMaxY() { const w = cur(); return w ? (w.scrollMax || 0) : 0; }
+function SetScrollHereX(center = true) {}
+function SetScrollHereY(center = true) { const w = cur(); if (w && w.scrollMax > 0 && ctx().lastItem.rect) { w.scrollY = Math.max(0, (ctx().lastItem.rect.y - w.pos.y - w.titleH) - w.sizeFull.y / 2); } }
 function IsItemHovered() { return ctx().isItemHovered(); }
 
 Object.assign(ImGui, {
@@ -1744,6 +1811,9 @@ Object.assign(ImGui, {
   CollapsingHeader, TreeNode, TreePop,
   BeginChild, EndChild,
   Begin, End, SetNextWindowPos, SetNextWindowSize, SetNextWindowCollapsed, IsItemHovered,
+  SetNextWindowFocus, SetNextWindowScroll, SetNextWindowContentSize, SetNextWindowBgAlpha,
+  SetWindowPos, SetWindowSize, SetWindowCollapsed, SetWindowFocus,
+  GetScrollX, GetScrollY, SetScrollX, SetScrollY, GetScrollMaxX, GetScrollMaxY, SetScrollHereX, SetScrollHereY,
   _measure: textW,
 });
 global.__IMGUI_WIDGETS__ = true;
@@ -1837,6 +1907,77 @@ function SliderFloatN(label, values, vmin, vmax) {
 function SliderFloat2(l, v, a, b) { const r = SliderFloatN(l, v, a, b); return { changed: r.changed, values: r.values }; }
 function SliderFloat3(l, v, a, b) { const r = SliderFloatN(l, v, a, b); return { changed: r.changed, values: r.values }; }
 function SliderFloat4(l, v, a, b) { const r = SliderFloatN(l, v, a, b); return { changed: r.changed, values: r.values }; }
+function SliderIntN_compact(label, values, vmin, vmax) {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, value: values };
+  const st = c.style, n = values.length, bw = 160, ht = 22;
+  c.beforeItemPlacement(bw + 46, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(bw + 46, ht);
+  const id = w.getID(label);
+  c.itemAdd(x, y, bw, ht, id);
+  const h = c.hovered(x, y, bw, ht);
+  if (h) c.anyWindowHovered = true;
+  let changed = false;
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) { c.activeId = id; c.activeKind = "sliderintsc"; }
+  const bwHalf = bw / n;
+  if (c.activeId === id && c.activeKind === "sliderintsc") {
+    // Mouse X is screen space; slider rect lives in scrolled content space.
+    const curMouseX = c.io.MousePos.x;
+    let i = Math.floor((curMouseX - x) / bwHalf);
+    i = Math.max(0, Math.min(n - 1, i));
+    const t = Math.max(0, Math.min(1, (curMouseX - (x + i * bwHalf)) / bwHalf));
+    const nv = Math.round(vmin + t * (vmax - vmin));
+    if (nv !== values[i]) { values[i] = nv; changed = true; }
+    if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
+  }
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
+  for (let i = 0; i < n; i++) {
+    const t = (values[i] - vmin) / Math.max(1e-6, vmax - vmin);
+    const gx = x + i * bwHalf + 2 + t * Math.max(1, bwHalf - 14);
+    emit({ t: "rectFilled", x: gx, y: y + 3, w: 10, h: ht - 6, r: 3, col: st.Colors[h ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
+    emit({ t: "text", str: String(values[i]), x: x + i * bwHalf + 4, y: y + 3, col: st.Colors[ImGui.Col.Text] });
+    if (i > 0) emit({ t: "text", str: "/", x: x + i * bwHalf - 5, y: y + 3, col: st.Colors[ImGui.Col.TextDisabled] });
+  }
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 6, y: y + 3, col: st.Colors[ImGui.Col.Text] });
+  return { changed, value: values, hovered: h };
+}
+function SliderInt2(l, v, a, b) { return SliderIntN_compact(l, v, a, b); }
+function SliderInt3(l, v, a, b) { return SliderIntN_compact(l, v, a, b); }
+function SliderInt4(l, v, a, b) { return SliderIntN_compact(l, v, a, b); }
+function fmtNum(v, format) {
+  if (!format) return String(v);
+  const m = /%\.(\d+)f/.exec(format);
+  if (m) return v.toFixed(+m[1]);
+  if (format.indexOf("%f") >= 0) return String(v);
+  return format;
+}
+function VSliderScalar(label, value, vmin, vmax, format) {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, value };
+  const st = c.style, bw = 16, ht = 120;
+  c.beforeItemPlacement(bw + 8, ht + 20);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(bw + 8, ht + 20);
+  const id = w.getID(label);
+  c.itemAdd(x, y, bw, ht, id);
+  const h = c.hovered(x, y, bw, ht);
+  if (h) c.anyWindowHovered = true;
+  let v = value, changed = false;
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) { c.activeId = id; c.activeKind = "vsliderscalar"; }
+  const curMouseY = (w && w.scrollY && !w.dc._inPopup) ? (c.io.MousePos.y + w.scrollY) : c.io.MousePos.y;
+  if (c.activeId === id && c.activeKind === "vsliderscalar") {
+    const t = 1 - (curMouseY - y) / Math.max(1, ht);
+    v = vmin + Math.max(0, Math.min(1, t)) * (vmax - vmin);
+    changed = v !== value;
+    if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
+  }
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
+  const ft = (v - vmin) / Math.max(1e-6, vmax - vmin);
+  const gy = y + (1 - ft) * (ht - 10);
+  emit({ t: "polygon", pts: [{ x: x + 2, y: gy }, { x: x + bw - 2, y: gy }, { x: x + bw / 2, y: gy + 8 }], col: st.Colors[h ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
+  const txt = `${ImGui.findRenderedTextEnd(label)} ${fmtNum(v, format)}`;
+  emit({ t: "text", str: txt, x, y: y + ht + 4, col: st.Colors[ImGui.Col.Text] });
+  return { changed, value: v, hovered: h };
+}
 function SliderIntN(label, values, vmin, vmax) {
   let changed = false;
   const out = values.slice();
@@ -1925,22 +2066,29 @@ function InputDouble(label, value) {
   const r = numericBox(label, String(value), parseFloat);
   return { changed: r.changed, value: r.ok ? r.value : value };
 }
-function InputFloatN(label, values) {
+function InputFloatN(label, values, step = 0, fmt = "%.3f", vmin, vmax) {
   const out = values.slice(); let changed = false;
   for (let i = 0; i < values.length; i++) {
-    const r = InputFloat(`${label}##${i}`, values[i]);
-    out[i] = r.value; changed = changed || r.changed;
+    const r = InputFloat(`${label}##${i}`, values[i], step, fmt);
+    let v = r.value;
+    if (vmin !== undefined && vmax !== undefined) v = Math.max(vmin, Math.min(vmax, v));
+    out[i] = v; changed = changed || r.changed;
   }
   return { changed, values: out };
 }
-function InputIntN(label, values) {
+function InputIntN(label, values, vmin, vmax) {
   const out = values.slice(); let changed = false;
   for (let i = 0; i < values.length; i++) {
     const r = InputInt(`${label}##${i}`, values[i]);
-    out[i] = r.value; changed = changed || r.changed;
+    let v = r.value;
+    if (vmin !== undefined && vmax !== undefined) v = Math.max(vmin, Math.min(vmax, v));
+    out[i] = v; changed = changed || r.changed;
   }
   return { changed, values: out };
 }
+function InputFloat2(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
+function InputFloat3(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
+function InputFloat4(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
 function InputTextWithHint(label, hint, text, flags = 0) {
   // Hint is drawn INSIDE the empty box by InputText itself (TextDisabled);
   // the label stays outside to the right. Never overlay the last emitted op.
@@ -2145,9 +2293,9 @@ function EndListBox() { ImGui.EndChild(); }
 
 Object.assign(ImGui, {
   ArrowButton, CheckboxFlags, RadioButtonInt,
-  SliderFloat2, SliderFloat3, SliderFloat4, SliderIntN, SliderAngle, VSliderFloat, VSliderInt,
+  SliderFloat2, SliderFloat3, SliderFloat4, SliderIntN, SliderInt2, SliderInt3, SliderInt4, SliderAngle, VSliderFloat, VSliderInt, VSliderScalar,
   DragInt, DragFloatN, DragIntN,
-  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputTextWithHint,
+  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputFloat4, InputTextWithHint,
   ColorButton, ColorPicker3, ColorPicker4,
   Image, ImageButton, PlotLines, PlotHistogram,
   LabelText, Value, TextDisabled, SeparatorText, Bullet,
@@ -2218,6 +2366,9 @@ function ensure() {
     c._popupRolloverFrame = c.frame;
     c._popupRectsPrev = c._popupRects || {};
     c._popupRects = {};
+    // Reset overlay ops at frame start so no stale modal dim/popup frames
+    // persist after the popup closes (ghost dim artifact).
+    c._overlayOps = [];
     // MODAL LOCK — authoritative recompute at frame start, before ANY window
     // evaluates. A modal that was open last frame re-registers its screen
     // rect, so windows earlier in the frame loop than the modal's host are
@@ -2586,13 +2737,19 @@ function GetContentRegionAvail() {
   const scrollbarReserve = hasScrollbar ? (c.style.ScrollbarSize + 2) : 0;
   return { x: Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x), y: Math.max(0, (w.size.y > 0 ? w.pos.y + w.sizeFull.y - w.padding.y : w.dc.cursorMaxPos.y + 200) - w.dc.cursorPos.y) };
 }
+function GetContentRegionMax() {
+  const w = W(); if (!w) return { x: 0, y: 0 };
+  return { x: w.sizeFull.x - w.padding.x * 2, y: w.sizeFull.y - w.titleH - w.padding.y * 2 };
+}
 function CalcTextSize(text) { return { x: measure(text), y: 16 }; }
 function AlignTextToFramePadding() { const w = W(); if (w) w.dc.cursorPos.y += 4; }
 function GetWindowPos() { const w = W(); return w ? { ...w.pos } : { x: 0, y: 0 }; }
 function GetWindowSize() { const w = W(); return w ? { ...w.sizeFull } : { x: 0, y: 0 }; }
 function GetWindowWidth() { return GetWindowSize().x; }
 function GetWindowHeight() { return GetWindowSize().y; }
-function SetScrollHereY() { /* best-effort: keep */ }
+function IsWindowCollapsed() { const w = W(); return w ? !!w.collapsed : false; }
+function IsWindowAppearing() { const w = W(); return w ? !!w.appearing : false; }
+function SetScrollHereYExtended() { /* widgets.js impl wins; keep alias for compat */ }
 function PushClipRect() {}
 function PopClipRect() {}
 function PushFont() {}
@@ -2667,9 +2824,11 @@ function EndTooltip() { ensure()._tooltip = null; }
 function SetTooltip(text) {
   if (BeginTooltip()) {
     const c = ensure();
-    emit({ t: "rectFilled", x: c._tooltip.x, y: c._tooltip.y, w: measure(text) + 16, h: 24, r: 4, col: c.style.Colors[ImGui.Col.PopupBg] });
-    emit({ t: "rect", x: c._tooltip.x, y: c._tooltip.y, w: measure(text) + 16, h: 24, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
-    emit({ t: "text", str: text, x: c._tooltip.x + 8, y: c._tooltip.y + 5, col: c.style.Colors[ImGui.Col.Text] });
+    const tw = measure(text) + 16;   // 8px horizontal padding each side
+    const th = 16 + 8;               // real text height + 4px vertical padding
+    emit({ t: "rectFilled", x: c._tooltip.x, y: c._tooltip.y, w: tw, h: th, r: 4, col: c.style.Colors[ImGui.Col.PopupBg] });
+    emit({ t: "rect", x: c._tooltip.x, y: c._tooltip.y, w: tw, h: th, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
+    emit({ t: "text", str: text, x: c._tooltip.x + 8, y: c._tooltip.y + (th - 16) / 2, col: c.style.Colors[ImGui.Col.Text] });
     EndTooltip();
   }
 }
@@ -2843,6 +3002,7 @@ function BeginPopupModal(name) { return popupBoxBegin(name, true); }
 function EndPopupModal() { popupBoxEnd(true); }
 function BeginPopupContextItem(id = "ctx") { if (IsItemClicked(1)) OpenPopup(id); return BeginPopup(id); }
 function BeginPopupContextWindow(id = "ctxwin") { const w = W(); if (w && w.contentHover && C().io.MouseClicked[1]) OpenPopup(id); return BeginPopup(id); }
+function BeginPopupContextVoid(id = 0) { const c = ensure(); if (c.io.MouseClicked[1] && !c.hoveredId) OpenPopup(id); return BeginPopup(id); }
 
 // ---------- menu bar / menus ----------
 function BeginMenuBar() {
@@ -2962,7 +3122,14 @@ function MenuItem(label, shortcut = "", selected = false, enabled = true) {
   c.itemAdd(x, y, wd, ht, id);
   const h = enabled && c.hovered(x, y, wd, ht);
   if (h) { emit({ t: "rectFilled", x, y, w: wd, h: ht, r: 4, col: c.style.Colors[ImGui.Col.HeaderHovered] }); c.anyWindowHovered = true; }
-  emit({ t: "text", str: (selected ? "● " : "") + shown, x: x + 8, y: y + 3, col: enabled ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled] });
+  if (selected) {
+    const bx = x + 4, by = y + 4;
+    emit({ t: "rectFilled", x: bx, y: by, w: 14, h: 14, r: 4, col: c.style.Colors[ImGui.Col.FrameBg] });
+    emit({ t: "rect", x: bx, y: by, w: 14, h: 14, r: 4, col: c.style.Colors[ImGui.Col.Border], th: 1 });
+    emit({ t: "line", x1: bx + 3, y1: by + 7, x2: bx + 6, y2: by + 10, col: c.style.Colors[ImGui.Col.CheckMark], th: 2.5 });
+    emit({ t: "line", x1: bx + 6, y1: by + 10, x2: bx + 11, y2: by + 3, col: c.style.Colors[ImGui.Col.CheckMark], th: 2.5 });
+  }
+  emit({ t: "text", str: shown, x: selected ? x + 26 : x + 8, y: y + 3, col: enabled ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled] });
   if (shortcut) emit({ t: "text", str: shortcut, x: x + wd - measure(shortcut) - 8, y: y + 3, col: c.style.Colors[ImGui.Col.TextDisabled] });
   const clicked = enabled && h && c.io.MouseClicked[0] && !menuClickSuppressed();
   if (clicked) { // selecting an item closes the whole menu chain
@@ -3431,16 +3598,16 @@ Object.assign(ImGui, {
   PushItemWidth, PopItemWidth, PushStyleColor, PopStyleColor, PushStyleVar, PopStyleVar,
   GetStyleColorVec4, GetColorU32, StyleColorsDark, StyleColorsClassic, StyleColorsLight,
   SetCursorPos, SetCursorPosX, SetCursorPosY, GetCursorPos, GetCursorScreenPos, SetCursorScreenPos,
-  GetContentRegionAvail, CalcTextSize, AlignTextToFramePadding,
-  GetWindowPos, GetWindowSize, GetWindowWidth, GetWindowHeight,
-  SetScrollHereY, PushClipRect, PopClipRect, PushFont, PopFont, SetWindowFontScale,
+  GetContentRegionAvail, GetContentRegionMax, CalcTextSize, AlignTextToFramePadding,
+  GetWindowPos, GetWindowSize, GetWindowWidth, GetWindowHeight, IsWindowCollapsed, IsWindowAppearing,
+  PushClipRect, PopClipRect, PushFont, PopFont, SetWindowFontScale,
   IsItemActive, IsItemClicked, IsItemEdited, IsItemDeactivated, IsItemDeactivatedAfterEdit,
   IsItemVisible, IsItemToggledOpen, IsWindowHovered, IsWindowFocused, IsRectVisible,
   SetKeyboardFocusHere, IsMouseClicked, IsMouseDown, IsMouseReleased, IsMouseDragging,
   GetMouseDragDelta, IsMouseHoveringRect, IsKeyDown, GetKeyPressedAmount,
   BeginTooltip, EndTooltip, SetTooltip, SetItemTooltip,
   OpenPopup, OpenPopupOnItemClick, IsPopupOpen, CloseCurrentPopup, ClosePopup,
-  BeginPopup, EndPopup, BeginPopupModal, EndPopupModal, BeginPopupContextItem, BeginPopupContextWindow,
+  BeginPopup, EndPopup, BeginPopupModal, EndPopupModal, BeginPopupContextItem, BeginPopupContextWindow, BeginPopupContextVoid,
   BeginMenuBar, EndMenuBar, BeginMainMenuBar, EndMainMenuBar, BeginMenu, EndMenu, MenuItem,
   BeginTabBar, EndTabBar, BeginTabItem, EndTabItem, TabItemButton,
   BeginTable, EndTable, TableSetupColumn, TableHeadersRow, TableNextRow, TableNextColumn,
@@ -4194,7 +4361,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.30"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.32"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

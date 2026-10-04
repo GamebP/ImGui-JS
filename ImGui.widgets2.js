@@ -84,6 +84,77 @@ function SliderFloatN(label, values, vmin, vmax) {
 function SliderFloat2(l, v, a, b) { const r = SliderFloatN(l, v, a, b); return { changed: r.changed, values: r.values }; }
 function SliderFloat3(l, v, a, b) { const r = SliderFloatN(l, v, a, b); return { changed: r.changed, values: r.values }; }
 function SliderFloat4(l, v, a, b) { const r = SliderFloatN(l, v, a, b); return { changed: r.changed, values: r.values }; }
+function SliderIntN_compact(label, values, vmin, vmax) {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, value: values };
+  const st = c.style, n = values.length, bw = 160, ht = 22;
+  c.beforeItemPlacement(bw + 46, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(bw + 46, ht);
+  const id = w.getID(label);
+  c.itemAdd(x, y, bw, ht, id);
+  const h = c.hovered(x, y, bw, ht);
+  if (h) c.anyWindowHovered = true;
+  let changed = false;
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) { c.activeId = id; c.activeKind = "sliderintsc"; }
+  const bwHalf = bw / n;
+  if (c.activeId === id && c.activeKind === "sliderintsc") {
+    // Mouse X is screen space; slider rect lives in scrolled content space.
+    const curMouseX = c.io.MousePos.x;
+    let i = Math.floor((curMouseX - x) / bwHalf);
+    i = Math.max(0, Math.min(n - 1, i));
+    const t = Math.max(0, Math.min(1, (curMouseX - (x + i * bwHalf)) / bwHalf));
+    const nv = Math.round(vmin + t * (vmax - vmin));
+    if (nv !== values[i]) { values[i] = nv; changed = true; }
+    if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
+  }
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
+  for (let i = 0; i < n; i++) {
+    const t = (values[i] - vmin) / Math.max(1e-6, vmax - vmin);
+    const gx = x + i * bwHalf + 2 + t * Math.max(1, bwHalf - 14);
+    emit({ t: "rectFilled", x: gx, y: y + 3, w: 10, h: ht - 6, r: 3, col: st.Colors[h ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
+    emit({ t: "text", str: String(values[i]), x: x + i * bwHalf + 4, y: y + 3, col: st.Colors[ImGui.Col.Text] });
+    if (i > 0) emit({ t: "text", str: "/", x: x + i * bwHalf - 5, y: y + 3, col: st.Colors[ImGui.Col.TextDisabled] });
+  }
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x + bw + 6, y: y + 3, col: st.Colors[ImGui.Col.Text] });
+  return { changed, value: values, hovered: h };
+}
+function SliderInt2(l, v, a, b) { return SliderIntN_compact(l, v, a, b); }
+function SliderInt3(l, v, a, b) { return SliderIntN_compact(l, v, a, b); }
+function SliderInt4(l, v, a, b) { return SliderIntN_compact(l, v, a, b); }
+function fmtNum(v, format) {
+  if (!format) return String(v);
+  const m = /%\.(\d+)f/.exec(format);
+  if (m) return v.toFixed(+m[1]);
+  if (format.indexOf("%f") >= 0) return String(v);
+  return format;
+}
+function VSliderScalar(label, value, vmin, vmax, format) {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, value };
+  const st = c.style, bw = 16, ht = 120;
+  c.beforeItemPlacement(bw + 8, ht + 20);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(bw + 8, ht + 20);
+  const id = w.getID(label);
+  c.itemAdd(x, y, bw, ht, id);
+  const h = c.hovered(x, y, bw, ht);
+  if (h) c.anyWindowHovered = true;
+  let v = value, changed = false;
+  if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) { c.activeId = id; c.activeKind = "vsliderscalar"; }
+  const curMouseY = (w && w.scrollY && !w.dc._inPopup) ? (c.io.MousePos.y + w.scrollY) : c.io.MousePos.y;
+  if (c.activeId === id && c.activeKind === "vsliderscalar") {
+    const t = 1 - (curMouseY - y) / Math.max(1, ht);
+    v = vmin + Math.max(0, Math.min(1, t)) * (vmax - vmin);
+    changed = v !== value;
+    if (!c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; }
+  }
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: 4, col: st.Colors[ImGui.Col.FrameBg] });
+  const ft = (v - vmin) / Math.max(1e-6, vmax - vmin);
+  const gy = y + (1 - ft) * (ht - 10);
+  emit({ t: "polygon", pts: [{ x: x + 2, y: gy }, { x: x + bw - 2, y: gy }, { x: x + bw / 2, y: gy + 8 }], col: st.Colors[h ? ImGui.Col.SliderGrabActive : ImGui.Col.SliderGrab] });
+  const txt = `${ImGui.findRenderedTextEnd(label)} ${fmtNum(v, format)}`;
+  emit({ t: "text", str: txt, x, y: y + ht + 4, col: st.Colors[ImGui.Col.Text] });
+  return { changed, value: v, hovered: h };
+}
 function SliderIntN(label, values, vmin, vmax) {
   let changed = false;
   const out = values.slice();
@@ -172,22 +243,29 @@ function InputDouble(label, value) {
   const r = numericBox(label, String(value), parseFloat);
   return { changed: r.changed, value: r.ok ? r.value : value };
 }
-function InputFloatN(label, values) {
+function InputFloatN(label, values, step = 0, fmt = "%.3f", vmin, vmax) {
   const out = values.slice(); let changed = false;
   for (let i = 0; i < values.length; i++) {
-    const r = InputFloat(`${label}##${i}`, values[i]);
-    out[i] = r.value; changed = changed || r.changed;
+    const r = InputFloat(`${label}##${i}`, values[i], step, fmt);
+    let v = r.value;
+    if (vmin !== undefined && vmax !== undefined) v = Math.max(vmin, Math.min(vmax, v));
+    out[i] = v; changed = changed || r.changed;
   }
   return { changed, values: out };
 }
-function InputIntN(label, values) {
+function InputIntN(label, values, vmin, vmax) {
   const out = values.slice(); let changed = false;
   for (let i = 0; i < values.length; i++) {
     const r = InputInt(`${label}##${i}`, values[i]);
-    out[i] = r.value; changed = changed || r.changed;
+    let v = r.value;
+    if (vmin !== undefined && vmax !== undefined) v = Math.max(vmin, Math.min(vmax, v));
+    out[i] = v; changed = changed || r.changed;
   }
   return { changed, values: out };
 }
+function InputFloat2(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
+function InputFloat3(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
+function InputFloat4(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
 function InputTextWithHint(label, hint, text, flags = 0) {
   // Hint is drawn INSIDE the empty box by InputText itself (TextDisabled);
   // the label stays outside to the right. Never overlay the last emitted op.
@@ -392,9 +470,9 @@ function EndListBox() { ImGui.EndChild(); }
 
 Object.assign(ImGui, {
   ArrowButton, CheckboxFlags, RadioButtonInt,
-  SliderFloat2, SliderFloat3, SliderFloat4, SliderIntN, SliderAngle, VSliderFloat, VSliderInt,
+  SliderFloat2, SliderFloat3, SliderFloat4, SliderIntN, SliderInt2, SliderInt3, SliderInt4, SliderAngle, VSliderFloat, VSliderInt, VSliderScalar,
   DragInt, DragFloatN, DragIntN,
-  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputTextWithHint,
+  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputFloat4, InputTextWithHint,
   ColorButton, ColorPicker3, ColorPicker4,
   Image, ImageButton, PlotLines, PlotHistogram,
   LabelText, Value, TextDisabled, SeparatorText, Bullet,
