@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.26
+// @version      1.0.28
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.26";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.28";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -3317,19 +3317,23 @@ function Columns(count = 1) {
       w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
       w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
       w.dc.cursorStartPos = { ...cc.startPos };
+      w.dc.cursorMaxPos.y = Math.max(w.dc.cursorMaxPos.y, cc.rowY + cc.rowHeight);
       delete w.dc._cellStartX;
       w.dc.currLineHeight = 0; w.dc._lineUsed = false; w.dc._lockFeed = true;
       c._columns = null;
     }
     return;
   }
+  // Break to a fresh row BELOW the current item (SeparatorText left the
+  // cursor mid-line), otherwise the first rowpaint overlaps the separator.
+  c.beforeItemPlacement(0, 4);
   const startPos = { ...w.dc.cursorStartPos };
   const avail = w.sizeFull.x - w.padding.x * 2 - (w._indent || 0);
-  // Legacy columns always anchor at the content origin; a preceding
-  // SeparatorText/SameLine must not leak its trailing cursorPos into it.
   const startX = w.pos.x + w.padding.x + (w._indent || 0);
-  c._columns = { n: count, i: 0, x: startX, rowY: w.dc.cursorPos.y, rowHeight: 0, w: avail / count, startPos };
-  w.dc.cursorPos.x = startX;
+  const startY = w.dc.cursorPos.y + 4;
+  c._columns = { n: count, i: 0, x: startX, rowY: startY, rowHeight: 0, w: avail / count, startPos };
+  w.dc.cursorPos.x = startX + C().style.CellPadding.x;
+  w.dc.cursorPos.y = startY;
   w.dc.cursorStartPos = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
@@ -3340,7 +3344,7 @@ function NextColumn() {
   const cc = c._columns;
   // Finish this cell before moving the cursor. The next row starts below the
   // tallest cell in the current row, so every column keeps the same baseline.
-  cc.rowHeight = Math.max(cc.rowHeight, w.dc.currLineHeight);
+  cc.rowHeight = Math.max(cc.rowHeight, w.dc.currLineHeight, 18);
   w.dc.currLineHeight = 0;
   w.dc._lineUsed = false;
   cc.i = (cc.i + 1) % cc.n;
@@ -3348,7 +3352,7 @@ function NextColumn() {
     cc.rowY += cc.rowHeight + C().style.ItemSpacing.y;
     cc.rowHeight = 0;
     w.dc.cursorPos.x = cc.x; w.dc.cursorPos.y = cc.rowY;
-  } else { w.dc.cursorPos.x = cc.x + cc.i * cc.w; w.dc.cursorPos.y = cc.rowY; }
+  } else { w.dc.cursorPos.x = cc.x + cc.i * cc.w + C().style.CellPadding.x; w.dc.cursorPos.y = cc.rowY; }
   w.dc.cursorStartPos = { ...w.dc.cursorPos };
   w.dc._cellStartX = w.dc.cursorPos.x;
   w.dc.cursorPosPrevLine = { ...w.dc.cursorPos };
@@ -3595,7 +3599,23 @@ function demoTables() {
   if (ImGui.BeginTable("t1", 3, ImGui.TableFlags.Borders | ImGui.TableFlags.RowBg | ImGui.TableFlags.Sortable | ImGui.TableFlags.Resizable)) {
     ImGui.TableSetupColumn("Name"); ImGui.TableSetupColumn("HP"); ImGui.TableSetupColumn("Ping");
     ImGui.TableHeadersRow();
-    const rows = [["bot_a", "100", "12"], ["bot_b", "75", "40"], ["bot_c", "50", "88"]];
+    const rows = [
+      ["bot_a", "100", "12"],
+      ["bot_b", "75", "40"],
+      ["bot_c", "50", "88"]
+    ];
+    const sortSpecs = ImGui.TableGetSortSpecs();
+    if (sortSpecs && sortSpecs.SpecsCount > 0) {
+      const spec = sortSpecs.Specs[0];
+      const colIdx = spec.ColumnIndex;
+      const isAsc = spec.SortDirection === 1;
+      rows.sort((a, b) => {
+        const valA = a[colIdx], valB = b[colIdx];
+        const numA = parseFloat(valA), numB = parseFloat(valB);
+        if (!isNaN(numA) && !isNaN(numB)) return isAsc ? numA - numB : numB - numA;
+        return isAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      });
+    }
     for (const r of rows) {
       ImGui.TableNextRow();
       for (let i = 0; i < 3; i++) { ImGui.TableSetColumnIndex(i); ImGui.Text(r[i]); }
@@ -4172,7 +4192,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.26"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.28"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
