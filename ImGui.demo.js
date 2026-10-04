@@ -167,6 +167,54 @@ function demoTables() {
     }
     ImGui.EndTable();
   }
+  ImGui.SeparatorText("Advanced table (flag toggles)");
+  D._tblFlags = D._tblFlags || { Borders: true, RowBg: true, Resizable: true, Sortable: true, Reorderable: false };
+  D._tblFlags.Borders = ImGui.Checkbox("Borders", D._tblFlags.Borders).checked;
+  D._tblFlags.RowBg = ImGui.Checkbox("RowBg", D._tblFlags.RowBg).checked;
+  D._tblFlags.Resizable = ImGui.Checkbox("Resizable", D._tblFlags.Resizable).checked;
+  D._tblFlags.Sortable = ImGui.Checkbox("Sortable", D._tblFlags.Sortable).checked;
+  D._tblFlags.Reorderable = ImGui.Checkbox("Reorderable", D._tblFlags.Reorderable).checked;
+  let flags = ImGui.TableFlags.None;
+  if (D._tblFlags.Borders) flags |= ImGui.TableFlags.Borders;
+  if (D._tblFlags.RowBg) flags |= ImGui.TableFlags.RowBg;
+  if (D._tblFlags.Resizable) flags |= ImGui.TableFlags.Resizable;
+  if (D._tblFlags.Sortable) flags |= ImGui.TableFlags.Sortable;
+  if (D._tblFlags.Reorderable) flags |= ImGui.TableFlags.Reorderable;
+  if (!D._advRows) {
+    const names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"];
+    const actions = ["launch", "scan", "purge", "backup", "deploy", "rotate", "sync", "archive", "notify", "repair"];
+    const statuses = ["ok", "warn", "idle", "busy", "error"];
+    D._advRows = names.map((n, i) => ({ id: i + 1, name: n, action: actions[i], value: (i * 37) % 101, status: statuses[i % statuses.length] }));
+  }
+  if (ImGui.BeginTable('advanced_table', 5, flags)) {
+    ImGui.TableSetupColumn("ID"); ImGui.TableSetupColumn("Name"); ImGui.TableSetupColumn("Action");
+    ImGui.TableSetupColumn("Value"); ImGui.TableSetupColumn("Status");
+    ImGui.TableHeadersRow();
+    const rows = D._advRows.slice();
+    const specs = ImGui.TableGetSortSpecs();
+    if (specs && specs.SpecsCount > 0) {
+      const spec = specs.Specs[0];
+      const keys = ["id", "name", "action", "value", "status"];
+      const key = keys[spec.ColumnIndex] || "id";
+      const isAsc = spec.SortDirection === 1;
+      rows.sort((a, b) => {
+        const va = a[key], vb = b[key];
+        const na = parseFloat(va), nb = parseFloat(vb);
+        if (!isNaN(na) && !isNaN(nb)) return isAsc ? na - nb : nb - na;
+        const sa = String(va), sb = String(vb);
+        return isAsc ? sa.localeCompare(sb) : sb.localeCompare(sa);
+      });
+    }
+    for (const r of rows) {
+      ImGui.TableNextRow();
+      ImGui.TableSetColumnIndex(0); ImGui.Text(String(r.id));
+      ImGui.TableSetColumnIndex(1); ImGui.Text(r.name);
+      ImGui.TableSetColumnIndex(2); ImGui.Text(r.action);
+      ImGui.TableSetColumnIndex(3); ImGui.Text(String(r.value));
+      ImGui.TableSetColumnIndex(4); ImGui.Text(r.status);
+    }
+    ImGui.EndTable();
+  }
   ImGui.SeparatorText("Legacy columns");
   ImGui.Columns(2);
   for (let r = 0; r < 3; r++) {
@@ -228,8 +276,58 @@ function demoMisc() {
   if (ImGui.Button("Focus next input")) ImGui.SetKeyboardFocusHere();
   D._f2 = ImGui.InputText("focused?", D._f2 || "").text;
   ImGui.Text(`mouse ${ImGui.IsMouseDown(0) ? "down" : "up"} keyA=${ImGui.IsKeyDown("KeyA")}`);
+  ImGui.SeparatorText("Input monitor (real-time)");
+  const io = ImGui.GetIO();
+  ImGui.Text(`MousePos: x=${Math.round(io.MousePos.x)} y=${Math.round(io.MousePos.y)}`);
+  ImGui.Text(`MouseWheel: ${io.MouseWheel}`);
+  ImGui.Text(`WantCaptureMouse: ${io.WantCaptureMouse}`);
+  ImGui.Text(`WantCaptureKeyboard: ${io.WantCaptureKeyboard}`);
+  const activeKeys = Object.keys(io.KeysDown).filter((k) => io.KeysDown[k]);
+  ImGui.Text(`KeysDown: ${activeKeys.length ? activeKeys.map((k) => `[${k}]`).join(" ") : "(none)"}`);
 }
 
-Object.assign(ImGui, { ShowDemoWindow, ShowStyleEditor, ShowMetricsWindow, _demoState: D });
+function LogToClipboard() {
+  const c = ImGui.GetContext();
+  c._logMode = "clipboard";
+  c._logBuffer = "";
+}
+
+function LogToTTY() {
+  const c = ImGui.GetContext();
+  c._logMode = "tty";
+  c._logBuffer = "";
+}
+
+function LogText(str) {
+  const c = ImGui.GetContext();
+  if (c._logMode) c._logBuffer += String(str);
+}
+
+function LogFinish() {
+  const c = ImGui.GetContext();
+  if (c._logMode === "clipboard") ImGui.SetClipboardText(c._logBuffer);
+  else if (c._logMode === "tty") console.log(c._logBuffer);
+  c._logMode = null;
+  c._logBuffer = "";
+}
+
+function ShowAboutWindow(pOpen) {
+  ImGui.SetNextWindowSize(420, 280, ImGui.Cond.FirstUseEver);
+  const w = ImGui.Begin("About Dear ImGui", pOpen === undefined ? true : pOpen);
+  if (pOpen !== undefined && typeof pOpen === "object") pOpen.value = w.open !== false;
+  if (w.visible) {
+    ImGui.Text("Dear ImGui Browser Port");
+    ImGui.TextColored([0.6, 0.8, 1, 1], "Version " + ImGui.VERSION);
+    ImGui.Separator();
+    ImGui.TextWrapped("Dear ImGui is a bloat-free graphical user interface library for C++ with minimal dependencies. This is a JavaScript/Canvas2D browser port of the original work by Omar Cornut (ocornut) and all ImGui contributors, bundled with a demo, style editor, and metrics windows.");
+    ImGui.Spacing();
+    if (ImGui.Button("Copy Version Information")) ImGui.SetClipboardText("Dear ImGui " + ImGui.VERSION);
+    ImGui.Separator();
+    ImGui.TextDisabled("License: MIT");
+  }
+  ImGui.End();
+}
+
+Object.assign(ImGui, { ShowDemoWindow, ShowStyleEditor, ShowMetricsWindow, ShowAboutWindow, LogToClipboard, LogToTTY, LogText, LogFinish, _demoState: D });
 global.__IMGUI_DEMO__ = true;
 })(typeof globalThis !== "undefined" ? globalThis : this);

@@ -90,7 +90,7 @@ const Backend = {
       const cc = ImGui.GetContext();
       // Pure canvas text editing: route editing keys straight into the
       // active widget's payload (no DOM element involved).
-      if (cc.activeKind === "text" && cc.activePayload) {
+      if ((cc.activeKind === "text" || cc.activeKind === "segtext") && cc.activePayload) {
         if (e.key === "Backspace") {
           e.preventDefault();
           cc.activePayload.value = cc.activePayload.value.slice(0, -1);
@@ -111,6 +111,23 @@ const Backend = {
       if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
     }, true);
     window.addEventListener("keyup", (e) => { io.KeysDown[e.code] = false; }, true);
+
+    // --- clipboard bridge: keep ImGui's cache in sync with the OS clipboard ---
+    const onCopyCut = () => {
+      const cc = ImGui.GetContext();
+      const sel = global.getSelection ? String(global.getSelection()) : "";
+      if (sel) cc._clipboardText = sel;
+      const txt = cc._clipboardText || "";
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try { navigator.clipboard.writeText(txt).catch(() => {}); } catch { /* ignore */ }
+      }
+    };
+    window.addEventListener("copy", onCopyCut);
+    window.addEventListener("cut", onCopyCut);
+    window.addEventListener("paste", (e) => {
+      const cc = ImGui.GetContext();
+      try { cc._clipboardText = (e.clipboardData && e.clipboardData.getData("text")) || ""; } catch { /* ignore */ }
+    });
     return this;
   },
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.32
+// @version      1.0.35
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.32";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.35";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -254,6 +254,7 @@ class ImGuiContext {
     this.activeRect = null; this.activeKind = null; this.activePayload = null;
     this.lastItem = { id: 0, rect: null };
     this.frame = 0;
+    this._frameEnded = true;
     this.openPopups = new Map(); // id -> {x,y}
     this.comboOpen = 0;
     this.treeOpen = new Map();
@@ -274,12 +275,13 @@ class ImGuiContext {
       io._prevDown[b] = io.MouseDown[b];
     }
     this.frame++;
+    this._frameEnded = false;
     this.windowStack.length = 0;
     this.current = null;
     this.anyWindowHovered = false;
     this._debugRects.length = 0;
     this.hoveredId = this.activeId !== 0 ? this.hoveredId : 0;
-    io.WantTextInput = (this.activeKind === "text");
+    io.WantTextInput = (this.activeKind === "text" || this.activeKind === "segtext");
   }
   endFrame() {
     const io = this.io;
@@ -298,10 +300,11 @@ class ImGuiContext {
     }
     // Safety: kill ghost drag payloads if the release happened off-window.
     if (this._dd && !io.MouseDown[0]) this._dd = null;
-    io.WantCaptureKeyboard = (this.activeKind === "text");
+    io.WantCaptureKeyboard = (this.activeKind === "text" || this.activeKind === "segtext");
     io.MouseWheel = 0;
     io.InputChars = "";
     for (let b = 0; b < 5; b++) { io.MouseClicked[b] = false; io.MouseReleased[b] = false; }
+    this._frameEnded = true;
   }
   findOrCreate(name, flags) {
     let w = this.windows.get(name);
@@ -634,10 +637,25 @@ function GetStyle() { return GetContext().style; }
 function SetDebugMode(on) { GetContext()._debugMode = !!on; }
 function IsDebugMode() { return !!GetContext()._debugMode; }
 
+function GetVersion() { return IMGUI_VERSION; }
+function NewFrame(dt) { GetContext().newFrame(dt); }
+function EndFrame() { GetContext().endFrame(); }
+function Render() {
+  const c = GetContext();
+  if (c._frameEnded !== true) c.endFrame();
+  // Finalization marker is maintained by ImGuiContext; Render does not draw.
+}
+function DestroyContext() { _ctx = null; }
+function destroyContext() { DestroyContext(); _ctx = null; }
+function GetCurrentContext() { return _ctx; }
+function SetCurrentContext(ctx) { _ctx = ctx; return _ctx; }
+
 const ImGuiBase = {
   VERSION: IMGUI_VERSION, WindowFlags, Cond, Col,
   hashStr, findRenderedTextEnd, colToCss, lerpCol, applyStyleDark,
   CreateContext, GetContext, GetIO, GetStyle, SetDebugMode, IsDebugMode,
+  GetVersion, NewFrame, EndFrame, Render, DestroyContext, GetCurrentContext, SetCurrentContext,
+  destroyContext,
   ImGuiWindow, ImGuiContext,
 };
 
@@ -1128,6 +1146,20 @@ function contentAvail() {
 function clickSuppressed() {
   const cc = ctx();
   return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
+}
+// Printf-like formatter: consumes argsArray sequentially, supports
+// %d / %i / %f / %s / %.Nf.
+function formatString(fmt, argsArray) {
+  const args = Array.isArray(argsArray) ? argsArray.slice() : [];
+  return String(fmt === undefined ? "" : fmt).replace(
+    /%(?:\.(\d+))?([difs])/g,
+    (m, prec, spec) => {
+      const v = args.length ? args.shift() : undefined;
+      if (spec === "s") return String(v);
+      if (spec === "d" || spec === "i") return String(Math.trunc(Number(v) || 0));
+      return (Number(v) || 0).toFixed(prec !== undefined ? +prec : 6);
+    },
+  );
 }
 function formatValue(fmt, v) {
   const m = String(fmt).match(/%(?:\.(\d+))?([fdg])/);
@@ -1682,6 +1714,18 @@ function TreeNode(label) {
 }
 function TreePop() { Unindent(); }
 
+// ---------- printf-style text wrappers ----------
+function TextV(fmt, args) { Text(formatString(fmt, args)); }
+function TextColoredV(col, fmt, args) { TextColored(col, formatString(fmt, args)); }
+function TextWrappedV(fmt, args) { TextWrapped(formatString(fmt, args)); }
+function BulletTextV(fmt, args) { BulletText(formatString(fmt, args)); }
+function TextDisabledV(fmt, args) { (ImGui.TextDisabled || TextDisabledFallback)(formatString(fmt, args)); }
+function TextDisabledFallback(s) { TextColored([0.5, 0.5, 0.5, 1], s); }
+function TreeNodeV(id, fmt, args) {
+  const label = formatString(fmt, args);
+  return TreeNode(id !== undefined && id !== null && id !== "" ? label + "##" + id : label);
+}
+
 // ---------- child ----------
 function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const c = ctx(), w = cur(); if (!w) return false;
@@ -1802,6 +1846,7 @@ function IsItemHovered() { return ctx().isItemHovered(); }
 Object.assign(ImGui, {
   SameLine, NewLine, Spacing, Separator, Indent, Unindent, Dummy,
   Text, TextColored, TextWrapped, BulletText,
+  TextV, TextColoredV, TextWrappedV, BulletTextV, TextDisabledV, TreeNodeV, formatString,
   Button, SmallButton, InvisibleButton,
   Checkbox, RadioButton, Toggle,
   SliderFloat, SliderInt, DragFloat,
@@ -1854,6 +1899,7 @@ function contentAvail() {
   return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
 }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
+function itemWidthOverride() { const c = ctx(); const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0; }
 function clickSuppressed() {
   const cc = ctx();
   return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
@@ -1949,6 +1995,7 @@ function fmtNum(v, format) {
   const m = /%\.(\d+)f/.exec(format);
   if (m) return v.toFixed(+m[1]);
   if (format.indexOf("%f") >= 0) return String(v);
+  if (/%d/.test(format)) return String(Math.round(v));
   return format;
 }
 function VSliderScalar(label, value, vmin, vmax, format) {
@@ -2088,7 +2135,108 @@ function InputIntN(label, values, vmin, vmax) {
 }
 function InputFloat2(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
 function InputFloat3(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
-function InputFloat4(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
+// Single-row horizontal segmented drag: 4 sub-boxes in one row, each dragged
+// individually. partition = (totalW - 3*Style.ItemInnerSpacing.x)/4.
+function segDrag4(label, values, isInt, speed, vmin, vmax, format) {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, values };
+  const st = c.style, ht = 22;
+  const tw = measure(ImGui.findRenderedTextEnd(label));
+  c.beforeItemPlacement(0, ht);
+  const totalW = Math.max(80, itemWidthOverride() || (contentAvail() - tw - 16));
+  const part = Math.max(16, (totalW - 3 * st.ItemInnerSpacing.x) / 4);
+  const wd = part * 4 + 3 * st.ItemInnerSpacing.x;
+  const x0 = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(wd + tw + 12, ht);
+  c.itemAdd(x0, y, wd, ht, w.getID(label));
+  let changed = false;
+  if (c.activeKind === "segdrag" && !c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; c.activePayload = null; }
+  for (let i = 0; i < 4; i++) {
+    const x = x0 + i * (part + st.ItemInnerSpacing.x);
+    const h = c.hovered(x, y, part, ht);
+    if (h) c.anyWindowHovered = true;
+    const id = w.getID(label + "##seg" + i);
+    if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+      c.activeId = id; c.activeKind = "segdrag";
+      c.activePayload = { i, startX: c.io.MousePos.x, startV: values[i] };
+    }
+    if (c.activeId === id && c.activeKind === "segdrag" && c.activePayload) {
+      const dx = c.io.MousePos.x - c.activePayload.startX;
+      let nv = c.activePayload.startV + dx * speed * Math.max(0.1, Math.abs(vmax - vmin) / 200 || 1);
+      if (isInt) nv = Math.round(nv);
+      if (vmax > vmin) nv = Math.max(vmin, Math.min(vmax, nv));
+      if (nv !== values[i]) { values[i] = nv; changed = true; }
+    }
+    const active = c.activeId === id && c.activeKind === "segdrag";
+    emit({ t: "rectFilled", x, y, w: part, h: ht, r: st.FrameRounding, col: st.Colors[h || active ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg] });
+    emit({ t: "text", str: fmtNum(values[i], format), x: x + 6, y: y + 4, col: st.Colors[ImGui.Col.Text] });
+  }
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x0 + wd + 8, y: y + 4, col: st.Colors[ImGui.Col.Text] });
+  return { changed, values };
+}
+function DragFloat4(label, values, speed = 0.05, vmin = 0, vmax = 0, format = "%.3f") {
+  return segDrag4(label, values, false, speed, vmin, vmax, format);
+}
+function DragInt4(label, values, speed = 1, vmin = 0, vmax = 0, format = "%d") {
+  return segDrag4(label, values, true, speed, vmin, vmax, format);
+}
+// Single-row horizontal segmented input: 4 sub-boxes, each edited individually.
+function InputFloat4(label, values, format = "%.3f") {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, values };
+  const st = c.style;
+  const tw = measure(ImGui.findRenderedTextEnd(label));
+  const ht = st.FontSize + st.FramePadding.y * 2 + 2;
+  c.beforeItemPlacement(0, ht);
+  const totalW = Math.max(80, itemWidthOverride() || (contentAvail() - tw - 16));
+  const part = Math.max(16, (totalW - 3 * st.ItemInnerSpacing.x) / 4);
+  const wd = part * 4 + 3 * st.ItemInnerSpacing.x;
+  const x0 = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(wd + tw + 12, ht);
+  c.itemAdd(x0, y, wd, ht, w.getID(label));
+  let changed = false;
+
+  // Finalize the active segment on outside click or Enter/Escape commit.
+  if (c.activeKind === "segtext" && c.activeId !== 0 && c.activePayload) {
+    const p = c.activePayload;
+    const x = x0 + p.i * (part + st.ItemInnerSpacing.x);
+    const hSeg = c.hovered(x, y, part, ht);
+    if ((c.io.MouseClicked[0] && !hSeg) || p.commit) {
+      const v = parseFloat(p.value);
+      if (!Number.isNaN(v) && v !== values[p.i]) { values[p.i] = v; changed = true; }
+      c.activeId = 0; c.activeKind = null; c.activePayload = null;
+      if (ImGui._backendBlurText) ImGui._backendBlurText();
+    } else if (c.io.InputChars) {
+      p.value += c.io.InputChars;
+    }
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const x = x0 + i * (part + st.ItemInnerSpacing.x);
+    const h = c.hovered(x, y, part, ht);
+    if (h) c.anyWindowHovered = true;
+    const id = w.getID(label + "##seg" + i);
+    if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+      c.activeId = id; c.activeKind = "segtext";
+      c.activePayload = { i, value: String(values[i]), commit: false };
+      if (ImGui._backendFocusText) {
+        ImGui._backendFocusText(String(values[i]), (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+      }
+    }
+    const activeNow = c.activeId === id && c.activeKind === "segtext" && c.activePayload;
+    const curVal = activeNow ? c.activePayload.value : fmtNum(values[i], format);
+    emit({ t: "rectFilled", x, y, w: part, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
+    emit({ t: "rect", x, y, w: part, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
+    const innerY = y + Math.round((ht - st.FontSize) / 2);
+    let displayStr = curVal;
+    while (displayStr.length > 0 && measure(displayStr) > (part - 16)) displayStr = displayStr.slice(1);
+    emit({ t: "text", str: displayStr, x: x + st.FramePadding.x + 2, y: innerY, col: st.Colors[ImGui.Col.Text] });
+    if (activeNow && Math.floor(Date.now() / 500) % 2 === 0) {
+      const cx = x + st.FramePadding.x + 2 + measure(displayStr) + 1;
+      emit({ t: "line", x1: cx, y1: innerY, x2: cx, y2: innerY + st.FontSize, col: st.Colors[ImGui.Col.Text], th: 1.5 });
+    }
+  }
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x0 + wd + 8, y: y + Math.round((ht - st.FontSize) / 2), col: st.Colors[ImGui.Col.Text] });
+  return { changed, values };
+}
 function InputTextWithHint(label, hint, text, flags = 0) {
   // Hint is drawn INSIDE the empty box by InputText itself (TextDisabled);
   // the label stays outside to the right. Never overlay the last emitted op.
@@ -2294,12 +2442,13 @@ function EndListBox() { ImGui.EndChild(); }
 Object.assign(ImGui, {
   ArrowButton, CheckboxFlags, RadioButtonInt,
   SliderFloat2, SliderFloat3, SliderFloat4, SliderIntN, SliderInt2, SliderInt3, SliderInt4, SliderAngle, VSliderFloat, VSliderInt, VSliderScalar,
-  DragInt, DragFloatN, DragIntN,
-  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputFloat4, InputTextWithHint,
+  DragInt, DragFloatN, DragIntN, DragFloat4, DragInt4,
+  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputTextWithHint,
   ColorButton, ColorPicker3, ColorPicker4,
   Image, ImageButton, PlotLines, PlotHistogram,
   LabelText, Value, TextDisabled, SeparatorText, Bullet,
   BeginListBox, EndListBox,
+  InputFloat4,
 });
 global.__IMGUI_WIDGETS2__ = true;
 })(typeof globalThis !== "undefined" ? globalThis : this);
@@ -2358,6 +2507,7 @@ function ensure() {
   c._wantTextFocus = false;
   c._iniLoaded = false;
   c._iniSaveT = 0;
+  c._clipboardText = '';
   c._childStack = []; // ImGuiChildStack (shared by widgets.js + widgets2.js)
   }
   // Per-frame rollover: last frame's popup rects become the preemption map.
@@ -2575,6 +2725,17 @@ function throttleSaveIni(c) {
     localStorage.setItem(INI_KEY, JSON.stringify(j));
   } catch { /* ignore */ }
 }
+function SetClipboardText(text) {
+  const c = ensure();
+  c._clipboardText = String(text == null ? "" : text);
+  if (global.navigator && navigator.clipboard && navigator.clipboard.writeText) {
+    try { navigator.clipboard.writeText(c._clipboardText).catch(() => {}); } catch { /* ignore */ }
+  }
+}
+function GetClipboardText() {
+  const c = ensure();
+  return c._clipboardText;
+}
 function SaveIniSettingsToMemory() {
   const c = ensure(); const j = {};
   for (const [name, w] of c.windows) j[name] = { x: w.pos.x, y: w.pos.y, w: w.sizeFull.x, h: w.sizeFull.y };
@@ -2769,10 +2930,13 @@ function IsItemToggledOpen() { return false; }
 function IsWindowHovered() { const w = W(); return !!(w && w.contentHover); }
 function IsWindowFocused() { const c = ensure(); return c.windowStack[c.windowStack.length - 1] === W(); }
 function IsRectVisible() { return true; }
+function IsAnyItemActive() { return ensure().activeId !== 0; }
+function IsAnyItemHovered() { return ensure().hoveredId !== 0; }
+function IsAnyItemFocused() { const k = ensure().activeKind; return k === 'text' || k === 'segtext'; }
 // wrap edit-reporting widgets to feed IsItemEdited/Deactivated
 function wrapEditTrack() {
   if (ensure().__editWrapped) return; ensure().__editWrapped = true;
-  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
+  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "DragFloat4", "DragInt4", "InputFloat4", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
   for (const n of names) {
     if (typeof ImGui[n] !== "function") continue;
     const orig = ImGui[n];
@@ -2833,6 +2997,7 @@ function SetTooltip(text) {
   }
 }
 function SetItemTooltip(text) { if (IsItemHovered()) SetTooltip(text); }
+function SetTooltipV(fmt, args) { SetTooltip(ImGui.formatString(fmt, args)); }
 
 // ---------- popups / modals (overlay layer, FindBestWindowPosForPopup flip) ----------
 function OpenPopup(id, ax, ay) {
@@ -3603,9 +3768,10 @@ Object.assign(ImGui, {
   PushClipRect, PopClipRect, PushFont, PopFont, SetWindowFontScale,
   IsItemActive, IsItemClicked, IsItemEdited, IsItemDeactivated, IsItemDeactivatedAfterEdit,
   IsItemVisible, IsItemToggledOpen, IsWindowHovered, IsWindowFocused, IsRectVisible,
+  IsAnyItemActive, IsAnyItemHovered, IsAnyItemFocused,
   SetKeyboardFocusHere, IsMouseClicked, IsMouseDown, IsMouseReleased, IsMouseDragging,
   GetMouseDragDelta, IsMouseHoveringRect, IsKeyDown, GetKeyPressedAmount,
-  BeginTooltip, EndTooltip, SetTooltip, SetItemTooltip,
+  BeginTooltip, EndTooltip, SetTooltip, SetItemTooltip, SetTooltipV,
   OpenPopup, OpenPopupOnItemClick, IsPopupOpen, CloseCurrentPopup, ClosePopup,
   BeginPopup, EndPopup, BeginPopupModal, EndPopupModal, BeginPopupContextItem, BeginPopupContextWindow, BeginPopupContextVoid,
   BeginMenuBar, EndMenuBar, BeginMainMenuBar, EndMainMenuBar, BeginMenu, EndMenu, MenuItem,
@@ -3616,6 +3782,7 @@ Object.assign(ImGui, {
   Columns, NextColumn, TreeNodeEx, TreePush, TreePop, SetNextItemOpen, TreeNodeGetOpen,
   BeginDragDropSource, SetDragDropPayload, EndDragDropSource, BeginDragDropTarget, AcceptDragDropPayload, EndDragDropTarget,
   SaveIniSettingsToMemory, LoadIniSettingsFromMemory,
+  SetClipboardText, GetClipboardText,
 });
 global.__IMGUI_EXTENDED__ = true;
 })(typeof globalThis !== "undefined" ? globalThis : this);
@@ -3791,6 +3958,54 @@ function demoTables() {
     }
     ImGui.EndTable();
   }
+  ImGui.SeparatorText("Advanced table (flag toggles)");
+  D._tblFlags = D._tblFlags || { Borders: true, RowBg: true, Resizable: true, Sortable: true, Reorderable: false };
+  D._tblFlags.Borders = ImGui.Checkbox("Borders", D._tblFlags.Borders).checked;
+  D._tblFlags.RowBg = ImGui.Checkbox("RowBg", D._tblFlags.RowBg).checked;
+  D._tblFlags.Resizable = ImGui.Checkbox("Resizable", D._tblFlags.Resizable).checked;
+  D._tblFlags.Sortable = ImGui.Checkbox("Sortable", D._tblFlags.Sortable).checked;
+  D._tblFlags.Reorderable = ImGui.Checkbox("Reorderable", D._tblFlags.Reorderable).checked;
+  let flags = ImGui.TableFlags.None;
+  if (D._tblFlags.Borders) flags |= ImGui.TableFlags.Borders;
+  if (D._tblFlags.RowBg) flags |= ImGui.TableFlags.RowBg;
+  if (D._tblFlags.Resizable) flags |= ImGui.TableFlags.Resizable;
+  if (D._tblFlags.Sortable) flags |= ImGui.TableFlags.Sortable;
+  if (D._tblFlags.Reorderable) flags |= ImGui.TableFlags.Reorderable;
+  if (!D._advRows) {
+    const names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"];
+    const actions = ["launch", "scan", "purge", "backup", "deploy", "rotate", "sync", "archive", "notify", "repair"];
+    const statuses = ["ok", "warn", "idle", "busy", "error"];
+    D._advRows = names.map((n, i) => ({ id: i + 1, name: n, action: actions[i], value: (i * 37) % 101, status: statuses[i % statuses.length] }));
+  }
+  if (ImGui.BeginTable('advanced_table', 5, flags)) {
+    ImGui.TableSetupColumn("ID"); ImGui.TableSetupColumn("Name"); ImGui.TableSetupColumn("Action");
+    ImGui.TableSetupColumn("Value"); ImGui.TableSetupColumn("Status");
+    ImGui.TableHeadersRow();
+    const rows = D._advRows.slice();
+    const specs = ImGui.TableGetSortSpecs();
+    if (specs && specs.SpecsCount > 0) {
+      const spec = specs.Specs[0];
+      const keys = ["id", "name", "action", "value", "status"];
+      const key = keys[spec.ColumnIndex] || "id";
+      const isAsc = spec.SortDirection === 1;
+      rows.sort((a, b) => {
+        const va = a[key], vb = b[key];
+        const na = parseFloat(va), nb = parseFloat(vb);
+        if (!isNaN(na) && !isNaN(nb)) return isAsc ? na - nb : nb - na;
+        const sa = String(va), sb = String(vb);
+        return isAsc ? sa.localeCompare(sb) : sb.localeCompare(sa);
+      });
+    }
+    for (const r of rows) {
+      ImGui.TableNextRow();
+      ImGui.TableSetColumnIndex(0); ImGui.Text(String(r.id));
+      ImGui.TableSetColumnIndex(1); ImGui.Text(r.name);
+      ImGui.TableSetColumnIndex(2); ImGui.Text(r.action);
+      ImGui.TableSetColumnIndex(3); ImGui.Text(String(r.value));
+      ImGui.TableSetColumnIndex(4); ImGui.Text(r.status);
+    }
+    ImGui.EndTable();
+  }
   ImGui.SeparatorText("Legacy columns");
   ImGui.Columns(2);
   for (let r = 0; r < 3; r++) {
@@ -3852,9 +4067,59 @@ function demoMisc() {
   if (ImGui.Button("Focus next input")) ImGui.SetKeyboardFocusHere();
   D._f2 = ImGui.InputText("focused?", D._f2 || "").text;
   ImGui.Text(`mouse ${ImGui.IsMouseDown(0) ? "down" : "up"} keyA=${ImGui.IsKeyDown("KeyA")}`);
+  ImGui.SeparatorText("Input monitor (real-time)");
+  const io = ImGui.GetIO();
+  ImGui.Text(`MousePos: x=${Math.round(io.MousePos.x)} y=${Math.round(io.MousePos.y)}`);
+  ImGui.Text(`MouseWheel: ${io.MouseWheel}`);
+  ImGui.Text(`WantCaptureMouse: ${io.WantCaptureMouse}`);
+  ImGui.Text(`WantCaptureKeyboard: ${io.WantCaptureKeyboard}`);
+  const activeKeys = Object.keys(io.KeysDown).filter((k) => io.KeysDown[k]);
+  ImGui.Text(`KeysDown: ${activeKeys.length ? activeKeys.map((k) => `[${k}]`).join(" ") : "(none)"}`);
 }
 
-Object.assign(ImGui, { ShowDemoWindow, ShowStyleEditor, ShowMetricsWindow, _demoState: D });
+function LogToClipboard() {
+  const c = ImGui.GetContext();
+  c._logMode = "clipboard";
+  c._logBuffer = "";
+}
+
+function LogToTTY() {
+  const c = ImGui.GetContext();
+  c._logMode = "tty";
+  c._logBuffer = "";
+}
+
+function LogText(str) {
+  const c = ImGui.GetContext();
+  if (c._logMode) c._logBuffer += String(str);
+}
+
+function LogFinish() {
+  const c = ImGui.GetContext();
+  if (c._logMode === "clipboard") ImGui.SetClipboardText(c._logBuffer);
+  else if (c._logMode === "tty") console.log(c._logBuffer);
+  c._logMode = null;
+  c._logBuffer = "";
+}
+
+function ShowAboutWindow(pOpen) {
+  ImGui.SetNextWindowSize(420, 280, ImGui.Cond.FirstUseEver);
+  const w = ImGui.Begin("About Dear ImGui", pOpen === undefined ? true : pOpen);
+  if (pOpen !== undefined && typeof pOpen === "object") pOpen.value = w.open !== false;
+  if (w.visible) {
+    ImGui.Text("Dear ImGui Browser Port");
+    ImGui.TextColored([0.6, 0.8, 1, 1], "Version " + ImGui.VERSION);
+    ImGui.Separator();
+    ImGui.TextWrapped("Dear ImGui is a bloat-free graphical user interface library for C++ with minimal dependencies. This is a JavaScript/Canvas2D browser port of the original work by Omar Cornut (ocornut) and all ImGui contributors, bundled with a demo, style editor, and metrics windows.");
+    ImGui.Spacing();
+    if (ImGui.Button("Copy Version Information")) ImGui.SetClipboardText("Dear ImGui " + ImGui.VERSION);
+    ImGui.Separator();
+    ImGui.TextDisabled("License: MIT");
+  }
+  ImGui.End();
+}
+
+Object.assign(ImGui, { ShowDemoWindow, ShowStyleEditor, ShowMetricsWindow, ShowAboutWindow, LogToClipboard, LogToTTY, LogText, LogFinish, _demoState: D });
 global.__IMGUI_DEMO__ = true;
 })(typeof globalThis !== "undefined" ? globalThis : this);
 
@@ -3882,7 +4147,7 @@ const Config = {
   paddingX: 20,          // screen corner X padding
   paddingY: 20,          // screen corner Y padding
   paddingMessageY: 10,   // padding between stacked toasts
-  fadeInOutTime: 150,    // fade ms
+  fadeInOutTime: 250,    // slide+fade ms
   defaultDismiss: 3000,  // auto dismiss ms
   opacity: 0.8,          // peak toast opacity
   useSeparator: false,   // separator between title and content
@@ -3890,6 +4155,7 @@ const Config = {
   renderLimit: 5,        // max simultaneous toasts (0 = unlimited)
   position: "BottomRight", // BottomRight | BottomLeft | TopRight | TopLeft
   maxWidth: 320,         // wrap width
+  animate: true,         // set false to spawn toasts with zero displacement animation
 };
 
 // ---------- enums (ImGuiToastType / Phase / Pos) ----------
@@ -3959,8 +4225,12 @@ function Toast(type, dismissTime, content, buttonLabel, onButtonPress) {
 }
 function nowMs() { return (typeof performance !== "undefined" ? performance.now() : Date.now()); }
 function elapsedMs(t) { return nowMs() - t.createdAt; }
+function easeOutQuad(t) { return t * (2 - t); }
+function easeInQuad(t) { return t * t; }
+
 function getPhase(t) {
   const e = elapsedMs(t), f = Config.fadeInOutTime;
+  if (!Config.animate || f <= 0) return e > t.dismissTime ? ToastPhase.Expired : ToastPhase.Wait;
   if (e > f + t.dismissTime + f) return ToastPhase.Expired;
   if (e > f + t.dismissTime) return ToastPhase.FadeOut;
   if (e > f) return ToastPhase.Wait;
@@ -3968,9 +4238,24 @@ function getPhase(t) {
 }
 function getFadePercent(t) {
   const ph = getPhase(t), e = elapsedMs(t), f = Config.fadeInOutTime;
+  if (!Config.animate || f <= 0) return Config.opacity;
   if (ph === ToastPhase.FadeIn) return (e / f) * Config.opacity;
-  if (ph === ToastPhase.FadeOut) return (1 - (e - f - t.dismissTime) / f) * Config.opacity;
-  return 1 * Config.opacity;
+  if (ph === ToastPhase.FadeOut) return Math.max(0, (1 - (e - f - t.dismissTime) / f)) * Config.opacity;
+  return Config.opacity;
+}
+function getSlideOffset(t, boxW) {
+  const ph = getPhase(t), e = elapsedMs(t), f = Config.fadeInOutTime;
+  if (!Config.animate || f <= 0) return 0;
+  const travelDist = boxW + Config.paddingX + 10;
+  if (ph === ToastPhase.FadeIn) {
+    const progress = Math.min(1, Math.max(0, e / f));
+    return (1 - easeOutQuad(progress)) * travelDist;
+  }
+  if (ph === ToastPhase.FadeOut) {
+    const progress = Math.min(1, Math.max(0, (e - f - t.dismissTime) / f));
+    return easeInQuad(progress) * travelDist;
+  }
+  return 0;
 }
 
 // ---------- queue ----------
@@ -4059,7 +4344,13 @@ function RenderNotifications() {
     for (let i = _rectsPrev.length - 1; i >= 0; i--) {
       const r = _rectsPrev[i];
       if (m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h) {
-        if (r.kind === "dismiss") { RemoveNotification(_queue.indexOf(r.toast)); }
+        if (r.kind === "dismiss") {
+          if (Config.animate && Config.fadeInOutTime > 0) {
+            r.toast.createdAt = nowMs() - (Config.fadeInOutTime + r.toast.dismissTime);
+          } else {
+            RemoveNotification(_queue.indexOf(r.toast));
+          }
+        }
         else if (r.kind === "action" && r.toast.onButtonPress) { try { r.toast.onButtonPress(); } catch (e) { console.error("[Notify]", e); } }
         io.MouseClicked[0] = false; // consume: nothing beneath fires
         break;
@@ -4083,7 +4374,9 @@ function RenderNotifications() {
     const btnH = t.onButtonPress ? 26 : 0;
     const boxH = pad + titleH + (title && content ? 5 : 0) + sepH + clines.length * 16 + btnH + (btnH ? 6 : 0) + pad;
     const boxW = maxW;
-    const bx = right ? dw - Config.paddingX - boxW : Config.paddingX;
+    const targetX = right ? dw - Config.paddingX - boxW : Config.paddingX;
+    const slideOffset = getSlideOffset(t, boxW);
+    const bx = right ? targetX + slideOffset : targetX - slideOffset;
     const by = bottom ? cursor - boxH : cursor;
     // dismiss hit-test uses these coords
     const bg = withAlpha([0.10, 0.10, 0.10, 1], Math.min(1, alpha + 0.2));
@@ -4256,7 +4549,7 @@ const Backend = {
       const cc = ImGui.GetContext();
       // Pure canvas text editing: route editing keys straight into the
       // active widget's payload (no DOM element involved).
-      if (cc.activeKind === "text" && cc.activePayload) {
+      if ((cc.activeKind === "text" || cc.activeKind === "segtext") && cc.activePayload) {
         if (e.key === "Backspace") {
           e.preventDefault();
           cc.activePayload.value = cc.activePayload.value.slice(0, -1);
@@ -4277,6 +4570,23 @@ const Backend = {
       if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
     }, true);
     window.addEventListener("keyup", (e) => { io.KeysDown[e.code] = false; }, true);
+
+    // --- clipboard bridge: keep ImGui's cache in sync with the OS clipboard ---
+    const onCopyCut = () => {
+      const cc = ImGui.GetContext();
+      const sel = global.getSelection ? String(global.getSelection()) : "";
+      if (sel) cc._clipboardText = sel;
+      const txt = cc._clipboardText || "";
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try { navigator.clipboard.writeText(txt).catch(() => {}); } catch { /* ignore */ }
+      }
+    };
+    window.addEventListener("copy", onCopyCut);
+    window.addEventListener("cut", onCopyCut);
+    window.addEventListener("paste", (e) => {
+      const cc = ImGui.GetContext();
+      try { cc._clipboardText = (e.clipboardData && e.clipboardData.getData("text")) || ""; } catch { /* ignore */ }
+    });
     return this;
   },
 
@@ -4361,7 +4671,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.32"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.35"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {

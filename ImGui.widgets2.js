@@ -31,6 +31,7 @@ function contentAvail() {
   return Math.max(0, w.pos.x + w.sizeFull.x - w.padding.x - scrollbarReserve - w.dc.cursorPos.x);
 }
 function dis() { const c = ctx(); return (c._disabledDepth || 0) > 0; }
+function itemWidthOverride() { const c = ctx(); const s = c._itemWidthStack; return (s && s.length > 0 && s[s.length - 1] > 0) ? s[s.length - 1] : 0; }
 function clickSuppressed() {
   const cc = ctx();
   return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
@@ -126,6 +127,7 @@ function fmtNum(v, format) {
   const m = /%\.(\d+)f/.exec(format);
   if (m) return v.toFixed(+m[1]);
   if (format.indexOf("%f") >= 0) return String(v);
+  if (/%d/.test(format)) return String(Math.round(v));
   return format;
 }
 function VSliderScalar(label, value, vmin, vmax, format) {
@@ -265,7 +267,108 @@ function InputIntN(label, values, vmin, vmax) {
 }
 function InputFloat2(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
 function InputFloat3(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
-function InputFloat4(l, v, vmin, vmax, step, fmt) { const r = InputFloatN(l, v, step, fmt, vmin, vmax); return { changed: r.changed, value: r.values }; }
+// Single-row horizontal segmented drag: 4 sub-boxes in one row, each dragged
+// individually. partition = (totalW - 3*Style.ItemInnerSpacing.x)/4.
+function segDrag4(label, values, isInt, speed, vmin, vmax, format) {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, values };
+  const st = c.style, ht = 22;
+  const tw = measure(ImGui.findRenderedTextEnd(label));
+  c.beforeItemPlacement(0, ht);
+  const totalW = Math.max(80, itemWidthOverride() || (contentAvail() - tw - 16));
+  const part = Math.max(16, (totalW - 3 * st.ItemInnerSpacing.x) / 4);
+  const wd = part * 4 + 3 * st.ItemInnerSpacing.x;
+  const x0 = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(wd + tw + 12, ht);
+  c.itemAdd(x0, y, wd, ht, w.getID(label));
+  let changed = false;
+  if (c.activeKind === "segdrag" && !c.io.MouseDown[0]) { c.activeId = 0; c.activeKind = null; c.activePayload = null; }
+  for (let i = 0; i < 4; i++) {
+    const x = x0 + i * (part + st.ItemInnerSpacing.x);
+    const h = c.hovered(x, y, part, ht);
+    if (h) c.anyWindowHovered = true;
+    const id = w.getID(label + "##seg" + i);
+    if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+      c.activeId = id; c.activeKind = "segdrag";
+      c.activePayload = { i, startX: c.io.MousePos.x, startV: values[i] };
+    }
+    if (c.activeId === id && c.activeKind === "segdrag" && c.activePayload) {
+      const dx = c.io.MousePos.x - c.activePayload.startX;
+      let nv = c.activePayload.startV + dx * speed * Math.max(0.1, Math.abs(vmax - vmin) / 200 || 1);
+      if (isInt) nv = Math.round(nv);
+      if (vmax > vmin) nv = Math.max(vmin, Math.min(vmax, nv));
+      if (nv !== values[i]) { values[i] = nv; changed = true; }
+    }
+    const active = c.activeId === id && c.activeKind === "segdrag";
+    emit({ t: "rectFilled", x, y, w: part, h: ht, r: st.FrameRounding, col: st.Colors[h || active ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg] });
+    emit({ t: "text", str: fmtNum(values[i], format), x: x + 6, y: y + 4, col: st.Colors[ImGui.Col.Text] });
+  }
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x0 + wd + 8, y: y + 4, col: st.Colors[ImGui.Col.Text] });
+  return { changed, values };
+}
+function DragFloat4(label, values, speed = 0.05, vmin = 0, vmax = 0, format = "%.3f") {
+  return segDrag4(label, values, false, speed, vmin, vmax, format);
+}
+function DragInt4(label, values, speed = 1, vmin = 0, vmax = 0, format = "%d") {
+  return segDrag4(label, values, true, speed, vmin, vmax, format);
+}
+// Single-row horizontal segmented input: 4 sub-boxes, each edited individually.
+function InputFloat4(label, values, format = "%.3f") {
+  const c = ctx(), w = cur(); if (!w) return { changed: false, values };
+  const st = c.style;
+  const tw = measure(ImGui.findRenderedTextEnd(label));
+  const ht = st.FontSize + st.FramePadding.y * 2 + 2;
+  c.beforeItemPlacement(0, ht);
+  const totalW = Math.max(80, itemWidthOverride() || (contentAvail() - tw - 16));
+  const part = Math.max(16, (totalW - 3 * st.ItemInnerSpacing.x) / 4);
+  const wd = part * 4 + 3 * st.ItemInnerSpacing.x;
+  const x0 = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(wd + tw + 12, ht);
+  c.itemAdd(x0, y, wd, ht, w.getID(label));
+  let changed = false;
+
+  // Finalize the active segment on outside click or Enter/Escape commit.
+  if (c.activeKind === "segtext" && c.activeId !== 0 && c.activePayload) {
+    const p = c.activePayload;
+    const x = x0 + p.i * (part + st.ItemInnerSpacing.x);
+    const hSeg = c.hovered(x, y, part, ht);
+    if ((c.io.MouseClicked[0] && !hSeg) || p.commit) {
+      const v = parseFloat(p.value);
+      if (!Number.isNaN(v) && v !== values[p.i]) { values[p.i] = v; changed = true; }
+      c.activeId = 0; c.activeKind = null; c.activePayload = null;
+      if (ImGui._backendBlurText) ImGui._backendBlurText();
+    } else if (c.io.InputChars) {
+      p.value += c.io.InputChars;
+    }
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const x = x0 + i * (part + st.ItemInnerSpacing.x);
+    const h = c.hovered(x, y, part, ht);
+    if (h) c.anyWindowHovered = true;
+    const id = w.getID(label + "##seg" + i);
+    if (h && c.io.MouseClicked[0] && c.activeId === 0 && !clickSuppressed()) {
+      c.activeId = id; c.activeKind = "segtext";
+      c.activePayload = { i, value: String(values[i]), commit: false };
+      if (ImGui._backendFocusText) {
+        ImGui._backendFocusText(String(values[i]), (nv) => { if (c.activePayload) c.activePayload.value = nv; });
+      }
+    }
+    const activeNow = c.activeId === id && c.activeKind === "segtext" && c.activePayload;
+    const curVal = activeNow ? c.activePayload.value : fmtNum(values[i], format);
+    emit({ t: "rectFilled", x, y, w: part, h: ht, r: st.FrameRounding, col: st.Colors[activeNow ? ImGui.Col.FrameBgActive : (h ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg)] });
+    emit({ t: "rect", x, y, w: part, h: ht, r: st.FrameRounding, col: st.Colors[ImGui.Col.Border], th: 1 });
+    const innerY = y + Math.round((ht - st.FontSize) / 2);
+    let displayStr = curVal;
+    while (displayStr.length > 0 && measure(displayStr) > (part - 16)) displayStr = displayStr.slice(1);
+    emit({ t: "text", str: displayStr, x: x + st.FramePadding.x + 2, y: innerY, col: st.Colors[ImGui.Col.Text] });
+    if (activeNow && Math.floor(Date.now() / 500) % 2 === 0) {
+      const cx = x + st.FramePadding.x + 2 + measure(displayStr) + 1;
+      emit({ t: "line", x1: cx, y1: innerY, x2: cx, y2: innerY + st.FontSize, col: st.Colors[ImGui.Col.Text], th: 1.5 });
+    }
+  }
+  emit({ t: "text", str: ImGui.findRenderedTextEnd(label), x: x0 + wd + 8, y: y + Math.round((ht - st.FontSize) / 2), col: st.Colors[ImGui.Col.Text] });
+  return { changed, values };
+}
 function InputTextWithHint(label, hint, text, flags = 0) {
   // Hint is drawn INSIDE the empty box by InputText itself (TextDisabled);
   // the label stays outside to the right. Never overlay the last emitted op.
@@ -471,12 +574,13 @@ function EndListBox() { ImGui.EndChild(); }
 Object.assign(ImGui, {
   ArrowButton, CheckboxFlags, RadioButtonInt,
   SliderFloat2, SliderFloat3, SliderFloat4, SliderIntN, SliderInt2, SliderInt3, SliderInt4, SliderAngle, VSliderFloat, VSliderInt, VSliderScalar,
-  DragInt, DragFloatN, DragIntN,
-  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputFloat4, InputTextWithHint,
+  DragInt, DragFloatN, DragIntN, DragFloat4, DragInt4,
+  InputFloat, InputInt, InputDouble, InputFloatN, InputIntN, InputFloat2, InputFloat3, InputTextWithHint,
   ColorButton, ColorPicker3, ColorPicker4,
   Image, ImageButton, PlotLines, PlotHistogram,
   LabelText, Value, TextDisabled, SeparatorText, Bullet,
   BeginListBox, EndListBox,
+  InputFloat4,
 });
 global.__IMGUI_WIDGETS2__ = true;
 })(typeof globalThis !== "undefined" ? globalThis : this);

@@ -42,6 +42,20 @@ function clickSuppressed() {
   const cc = ctx();
   return !!cc._suppressChrome && !(cc._popupBoxStack && cc._popupBoxStack.length);
 }
+// Printf-like formatter: consumes argsArray sequentially, supports
+// %d / %i / %f / %s / %.Nf.
+function formatString(fmt, argsArray) {
+  const args = Array.isArray(argsArray) ? argsArray.slice() : [];
+  return String(fmt === undefined ? "" : fmt).replace(
+    /%(?:\.(\d+))?([difs])/g,
+    (m, prec, spec) => {
+      const v = args.length ? args.shift() : undefined;
+      if (spec === "s") return String(v);
+      if (spec === "d" || spec === "i") return String(Math.trunc(Number(v) || 0));
+      return (Number(v) || 0).toFixed(prec !== undefined ? +prec : 6);
+    },
+  );
+}
 function formatValue(fmt, v) {
   const m = String(fmt).match(/%(?:\.(\d+))?([fdg])/);
   if (!m) return String(v);
@@ -595,6 +609,18 @@ function TreeNode(label) {
 }
 function TreePop() { Unindent(); }
 
+// ---------- printf-style text wrappers ----------
+function TextV(fmt, args) { Text(formatString(fmt, args)); }
+function TextColoredV(col, fmt, args) { TextColored(col, formatString(fmt, args)); }
+function TextWrappedV(fmt, args) { TextWrapped(formatString(fmt, args)); }
+function BulletTextV(fmt, args) { BulletText(formatString(fmt, args)); }
+function TextDisabledV(fmt, args) { (ImGui.TextDisabled || TextDisabledFallback)(formatString(fmt, args)); }
+function TextDisabledFallback(s) { TextColored([0.5, 0.5, 0.5, 1], s); }
+function TreeNodeV(id, fmt, args) {
+  const label = formatString(fmt, args);
+  return TreeNode(id !== undefined && id !== null && id !== "" ? label + "##" + id : label);
+}
+
 // ---------- child ----------
 function BeginChild(id, wArg = 0, hArg = 0, border = false) {
   const c = ctx(), w = cur(); if (!w) return false;
@@ -715,6 +741,7 @@ function IsItemHovered() { return ctx().isItemHovered(); }
 Object.assign(ImGui, {
   SameLine, NewLine, Spacing, Separator, Indent, Unindent, Dummy,
   Text, TextColored, TextWrapped, BulletText,
+  TextV, TextColoredV, TextWrappedV, BulletTextV, TextDisabledV, TreeNodeV, formatString,
   Button, SmallButton, InvisibleButton,
   Checkbox, RadioButton, Toggle,
   SliderFloat, SliderInt, DragFloat,

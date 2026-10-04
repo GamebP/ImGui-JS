@@ -50,6 +50,7 @@ function ensure() {
   c._wantTextFocus = false;
   c._iniLoaded = false;
   c._iniSaveT = 0;
+  c._clipboardText = '';
   c._childStack = []; // ImGuiChildStack (shared by widgets.js + widgets2.js)
   }
   // Per-frame rollover: last frame's popup rects become the preemption map.
@@ -267,6 +268,17 @@ function throttleSaveIni(c) {
     localStorage.setItem(INI_KEY, JSON.stringify(j));
   } catch { /* ignore */ }
 }
+function SetClipboardText(text) {
+  const c = ensure();
+  c._clipboardText = String(text == null ? "" : text);
+  if (global.navigator && navigator.clipboard && navigator.clipboard.writeText) {
+    try { navigator.clipboard.writeText(c._clipboardText).catch(() => {}); } catch { /* ignore */ }
+  }
+}
+function GetClipboardText() {
+  const c = ensure();
+  return c._clipboardText;
+}
 function SaveIniSettingsToMemory() {
   const c = ensure(); const j = {};
   for (const [name, w] of c.windows) j[name] = { x: w.pos.x, y: w.pos.y, w: w.sizeFull.x, h: w.sizeFull.y };
@@ -461,10 +473,13 @@ function IsItemToggledOpen() { return false; }
 function IsWindowHovered() { const w = W(); return !!(w && w.contentHover); }
 function IsWindowFocused() { const c = ensure(); return c.windowStack[c.windowStack.length - 1] === W(); }
 function IsRectVisible() { return true; }
+function IsAnyItemActive() { return ensure().activeId !== 0; }
+function IsAnyItemHovered() { return ensure().hoveredId !== 0; }
+function IsAnyItemFocused() { const k = ensure().activeKind; return k === 'text' || k === 'segtext'; }
 // wrap edit-reporting widgets to feed IsItemEdited/Deactivated
 function wrapEditTrack() {
   if (ensure().__editWrapped) return; ensure().__editWrapped = true;
-  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
+  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "DragFloat4", "DragInt4", "InputFloat4", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
   for (const n of names) {
     if (typeof ImGui[n] !== "function") continue;
     const orig = ImGui[n];
@@ -525,6 +540,7 @@ function SetTooltip(text) {
   }
 }
 function SetItemTooltip(text) { if (IsItemHovered()) SetTooltip(text); }
+function SetTooltipV(fmt, args) { SetTooltip(ImGui.formatString(fmt, args)); }
 
 // ---------- popups / modals (overlay layer, FindBestWindowPosForPopup flip) ----------
 function OpenPopup(id, ax, ay) {
@@ -1295,9 +1311,10 @@ Object.assign(ImGui, {
   PushClipRect, PopClipRect, PushFont, PopFont, SetWindowFontScale,
   IsItemActive, IsItemClicked, IsItemEdited, IsItemDeactivated, IsItemDeactivatedAfterEdit,
   IsItemVisible, IsItemToggledOpen, IsWindowHovered, IsWindowFocused, IsRectVisible,
+  IsAnyItemActive, IsAnyItemHovered, IsAnyItemFocused,
   SetKeyboardFocusHere, IsMouseClicked, IsMouseDown, IsMouseReleased, IsMouseDragging,
   GetMouseDragDelta, IsMouseHoveringRect, IsKeyDown, GetKeyPressedAmount,
-  BeginTooltip, EndTooltip, SetTooltip, SetItemTooltip,
+  BeginTooltip, EndTooltip, SetTooltip, SetItemTooltip, SetTooltipV,
   OpenPopup, OpenPopupOnItemClick, IsPopupOpen, CloseCurrentPopup, ClosePopup,
   BeginPopup, EndPopup, BeginPopupModal, EndPopupModal, BeginPopupContextItem, BeginPopupContextWindow, BeginPopupContextVoid,
   BeginMenuBar, EndMenuBar, BeginMainMenuBar, EndMainMenuBar, BeginMenu, EndMenu, MenuItem,
@@ -1308,6 +1325,7 @@ Object.assign(ImGui, {
   Columns, NextColumn, TreeNodeEx, TreePush, TreePop, SetNextItemOpen, TreeNodeGetOpen,
   BeginDragDropSource, SetDragDropPayload, EndDragDropSource, BeginDragDropTarget, AcceptDragDropPayload, EndDragDropTarget,
   SaveIniSettingsToMemory, LoadIniSettingsFromMemory,
+  SetClipboardText, GetClipboardText,
 });
 global.__IMGUI_EXTENDED__ = true;
 })(typeof globalThis !== "undefined" ? globalThis : this);

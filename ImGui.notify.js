@@ -20,7 +20,7 @@ const Config = {
   paddingX: 20,          // screen corner X padding
   paddingY: 20,          // screen corner Y padding
   paddingMessageY: 10,   // padding between stacked toasts
-  fadeInOutTime: 150,    // fade ms
+  fadeInOutTime: 250,    // slide+fade ms
   defaultDismiss: 3000,  // auto dismiss ms
   opacity: 0.8,          // peak toast opacity
   useSeparator: false,   // separator between title and content
@@ -28,6 +28,7 @@ const Config = {
   renderLimit: 5,        // max simultaneous toasts (0 = unlimited)
   position: "BottomRight", // BottomRight | BottomLeft | TopRight | TopLeft
   maxWidth: 320,         // wrap width
+  animate: true,         // set false to spawn toasts with zero displacement animation
 };
 
 // ---------- enums (ImGuiToastType / Phase / Pos) ----------
@@ -97,8 +98,12 @@ function Toast(type, dismissTime, content, buttonLabel, onButtonPress) {
 }
 function nowMs() { return (typeof performance !== "undefined" ? performance.now() : Date.now()); }
 function elapsedMs(t) { return nowMs() - t.createdAt; }
+function easeOutQuad(t) { return t * (2 - t); }
+function easeInQuad(t) { return t * t; }
+
 function getPhase(t) {
   const e = elapsedMs(t), f = Config.fadeInOutTime;
+  if (!Config.animate || f <= 0) return e > t.dismissTime ? ToastPhase.Expired : ToastPhase.Wait;
   if (e > f + t.dismissTime + f) return ToastPhase.Expired;
   if (e > f + t.dismissTime) return ToastPhase.FadeOut;
   if (e > f) return ToastPhase.Wait;
@@ -106,9 +111,24 @@ function getPhase(t) {
 }
 function getFadePercent(t) {
   const ph = getPhase(t), e = elapsedMs(t), f = Config.fadeInOutTime;
+  if (!Config.animate || f <= 0) return Config.opacity;
   if (ph === ToastPhase.FadeIn) return (e / f) * Config.opacity;
-  if (ph === ToastPhase.FadeOut) return (1 - (e - f - t.dismissTime) / f) * Config.opacity;
-  return 1 * Config.opacity;
+  if (ph === ToastPhase.FadeOut) return Math.max(0, (1 - (e - f - t.dismissTime) / f)) * Config.opacity;
+  return Config.opacity;
+}
+function getSlideOffset(t, boxW) {
+  const ph = getPhase(t), e = elapsedMs(t), f = Config.fadeInOutTime;
+  if (!Config.animate || f <= 0) return 0;
+  const travelDist = boxW + Config.paddingX + 10;
+  if (ph === ToastPhase.FadeIn) {
+    const progress = Math.min(1, Math.max(0, e / f));
+    return (1 - easeOutQuad(progress)) * travelDist;
+  }
+  if (ph === ToastPhase.FadeOut) {
+    const progress = Math.min(1, Math.max(0, (e - f - t.dismissTime) / f));
+    return easeInQuad(progress) * travelDist;
+  }
+  return 0;
 }
 
 // ---------- queue ----------
@@ -197,7 +217,13 @@ function RenderNotifications() {
     for (let i = _rectsPrev.length - 1; i >= 0; i--) {
       const r = _rectsPrev[i];
       if (m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h) {
-        if (r.kind === "dismiss") { RemoveNotification(_queue.indexOf(r.toast)); }
+        if (r.kind === "dismiss") {
+          if (Config.animate && Config.fadeInOutTime > 0) {
+            r.toast.createdAt = nowMs() - (Config.fadeInOutTime + r.toast.dismissTime);
+          } else {
+            RemoveNotification(_queue.indexOf(r.toast));
+          }
+        }
         else if (r.kind === "action" && r.toast.onButtonPress) { try { r.toast.onButtonPress(); } catch (e) { console.error("[Notify]", e); } }
         io.MouseClicked[0] = false; // consume: nothing beneath fires
         break;
@@ -221,7 +247,9 @@ function RenderNotifications() {
     const btnH = t.onButtonPress ? 26 : 0;
     const boxH = pad + titleH + (title && content ? 5 : 0) + sepH + clines.length * 16 + btnH + (btnH ? 6 : 0) + pad;
     const boxW = maxW;
-    const bx = right ? dw - Config.paddingX - boxW : Config.paddingX;
+    const targetX = right ? dw - Config.paddingX - boxW : Config.paddingX;
+    const slideOffset = getSlideOffset(t, boxW);
+    const bx = right ? targetX + slideOffset : targetX - slideOffset;
     const by = bottom ? cursor - boxH : cursor;
     // dismiss hit-test uses these coords
     const bg = withAlpha([0.10, 0.10, 0.10, 1], Math.min(1, alpha + 0.2));

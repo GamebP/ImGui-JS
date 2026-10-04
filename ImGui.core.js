@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.32";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.35";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -239,6 +239,7 @@ class ImGuiContext {
     this.activeRect = null; this.activeKind = null; this.activePayload = null;
     this.lastItem = { id: 0, rect: null };
     this.frame = 0;
+    this._frameEnded = true;
     this.openPopups = new Map(); // id -> {x,y}
     this.comboOpen = 0;
     this.treeOpen = new Map();
@@ -259,12 +260,13 @@ class ImGuiContext {
       io._prevDown[b] = io.MouseDown[b];
     }
     this.frame++;
+    this._frameEnded = false;
     this.windowStack.length = 0;
     this.current = null;
     this.anyWindowHovered = false;
     this._debugRects.length = 0;
     this.hoveredId = this.activeId !== 0 ? this.hoveredId : 0;
-    io.WantTextInput = (this.activeKind === "text");
+    io.WantTextInput = (this.activeKind === "text" || this.activeKind === "segtext");
   }
   endFrame() {
     const io = this.io;
@@ -283,10 +285,11 @@ class ImGuiContext {
     }
     // Safety: kill ghost drag payloads if the release happened off-window.
     if (this._dd && !io.MouseDown[0]) this._dd = null;
-    io.WantCaptureKeyboard = (this.activeKind === "text");
+    io.WantCaptureKeyboard = (this.activeKind === "text" || this.activeKind === "segtext");
     io.MouseWheel = 0;
     io.InputChars = "";
     for (let b = 0; b < 5; b++) { io.MouseClicked[b] = false; io.MouseReleased[b] = false; }
+    this._frameEnded = true;
   }
   findOrCreate(name, flags) {
     let w = this.windows.get(name);
@@ -619,10 +622,25 @@ function GetStyle() { return GetContext().style; }
 function SetDebugMode(on) { GetContext()._debugMode = !!on; }
 function IsDebugMode() { return !!GetContext()._debugMode; }
 
+function GetVersion() { return IMGUI_VERSION; }
+function NewFrame(dt) { GetContext().newFrame(dt); }
+function EndFrame() { GetContext().endFrame(); }
+function Render() {
+  const c = GetContext();
+  if (c._frameEnded !== true) c.endFrame();
+  // Finalization marker is maintained by ImGuiContext; Render does not draw.
+}
+function DestroyContext() { _ctx = null; }
+function destroyContext() { DestroyContext(); _ctx = null; }
+function GetCurrentContext() { return _ctx; }
+function SetCurrentContext(ctx) { _ctx = ctx; return _ctx; }
+
 const ImGuiBase = {
   VERSION: IMGUI_VERSION, WindowFlags, Cond, Col,
   hashStr, findRenderedTextEnd, colToCss, lerpCol, applyStyleDark,
   CreateContext, GetContext, GetIO, GetStyle, SetDebugMode, IsDebugMode,
+  GetVersion, NewFrame, EndFrame, Render, DestroyContext, GetCurrentContext, SetCurrentContext,
+  destroyContext,
   ImGuiWindow, ImGuiContext,
 };
 
