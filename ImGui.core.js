@@ -8,7 +8,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.22";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.23";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -277,6 +277,8 @@ class ImGuiContext {
         if (r && io.MousePos.x >= r.x && io.MousePos.x <= r.x + r.w && io.MousePos.y >= r.y && io.MousePos.y <= r.y + r.h) { io.WantCaptureMouse = true; break; }
       }
     }
+    // Safety: kill ghost drag payloads if the release happened off-window.
+    if (this._dd && !io.MouseDown[0]) this._dd = null;
     io.WantCaptureKeyboard = (this.activeKind === "text");
     io.MouseWheel = 0;
     io.InputChars = "";

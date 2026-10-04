@@ -171,6 +171,76 @@ function RadioButton(label, active) {
   return pressed;
 }
 
+// ---------- toggle switch (DeAr ImGui pill switch) ----------
+function Toggle(label, checked) {
+  const c = ctx(), w = cur();
+  if (!w) return { changed: false, checked };
+
+  const st = c.style;
+  const shown = ImGui.findRenderedTextEnd(label);
+  const tw = textW(shown);
+
+  // Dimensions for standard ImGui toggle pill
+  const trackW = 34;
+  const trackH = 18;
+  const gap = 8;
+  const totalW = trackW + (tw > 0 ? gap + tw : 0);
+  const totalH = Math.max(trackH, st.FontSize + st.FramePadding.y);
+
+  c.beforeItemPlacement(totalW, totalH);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(totalW, totalH);
+
+  const id = w.getID(label);
+  c.itemAdd(x, y, totalW, totalH, id);
+  const bb = c.buttonBehavior(id, x, y, totalW, totalH);
+
+  let ch = !!checked, changed = false;
+  if (bb.pressed) {
+    ch = !ch;
+    changed = true;
+  }
+
+  // Smooth sliding animation for the knob (0.0 = left/off, 1.0 = right/on)
+  const targetT = ch ? 1.0 : 0.0;
+  const t = (ImGui.Animation && ImGui.Animation.Float)
+    ? ImGui.Animation.Float("toggle:" + id, targetT, 0.12)
+    : targetT;
+
+  // Track colors: muted FrameBg for off, blue/accent for on
+  const offCol = st.Colors[bb.hovered ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg];
+  const onCol = st.Colors[bb.hovered ? ImGui.Col.ButtonHovered : ImGui.Col.ButtonActive];
+  const trackCol = ImGui.lerpCol(offCol, onCol, t);
+
+  const radius = trackH * 0.5;
+  const centerY = y + Math.round((totalH - trackH) * 0.5);
+
+  // 1. Draw rounded background pill
+  emit({ t: "rectFilled", x, y: centerY, w: trackW, h: trackH, r: radius, col: trackCol });
+  emit({ t: "rect", x, y: centerY, w: trackW, h: trackH, r: radius, col: st.Colors[ImGui.Col.Border], th: 1 });
+
+  // 2. Draw sliding circular knob
+  const knobR = radius - 2.5;
+  const knobMinX = x + radius;
+  const knobMaxX = x + trackW - radius;
+  const knobX = knobMinX + (knobMaxX - knobMinX) * t;
+  const knobY = centerY + radius;
+  emit({ t: "circleFilled", x: knobX, y: knobY, r: knobR, col: [1, 1, 1, 1] });
+
+  // 3. Draw label text to the right
+  if (tw > 0) {
+    emit({
+      t: "text",
+      str: shown,
+      x: x + trackW + gap,
+      y: y + Math.round((totalH - st.FontSize) * 0.5),
+      col: st.Colors[ImGui.Col.Text]
+    });
+  }
+
+  return { changed, checked: ch };
+}
+
 // ---------- sliders / drags ----------
 function sliderBehavior(id, x, y, wd, ht, vmin, vmax, value) {
   const c = ctx();
@@ -593,7 +663,7 @@ Object.assign(ImGui, {
   SameLine, NewLine, Spacing, Separator, Indent, Unindent, Dummy,
   Text, TextColored, TextWrapped, BulletText,
   Button, SmallButton, InvisibleButton,
-  Checkbox, RadioButton,
+  Checkbox, RadioButton, Toggle,
   SliderFloat, SliderInt, DragFloat,
   InputText, InputTextMultiline,
   ColorEdit3, ColorEdit4,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.22
+// @version      1.0.23
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.22";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.23";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -292,6 +292,8 @@ class ImGuiContext {
         if (r && io.MousePos.x >= r.x && io.MousePos.x <= r.x + r.w && io.MousePos.y >= r.y && io.MousePos.y <= r.y + r.h) { io.WantCaptureMouse = true; break; }
       }
     }
+    // Safety: kill ghost drag payloads if the release happened off-window.
+    if (this._dd && !io.MouseDown[0]) this._dd = null;
     io.WantCaptureKeyboard = (this.activeKind === "text");
     io.MouseWheel = 0;
     io.InputChars = "";
@@ -1225,6 +1227,76 @@ function RadioButton(label, active) {
   return pressed;
 }
 
+// ---------- toggle switch (DeAr ImGui pill switch) ----------
+function Toggle(label, checked) {
+  const c = ctx(), w = cur();
+  if (!w) return { changed: false, checked };
+
+  const st = c.style;
+  const shown = ImGui.findRenderedTextEnd(label);
+  const tw = textW(shown);
+
+  // Dimensions for standard ImGui toggle pill
+  const trackW = 34;
+  const trackH = 18;
+  const gap = 8;
+  const totalW = trackW + (tw > 0 ? gap + tw : 0);
+  const totalH = Math.max(trackH, st.FontSize + st.FramePadding.y);
+
+  c.beforeItemPlacement(totalW, totalH);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(totalW, totalH);
+
+  const id = w.getID(label);
+  c.itemAdd(x, y, totalW, totalH, id);
+  const bb = c.buttonBehavior(id, x, y, totalW, totalH);
+
+  let ch = !!checked, changed = false;
+  if (bb.pressed) {
+    ch = !ch;
+    changed = true;
+  }
+
+  // Smooth sliding animation for the knob (0.0 = left/off, 1.0 = right/on)
+  const targetT = ch ? 1.0 : 0.0;
+  const t = (ImGui.Animation && ImGui.Animation.Float)
+    ? ImGui.Animation.Float("toggle:" + id, targetT, 0.12)
+    : targetT;
+
+  // Track colors: muted FrameBg for off, blue/accent for on
+  const offCol = st.Colors[bb.hovered ? ImGui.Col.FrameBgHovered : ImGui.Col.FrameBg];
+  const onCol = st.Colors[bb.hovered ? ImGui.Col.ButtonHovered : ImGui.Col.ButtonActive];
+  const trackCol = ImGui.lerpCol(offCol, onCol, t);
+
+  const radius = trackH * 0.5;
+  const centerY = y + Math.round((totalH - trackH) * 0.5);
+
+  // 1. Draw rounded background pill
+  emit({ t: "rectFilled", x, y: centerY, w: trackW, h: trackH, r: radius, col: trackCol });
+  emit({ t: "rect", x, y: centerY, w: trackW, h: trackH, r: radius, col: st.Colors[ImGui.Col.Border], th: 1 });
+
+  // 2. Draw sliding circular knob
+  const knobR = radius - 2.5;
+  const knobMinX = x + radius;
+  const knobMaxX = x + trackW - radius;
+  const knobX = knobMinX + (knobMaxX - knobMinX) * t;
+  const knobY = centerY + radius;
+  emit({ t: "circleFilled", x: knobX, y: knobY, r: knobR, col: [1, 1, 1, 1] });
+
+  // 3. Draw label text to the right
+  if (tw > 0) {
+    emit({
+      t: "text",
+      str: shown,
+      x: x + trackW + gap,
+      y: y + Math.round((totalH - st.FontSize) * 0.5),
+      col: st.Colors[ImGui.Col.Text]
+    });
+  }
+
+  return { changed, checked: ch };
+}
+
 // ---------- sliders / drags ----------
 function sliderBehavior(id, x, y, wd, ht, vmin, vmax, value) {
   const c = ctx();
@@ -1647,7 +1719,7 @@ Object.assign(ImGui, {
   SameLine, NewLine, Spacing, Separator, Indent, Unindent, Dummy,
   Text, TextColored, TextWrapped, BulletText,
   Button, SmallButton, InvisibleButton,
-  Checkbox, RadioButton,
+  Checkbox, RadioButton, Toggle,
   SliderFloat, SliderInt, DragFloat,
   InputText, InputTextMultiline,
   ColorEdit3, ColorEdit4,
@@ -2523,7 +2595,7 @@ function IsRectVisible() { return true; }
 // wrap edit-reporting widgets to feed IsItemEdited/Deactivated
 function wrapEditTrack() {
   if (ensure().__editWrapped) return; ensure().__editWrapped = true;
-  const names = ["Checkbox", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
+  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
   for (const n of names) {
     if (typeof ImGui[n] !== "function") continue;
     const orig = ImGui[n];
@@ -3182,10 +3254,13 @@ function TreeNodeGetOpen() { return false; }
 // ---------- drag & drop (lite) ----------
 function BeginDragDropSource() {
   const c = ensure();
-  if (IsItemHovered() && c.io.MouseDown[0] && !c._dd) {
-    c._dd = { type: "", data: null, armed: true, id: c.lastItem.id };
+  // 1. Only initiate if the mouse was clicked directly on THIS widget
+  if (IsItemHovered() && c.io.MouseClicked[0] && !c._dd) {
+    c._dd = { type: "", data: null, armed: true, id: c.lastItem.id, active: false };
   }
-  if (c._dd && c._dd.armed && c.io.MouseDown[0]) {
+  // 2. Only continue if the drag belongs to THIS item and the mouse is still held
+  if (c._dd && c._dd.id === c.lastItem.id && c.io.MouseDown[0]) {
+    c._dd.active = true;
     SetTooltip("dragging…");
     return true;
   }
@@ -3194,12 +3269,12 @@ function BeginDragDropSource() {
 function SetDragDropPayload(type, data) { const c = ensure(); if (c._dd) { c._dd.type = String(type); c._dd.data = data; c._dd.active = true; } }
 function EndDragDropSource() {
   const c = ensure();
-  if (c._dd && !c.io.MouseDown[0]) { if (!c._dd.active) c._dd = null; }
+  // 3. Mouse released anywhere → always destroy the drag object (no ghosts)
+  if (c._dd && !c.io.MouseDown[0]) { c._dd = null; }
 }
 function BeginDragDropTarget() {
   const c = ensure();
-  if (c._dd && c._dd.active && IsItemHovered()) return true;
-  return false;
+  return !!(c._dd && c._dd.active && IsItemHovered());
 }
 function AcceptDragDropPayload(type) {
   const c = ensure();
@@ -3974,7 +4049,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.22"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.23"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -4060,11 +4135,14 @@ function MY_MENU() {
     const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
     if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
 
-    // --- collapsible section ---
+    // --- collapsible section with real switches ---
     if (ImGui.CollapsingHeader("Features")) {
       for (let i = 0; i < 3; i++) {
-        if (ImGui.Selectable("feature_" + i + (S.sel[i] ? " [on]" : " [off]"), S.sel[i]))
-          S.sel[i] = !S.sel[i];
+        const sw = ImGui.Toggle("feature_" + i, S.sel[i]);
+        if (sw.changed) {
+          S.sel[i] = sw.checked;
+          console.log(`[menu] feature_${i} =`, S.sel[i]);
+        }
       }
     }
     ImGui.Separator();

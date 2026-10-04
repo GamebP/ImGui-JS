@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Main Menu
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.22
+// @version      1.0.23
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey (Canvas2D). Drag the demo windows, edit MY_MENU below to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -9,15 +9,15 @@
 // @run-at       document-idle
 // @downloadURL   https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
 // @updateURL     https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.main.js
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.22
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.22
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.22
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.22
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.22
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.22
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.22
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.22
-// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.22
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.core.js?v=1.0.23
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.animate.js?v=1.0.23
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.draw.js?v=1.0.23
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets.js?v=1.0.23
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.widgets2.js?v=1.0.23
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.extended.js?v=1.0.23
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.demo.js?v=1.0.23
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.notify.js?v=1.0.23
+// @require      https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/ImGui.backend.js?v=1.0.23
 // ==/UserScript==
 
 /* ============================================================================
@@ -56,7 +56,7 @@
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.22"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.23"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -142,11 +142,14 @@ function MY_MENU() {
     const cb = ImGui.Combo("Weapon", S.combo, S.comboItems);
     if (cb.changed) { S.combo = cb.index; console.log("[menu] weapon =", S.comboItems[S.combo]); }
 
-    // --- collapsible section ---
+    // --- collapsible section with real switches ---
     if (ImGui.CollapsingHeader("Features")) {
       for (let i = 0; i < 3; i++) {
-        if (ImGui.Selectable("feature_" + i + (S.sel[i] ? " [on]" : " [off]"), S.sel[i]))
-          S.sel[i] = !S.sel[i];
+        const sw = ImGui.Toggle("feature_" + i, S.sel[i]);
+        if (sw.changed) {
+          S.sel[i] = sw.checked;
+          console.log(`[menu] feature_${i} =`, S.sel[i]);
+        }
       }
     }
     ImGui.Separator();

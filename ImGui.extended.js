@@ -453,7 +453,7 @@ function IsRectVisible() { return true; }
 // wrap edit-reporting widgets to feed IsItemEdited/Deactivated
 function wrapEditTrack() {
   if (ensure().__editWrapped) return; ensure().__editWrapped = true;
-  const names = ["Checkbox", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
+  const names = ["Checkbox", "Toggle", "CheckboxFlags", "RadioButtonInt", "SliderFloat", "SliderInt", "SliderFloat2", "SliderFloat3", "SliderFloat4", "DragFloat", "DragInt", "InputText", "InputFloat", "InputInt", "InputDouble", "ColorEdit4", "ColorEdit3", "Combo", "Selectable", "ListBox"];
   for (const n of names) {
     if (typeof ImGui[n] !== "function") continue;
     const orig = ImGui[n];
@@ -1112,10 +1112,13 @@ function TreeNodeGetOpen() { return false; }
 // ---------- drag & drop (lite) ----------
 function BeginDragDropSource() {
   const c = ensure();
-  if (IsItemHovered() && c.io.MouseDown[0] && !c._dd) {
-    c._dd = { type: "", data: null, armed: true, id: c.lastItem.id };
+  // 1. Only initiate if the mouse was clicked directly on THIS widget
+  if (IsItemHovered() && c.io.MouseClicked[0] && !c._dd) {
+    c._dd = { type: "", data: null, armed: true, id: c.lastItem.id, active: false };
   }
-  if (c._dd && c._dd.armed && c.io.MouseDown[0]) {
+  // 2. Only continue if the drag belongs to THIS item and the mouse is still held
+  if (c._dd && c._dd.id === c.lastItem.id && c.io.MouseDown[0]) {
+    c._dd.active = true;
     SetTooltip("dragging…");
     return true;
   }
@@ -1124,12 +1127,12 @@ function BeginDragDropSource() {
 function SetDragDropPayload(type, data) { const c = ensure(); if (c._dd) { c._dd.type = String(type); c._dd.data = data; c._dd.active = true; } }
 function EndDragDropSource() {
   const c = ensure();
-  if (c._dd && !c.io.MouseDown[0]) { if (!c._dd.active) c._dd = null; }
+  // 3. Mouse released anywhere → always destroy the drag object (no ghosts)
+  if (c._dd && !c.io.MouseDown[0]) { c._dd = null; }
 }
 function BeginDragDropTarget() {
   const c = ensure();
-  if (c._dd && c._dd.active && IsItemHovered()) return true;
-  return false;
+  return !!(c._dd && c._dd.active && IsItemHovered());
 }
 function AcceptDragDropPayload(type) {
   const c = ensure();
