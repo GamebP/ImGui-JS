@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.51
+// @version      1.0.52
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.51";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.52";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -3862,6 +3862,7 @@ function popupBoxBegin(id, modal) {
     x: bx, y: by, w: bw, key, modal, win: w,
     savedCursor: { ...dc.cursorPos }, savedPrev: { ...dc.cursorPosPrevLine },
     savedStart: { ...dc.cursorStartPos },
+    savedMax: { ...dc.cursorMaxPos },
     savedLine: { currH: dc.currLineHeight, used: dc._lineUsed, same: dc.isSameLine, sp: dc.sameLineSpacing, lw: dc.lastItemWidth, cellX: dc._cellStartX },
     savedInPopup: dc._inPopup,
   };
@@ -3929,6 +3930,14 @@ function popupBoxEnd(modal) {
   dc.cursorPos.x = b.savedCursor.x; dc.cursorPos.y = b.savedCursor.y;
   dc.cursorPosPrevLine = { ...b.savedPrev };
   dc.cursorStartPos = { ...b.savedStart };
+  // Popup widgets live at overlay screen coords (viewport center for modals),
+  // so their itemSize extents must never leak into the parent: restore the
+  // exact pre popup max or the next End() auto fit stretches the host window
+  // down to the popup position.
+  if (b.savedMax) {
+    dc.cursorMaxPos.x = b.savedMax.x;
+    dc.cursorMaxPos.y = b.savedMax.y;
+  }
   dc.currLineHeight = b.savedLine.currH; dc._lineUsed = b.savedLine.used;
   dc.isSameLine = b.savedLine.same; dc.sameLineSpacing = b.savedLine.sp;
   dc.lastItemWidth = b.savedLine.lw;
@@ -4886,8 +4895,60 @@ function demoPopups() {
       ImGui.InsertNotification(toast);
     }
   }
-  if (ImGui.Button("Open modal")) ImGui.OpenPopup("modal1");
-  if (ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }
+  // Notify styled modal demo (chained confirm with exit site action).
+  const showStep1 = () => {
+    ImGui.ModalDialog.Show({
+      title: "Action Required",
+      text: "This is a centered modal dialog styled like ImGuiNotify, with no animation ramps and no accent bars. It completely blocks background clicks.",
+      showCloseButton: true,
+      buttons: [
+        { label: "Next Step", closeOnClick: false, onClick: showStep2 },
+        {
+          label: "Close Site",
+          onClick: () => {
+            try {
+              window.open("", "_self", "");
+              window.close();
+              location.href = "about:blank";
+            } catch (e) {
+              location.href = "about:blank";
+            }
+          },
+        },
+        { label: "Cancel" },
+      ],
+    });
+  };
+  const showStep2 = () => {
+    ImGui.ModalDialog.Show({
+      title: "Step 2: Confirm Action",
+      text: "Chained multi step prompts open cleanly without distorting the underlying UI.",
+      showCloseButton: true,
+      buttons: [
+        {
+          label: "Close Tab",
+          onClick: () => {
+            try {
+              window.open("", "_self", "");
+              window.close();
+              location.href = "about:blank";
+            } catch (e) {
+              location.href = "about:blank";
+            }
+          },
+        },
+        { label: "Back", closeOnClick: false, onClick: showStep1 },
+        { label: "Done" },
+      ],
+    });
+  };
+  if (ImGui.Button("Open modal")) {
+    if (ImGui.ModalDialog) showStep1();
+    else ImGui.OpenPopup("modal1");
+  }
+
+  // Legacy fallback only when the modal module is absent.
+  if (!ImGui.ModalDialog && ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }
   ImGui.Button("right-click me");
   if (ImGui.BeginPopupContextItem("ctx1")) { if (ImGui.MenuItem("Action A")) ImGui.CloseCurrentPopup(); ImGui.EndPopup(); }
   if (ImGui.BeginTabBar("tb2")) {
@@ -5870,7 +5931,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.51"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.52"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.modal.js", "ImGui.backend.js"];
 
 function libsPresent() {

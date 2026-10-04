@@ -979,6 +979,7 @@ function popupBoxBegin(id, modal) {
     x: bx, y: by, w: bw, key, modal, win: w,
     savedCursor: { ...dc.cursorPos }, savedPrev: { ...dc.cursorPosPrevLine },
     savedStart: { ...dc.cursorStartPos },
+    savedMax: { ...dc.cursorMaxPos },
     savedLine: { currH: dc.currLineHeight, used: dc._lineUsed, same: dc.isSameLine, sp: dc.sameLineSpacing, lw: dc.lastItemWidth, cellX: dc._cellStartX },
     savedInPopup: dc._inPopup,
   };
@@ -1046,6 +1047,14 @@ function popupBoxEnd(modal) {
   dc.cursorPos.x = b.savedCursor.x; dc.cursorPos.y = b.savedCursor.y;
   dc.cursorPosPrevLine = { ...b.savedPrev };
   dc.cursorStartPos = { ...b.savedStart };
+  // Popup widgets live at overlay screen coords (viewport center for modals),
+  // so their itemSize extents must never leak into the parent: restore the
+  // exact pre popup max or the next End() auto fit stretches the host window
+  // down to the popup position.
+  if (b.savedMax) {
+    dc.cursorMaxPos.x = b.savedMax.x;
+    dc.cursorMaxPos.y = b.savedMax.y;
+  }
   dc.currLineHeight = b.savedLine.currH; dc._lineUsed = b.savedLine.used;
   dc.isSameLine = b.savedLine.same; dc.sameLineSpacing = b.savedLine.sp;
   dc.lastItemWidth = b.savedLine.lw;

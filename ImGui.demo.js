@@ -240,8 +240,60 @@ function demoPopups() {
       ImGui.InsertNotification(toast);
     }
   }
-  if (ImGui.Button("Open modal")) ImGui.OpenPopup("modal1");
-  if (ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }
+  // Notify styled modal demo (chained confirm with exit site action).
+  const showStep1 = () => {
+    ImGui.ModalDialog.Show({
+      title: "Action Required",
+      text: "This is a centered modal dialog styled like ImGuiNotify, with no animation ramps and no accent bars. It completely blocks background clicks.",
+      showCloseButton: true,
+      buttons: [
+        { label: "Next Step", closeOnClick: false, onClick: showStep2 },
+        {
+          label: "Close Site",
+          onClick: () => {
+            try {
+              window.open("", "_self", "");
+              window.close();
+              location.href = "about:blank";
+            } catch (e) {
+              location.href = "about:blank";
+            }
+          },
+        },
+        { label: "Cancel" },
+      ],
+    });
+  };
+  const showStep2 = () => {
+    ImGui.ModalDialog.Show({
+      title: "Step 2: Confirm Action",
+      text: "Chained multi step prompts open cleanly without distorting the underlying UI.",
+      showCloseButton: true,
+      buttons: [
+        {
+          label: "Close Tab",
+          onClick: () => {
+            try {
+              window.open("", "_self", "");
+              window.close();
+              location.href = "about:blank";
+            } catch (e) {
+              location.href = "about:blank";
+            }
+          },
+        },
+        { label: "Back", closeOnClick: false, onClick: showStep1 },
+        { label: "Done" },
+      ],
+    });
+  };
+  if (ImGui.Button("Open modal")) {
+    if (ImGui.ModalDialog) showStep1();
+    else ImGui.OpenPopup("modal1");
+  }
+
+  // Legacy fallback only when the modal module is absent.
+  if (!ImGui.ModalDialog && ImGui.BeginPopupModal("modal1")) { ImGui.Text("modal dialog"); if (ImGui.Button("OK")) ImGui.CloseCurrentPopup(); ImGui.EndPopupModal(); }
   ImGui.Button("right-click me");
   if (ImGui.BeginPopupContextItem("ctx1")) { if (ImGui.MenuItem("Action A")) ImGui.CloseCurrentPopup(); ImGui.EndPopup(); }
   if (ImGui.BeginTabBar("tb2")) {
