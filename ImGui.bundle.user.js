@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.57
+// @version      1.0.58
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.57";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.58";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -4868,14 +4868,22 @@ function BeginTabItem(label) {
   const col = active ? c.style.Colors[ImGui.Col.TabSelected]
     : h ? c.style.Colors[ImGui.Col.TabHovered]
     : c.style.Colors[ImGui.Col.Tab];
-  emit({ t: "rectTop", x, y, w: tw, h: TAB_H + 1, r: c.style.FrameRounding || 4, col });
+  // All tabs stay top rounded: the old square overline bar ran full width
+  // and filled the active tab corner arcs, leaving 4 sharp corners while
+  // inactive tabs kept their rounding. The active tab now reads through its
+  // selected background plus the masked baseline alone.
+  const r = c.style.TabRounding !== undefined ? c.style.TabRounding : (c.style.FrameRounding || 4);
+  emit({ t: "rectTop", x, y, w: tw, h: TAB_H + 1, r, col });
   if (active) {
-    emit({ t: "rectFilled", x, y, w: tw, h: 2, r: 1, col: c.style.Colors[ImGui.Col.TabSelectedOverline] });
     t.activeRect = { x, w: tw };
   }
   // Centered label: delta from tab edges is equal on both sides.
   // (measure the *displayed* string so truncated tabs still center).
-  const tcol = active ? c.style.Colors[ImGui.Col.Text] : c.style.Colors[ImGui.Col.TextDisabled];
+  // High contrast text: full bright text on active and hover, crisp light
+  // text on inactive (TextDisabled grey on slate blue was unreadable).
+  const tcol = (active || h)
+    ? c.style.Colors[ImGui.Col.Text]
+    : [0.85, 0.88, 0.92, 1.0];
   const dispW = measure(shown);
   const textX = Math.round(x + (tw - dispW) / 2);
   const textY = Math.round(y + (TAB_H - c.style.FontSize) / 2);
@@ -6686,7 +6694,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.57"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.58"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.modal.js", "ImGui.backend.js"];
 
 function libsPresent() {
