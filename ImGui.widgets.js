@@ -832,6 +832,142 @@ function EndChild() {
   w._childBounds = null;
 }
 
+// ---------- keybind (universal keyboard + mouse capture) ----------
+// Friendly label for e.code values ("KeyF"->"F", "Digit1"->"1", mouse M1..M5).
+function formatKeyName(code) {
+  if (!code || code === "None") return "None";
+  const map = {
+    ControlLeft: "LCtrl", ControlRight: "RCtrl",
+    ShiftLeft: "LShift", ShiftRight: "RShift",
+    AltLeft: "LAlt", AltRight: "RAlt",
+    MetaLeft: "LWin", MetaRight: "RWin",
+    Escape: "Esc", Space: "Space",
+    ArrowUp: "Up", ArrowDown: "Down",
+    ArrowLeft: "Left", ArrowRight: "Right",
+    Enter: "Enter", Backspace: "Back",
+    Delete: "Del", Insert: "Ins",
+    M1: "Mouse 1", M2: "Mouse 2", M3: "Mouse 3",
+    M4: "Mouse 4", M5: "Mouse 5",
+  };
+  if (map[code]) return map[code];
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) return code.slice(5);
+  if (code.startsWith("Numpad")) return "Num " + code.slice(6);
+  return code;
+}
+// KeyBind(label, currentBind): click the box, press any key or mouse button
+// (M1..M5) to bind it; Escape clears to "None". The backend keydown/mousedown
+// listeners feed the pending bind via c.activePayload ({done, result}).
+// Returns {changed, key}. Query live state with Backend.isKeyOrMouseActive().
+function KeyBind(label, currentBind) {
+  const c = ctx(), w = cur();
+  if (!w) return { changed: false, key: currentBind };
+  const st = c.style;
+  const shown = ImGui.findRenderedTextEnd(label);
+  const tw = textW(shown);
+  const bw = 90, ht = 20;
+  const fullW = bw + (tw > 0 ? tw + 10 : 0);
+  c.beforeItemPlacement(fullW, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(fullW, ht);
+  const id = w.getID(label);
+  c.itemAdd(x, y, bw, ht, id);
+  const bb = c.buttonBehavior(id, x, y, bw, ht);
+  const isListening = (c.activeId === id && c.activeKind === "keybind");
+  let newBind = currentBind || "None";
+  let changed = false;
+  if (bb.pressed && !isListening) {
+    c.activeId = id;
+    c.activeKind = "keybind";
+    c.activePayload = { justActivated: true, done: false, result: currentBind };
+  } else if (isListening && c.activePayload) {
+    // First evaluation after activation: arm the listener without consuming
+    // anything, so the click that opened it can never become the new bind.
+    c.activePayload.justActivated = false;
+    if (c.activePayload.done) {
+      newBind = c.activePayload.result || "None";
+      changed = (newBind !== currentBind);
+      c.activeId = 0;
+      c.activeKind = null;
+      c.activePayload = null;
+    }
+  }
+  const bgCol = isListening
+    ? st.Colors[ImGui.Col.ButtonActive]
+    : (bb.hovered ? st.Colors[ImGui.Col.FrameBgHovered] : st.Colors[ImGui.Col.FrameBg]);
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding || 3, col: bgCol });
+  emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding || 3, col: st.Colors[ImGui.Col.Border], th: 1 });
+  const textStr = isListening ? "Press Key/M..." : ("[ " + formatKeyName(newBind) + " ]");
+  const textWd = textW(textStr);
+  const tx = x + Math.max(4, (bw - textWd) / 2);
+  const ty = y + Math.round((ht - st.FontSize) / 2);
+  emit({ t: "text", str: textStr, x: tx, y: ty, col: isListening ? [1, 1, 0, 1] : st.Colors[ImGui.Col.Text] });
+  if (tw > 0) emit({ t: "text", str: shown, x: x + bw + 8, y: ty, col: st.Colors[ImGui.Col.Text] });
+  return { changed, key: newBind };
+}
+
+// ---------- multi-select combo ----------
+// MultiCombo(label, flagsMap): dropdown where each entry is a checkbox row.
+// flagsMap = { Wallhack: true, Chams: false, ... } (mutated in place).
+// Returns {changed, flags}. Requires a unique label per call site.
+function MultiCombo(label, flagsMap) {
+  const c = ctx(), w = cur();
+  if (!w) return { changed: false, flags: flagsMap };
+  const keys = Object.keys(flagsMap);
+  const preview = keys.filter((k) => flagsMap[k]).join(", ") || "(None)";
+  let changed = false;
+  if (BeginCombo(label, preview)) {
+    const a = c._comboAnchor;
+    const st = c.style;
+    const itemH = st.FontSize + st.FramePadding.y * 2;
+    const ph = keys.length * itemH + 6;
+    const screenAnchorY = a.y - (w.scrollY || 0);
+    let py = screenAnchorY;
+    if (py + ph > w.pos.y + w.sizeFull.y - 4 || py + ph > c.io.DisplaySize.y - 8) {
+      py = (a.triggerY - (w.scrollY || 0)) - ph;
+    }
+    py = Math.max(4, py);
+    const popupBg = [0.10, 0.10, 0.12, 1.0];
+    const ops = [
+      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: popupBg },
+      { t: "rect", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: st.Colors[ImGui.Col.Border], th: 1 },
+    ];
+    c._comboRect = { x: a.x, y: py, w: a.w, h: ph };
+    const m = c.io.MousePos;
+    const box = 13, gap = 7;
+    keys.forEach((key, i) => {
+      const iy = py + 3 + i * itemH;
+      const h = m.x >= a.x + 2 && m.x <= a.x + a.w - 2 && m.y >= iy && m.y <= iy + itemH;
+      if (h) ops.push({ t: "rectFilled", x: a.x + 2, y: iy, w: a.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.HeaderHovered] });
+      const bx = a.x + 8, by = iy + Math.round((itemH - box) / 2);
+      ops.push({ t: "rectFilled", x: bx, y: by, w: box, h: box, r: 3, col: st.Colors[ImGui.Col.FrameBg] });
+      ops.push({ t: "rect", x: bx, y: by, w: box, h: box, r: 3, col: st.Colors[ImGui.Col.Border], th: 1 });
+      if (flagsMap[key]) {
+        ops.push({ t: "line", x1: bx + 2.5, y1: by + 7, x2: bx + 5.5, y2: by + 10, col: st.Colors[ImGui.Col.CheckMark], th: 2.2 });
+        ops.push({ t: "line", x1: bx + 5.5, y1: by + 10, x2: bx + 10.5, y2: by + 3, col: st.Colors[ImGui.Col.CheckMark], th: 2.2 });
+      }
+      const itemTextY = iy + Math.round((itemH - st.FontSize) * 0.5);
+      ops.push({ t: "text", str: key, x: bx + box + gap, y: itemTextY, col: st.Colors[ImGui.Col.Text] });
+      if (h && c.io.MouseClicked[0]) {
+        flagsMap[key] = !flagsMap[key];
+        changed = true;
+        c.io.MouseClicked[0] = false; c.io.MouseDown[0] = false;
+      }
+    });
+    // Outside click dismisses (trigger click toggles via BeginCombo itself).
+    if (c.io.MouseClicked[0] && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph) && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= a.triggerY && m.y <= a.triggerY + a.triggerH)) {
+      c.comboOpen = 0; c.io.MouseClicked[0] = false;
+    }
+    c._overlayOps = c._overlayOps || [];
+    c._overlayOps.push(...ops);
+    EndCombo();
+  } else {
+    const cc = ctx();
+    if (!cc.io.MouseClicked[0]) cc._comboRect = null;
+  }
+  return { changed, flags: flagsMap };
+}
+
 // ---------- window wrappers (mirror imgui.h) ----------
 function Begin(name, pOpen, flags) { return ctx().begin(name, pOpen, flags); }
 function End() { ctx().end(); }
@@ -865,7 +1001,8 @@ Object.assign(ImGui, {
   SliderFloat, SliderInt, DragFloat,
   InputText, InputTextMultiline,
   ColorEdit3, ColorEdit4,
-  BeginCombo, EndCombo, Combo, Selectable, SelectableFlags, ListBox, ProgressBar,
+  BeginCombo, EndCombo, Combo, MultiCombo, Selectable, SelectableFlags, ListBox, ProgressBar,
+  KeyBind, formatKeyName,
   CollapsingHeader, TreeNode, TreePop,
   BeginChild, EndChild,
   Begin, End, SetNextWindowPos, SetNextWindowSize, SetNextWindowCollapsed, IsItemHovered,

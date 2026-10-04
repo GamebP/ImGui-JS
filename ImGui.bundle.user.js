@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ImGui Browser Port — Bundle (one-click install)
 // @namespace    https://github.com/GamebP/ImGui-JS
-// @version      1.0.43
+// @version      1.0.44
 // @description  Dear ImGui 1.92.9b window system ported to Violentmonkey — single-file bundle, no hosting needed. Drag windows, edit MY_MENU to build your own menu.
 // @match        *://example.com/*
 // @noframes
@@ -23,7 +23,7 @@
 (function (global) {
 "use strict";
 
-const IMGUI_VERSION = "1.92.9b-js-port-1.0.43";
+const IMGUI_VERSION = "1.92.9b-js-port-1.0.44";
 
 // ---- hash (ImHashStr FNV-1a, cf. imgui.cpp) ----
 function hashStr(str, seed = 0x811c9dc5) {
@@ -1016,6 +1016,17 @@ class CanvasRenderer {
     if (w._chromeOps) for (const op of w._chromeOps) this.drawOp(ctx, st, op);
     ctx.restore();
   }
+  // Optional neon glow: any op may carry glow:true (+glowColor/glowBlur or
+  // shadowColor/shadowBlur aliases). Implemented with Canvas2D shadow state
+  // so ESP boxes, buttons and frames can bloom without extra draw calls.
+  _applyGlow(ctx, st, op) {
+    if (!op.glow) return null;
+    const col = op.glowColor || op.shadowColor || op.css || css(op.col);
+    ctx.save();
+    ctx.shadowColor = (typeof col === "string") ? col : css(col);
+    ctx.shadowBlur = op.glowBlur || op.shadowBlur || 12;
+    return true;
+  }
   drawOp(ctx, st, op) {
     if (!op || !op.t) return;
     switch (op.t) {
@@ -1042,17 +1053,21 @@ class CanvasRenderer {
       case "polyline": {
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.lineJoin = "round"; ctx.lineCap = "round";
+        const gl = this._applyGlow(ctx, st, op);
         ctx.beginPath();
         (op.pts || []).forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
         if (op.closed) ctx.closePath();
         ctx.stroke();
+        if (gl) ctx.restore();
         break;
       }
       case "polygon": {
         ctx.fillStyle = op.css || css(op.col);
+        const gl2 = this._applyGlow(ctx, st, op);
         ctx.beginPath();
         (op.pts || []).forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
         ctx.closePath(); ctx.fill();
+        if (gl2) ctx.restore();
         break;
       }
       case "image": {
@@ -1079,38 +1094,59 @@ class CanvasRenderer {
         ctx.closePath(); ctx.fill();
         break;
       }
-      case "rectFilled":
+      case "rectFilled": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.fillStyle = op.css || css(op.col);
         roundRectPath(ctx, op.x, op.y, op.w, op.h, op.r || 0); ctx.fill();
+        if (gl) ctx.restore();
         break;
-      case "rect":
+      }
+      case "rect": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         roundRectPath(ctx, op.x, op.y, op.w, op.h, op.r || 0); ctx.stroke();
+        if (gl) ctx.restore();
         break;
-      case "line":
+      }
+      case "line": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.beginPath(); ctx.moveTo(op.x1, op.y1); ctx.lineTo(op.x2, op.y2); ctx.stroke();
+        if (gl) ctx.restore();
         break;
-      case "circleFilled":
+      }
+      case "circleFilled": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.fillStyle = op.css || css(op.col);
         ctx.beginPath(); ctx.arc(op.x, op.y, op.r, 0, Math.PI * 2); ctx.fill();
+        if (gl) ctx.restore();
         break;
-      case "circle": // AddCircle: stroke-only ring (notify icons emit this)
+      }
+      case "circle": { // AddCircle: stroke-only ring (notify icons emit this)
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.beginPath(); ctx.arc(op.x, op.y, Math.max(0.1, op.r), 0, Math.PI * 2); ctx.stroke();
+        if (gl) ctx.restore();
         break;
-      case "bezierCubic":
+      }
+      case "bezierCubic": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.lineCap = "round";
         ctx.beginPath(); ctx.moveTo(op.p1.x, op.p1.y);
         ctx.bezierCurveTo(op.p2.x, op.p2.y, op.p3.x, op.p3.y, op.p4.x, op.p4.y); ctx.stroke();
+        if (gl) ctx.restore();
         break;
-      case "bezierQuad":
+      }
+      case "bezierQuad": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.lineCap = "round";
         ctx.beginPath(); ctx.moveTo(op.p1.x, op.p1.y);
         ctx.quadraticCurveTo(op.p2.x, op.p2.y, op.p3.x, op.p3.y); ctx.stroke();
+        if (gl) ctx.restore();
         break;
+      }
       case "rectGradient": { // AddRectFilledMultiColor: horizontal tl->tr blend
         const g = ctx.createLinearGradient(op.x, 0, op.x + op.w, 0);
         g.addColorStop(0, css(op.tl)); g.addColorStop(1, css(op.tr));
@@ -1981,6 +2017,142 @@ function EndChild() {
   w._childBounds = null;
 }
 
+// ---------- keybind (universal keyboard + mouse capture) ----------
+// Friendly label for e.code values ("KeyF"->"F", "Digit1"->"1", mouse M1..M5).
+function formatKeyName(code) {
+  if (!code || code === "None") return "None";
+  const map = {
+    ControlLeft: "LCtrl", ControlRight: "RCtrl",
+    ShiftLeft: "LShift", ShiftRight: "RShift",
+    AltLeft: "LAlt", AltRight: "RAlt",
+    MetaLeft: "LWin", MetaRight: "RWin",
+    Escape: "Esc", Space: "Space",
+    ArrowUp: "Up", ArrowDown: "Down",
+    ArrowLeft: "Left", ArrowRight: "Right",
+    Enter: "Enter", Backspace: "Back",
+    Delete: "Del", Insert: "Ins",
+    M1: "Mouse 1", M2: "Mouse 2", M3: "Mouse 3",
+    M4: "Mouse 4", M5: "Mouse 5",
+  };
+  if (map[code]) return map[code];
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) return code.slice(5);
+  if (code.startsWith("Numpad")) return "Num " + code.slice(6);
+  return code;
+}
+// KeyBind(label, currentBind): click the box, press any key or mouse button
+// (M1..M5) to bind it; Escape clears to "None". The backend keydown/mousedown
+// listeners feed the pending bind via c.activePayload ({done, result}).
+// Returns {changed, key}. Query live state with Backend.isKeyOrMouseActive().
+function KeyBind(label, currentBind) {
+  const c = ctx(), w = cur();
+  if (!w) return { changed: false, key: currentBind };
+  const st = c.style;
+  const shown = ImGui.findRenderedTextEnd(label);
+  const tw = textW(shown);
+  const bw = 90, ht = 20;
+  const fullW = bw + (tw > 0 ? tw + 10 : 0);
+  c.beforeItemPlacement(fullW, ht);
+  const x = w.dc.cursorPos.x, y = w.dc.cursorPos.y;
+  c.itemSize(fullW, ht);
+  const id = w.getID(label);
+  c.itemAdd(x, y, bw, ht, id);
+  const bb = c.buttonBehavior(id, x, y, bw, ht);
+  const isListening = (c.activeId === id && c.activeKind === "keybind");
+  let newBind = currentBind || "None";
+  let changed = false;
+  if (bb.pressed && !isListening) {
+    c.activeId = id;
+    c.activeKind = "keybind";
+    c.activePayload = { justActivated: true, done: false, result: currentBind };
+  } else if (isListening && c.activePayload) {
+    // First evaluation after activation: arm the listener without consuming
+    // anything, so the click that opened it can never become the new bind.
+    c.activePayload.justActivated = false;
+    if (c.activePayload.done) {
+      newBind = c.activePayload.result || "None";
+      changed = (newBind !== currentBind);
+      c.activeId = 0;
+      c.activeKind = null;
+      c.activePayload = null;
+    }
+  }
+  const bgCol = isListening
+    ? st.Colors[ImGui.Col.ButtonActive]
+    : (bb.hovered ? st.Colors[ImGui.Col.FrameBgHovered] : st.Colors[ImGui.Col.FrameBg]);
+  emit({ t: "rectFilled", x, y, w: bw, h: ht, r: st.FrameRounding || 3, col: bgCol });
+  emit({ t: "rect", x, y, w: bw, h: ht, r: st.FrameRounding || 3, col: st.Colors[ImGui.Col.Border], th: 1 });
+  const textStr = isListening ? "Press Key/M..." : ("[ " + formatKeyName(newBind) + " ]");
+  const textWd = textW(textStr);
+  const tx = x + Math.max(4, (bw - textWd) / 2);
+  const ty = y + Math.round((ht - st.FontSize) / 2);
+  emit({ t: "text", str: textStr, x: tx, y: ty, col: isListening ? [1, 1, 0, 1] : st.Colors[ImGui.Col.Text] });
+  if (tw > 0) emit({ t: "text", str: shown, x: x + bw + 8, y: ty, col: st.Colors[ImGui.Col.Text] });
+  return { changed, key: newBind };
+}
+
+// ---------- multi-select combo ----------
+// MultiCombo(label, flagsMap): dropdown where each entry is a checkbox row.
+// flagsMap = { Wallhack: true, Chams: false, ... } (mutated in place).
+// Returns {changed, flags}. Requires a unique label per call site.
+function MultiCombo(label, flagsMap) {
+  const c = ctx(), w = cur();
+  if (!w) return { changed: false, flags: flagsMap };
+  const keys = Object.keys(flagsMap);
+  const preview = keys.filter((k) => flagsMap[k]).join(", ") || "(None)";
+  let changed = false;
+  if (BeginCombo(label, preview)) {
+    const a = c._comboAnchor;
+    const st = c.style;
+    const itemH = st.FontSize + st.FramePadding.y * 2;
+    const ph = keys.length * itemH + 6;
+    const screenAnchorY = a.y - (w.scrollY || 0);
+    let py = screenAnchorY;
+    if (py + ph > w.pos.y + w.sizeFull.y - 4 || py + ph > c.io.DisplaySize.y - 8) {
+      py = (a.triggerY - (w.scrollY || 0)) - ph;
+    }
+    py = Math.max(4, py);
+    const popupBg = [0.10, 0.10, 0.12, 1.0];
+    const ops = [
+      { t: "rectFilled", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: popupBg },
+      { t: "rect", x: a.x, y: py, w: a.w, h: ph, r: st.PopupRounding || 2, col: st.Colors[ImGui.Col.Border], th: 1 },
+    ];
+    c._comboRect = { x: a.x, y: py, w: a.w, h: ph };
+    const m = c.io.MousePos;
+    const box = 13, gap = 7;
+    keys.forEach((key, i) => {
+      const iy = py + 3 + i * itemH;
+      const h = m.x >= a.x + 2 && m.x <= a.x + a.w - 2 && m.y >= iy && m.y <= iy + itemH;
+      if (h) ops.push({ t: "rectFilled", x: a.x + 2, y: iy, w: a.w - 4, h: itemH, r: 2, col: st.Colors[ImGui.Col.HeaderHovered] });
+      const bx = a.x + 8, by = iy + Math.round((itemH - box) / 2);
+      ops.push({ t: "rectFilled", x: bx, y: by, w: box, h: box, r: 3, col: st.Colors[ImGui.Col.FrameBg] });
+      ops.push({ t: "rect", x: bx, y: by, w: box, h: box, r: 3, col: st.Colors[ImGui.Col.Border], th: 1 });
+      if (flagsMap[key]) {
+        ops.push({ t: "line", x1: bx + 2.5, y1: by + 7, x2: bx + 5.5, y2: by + 10, col: st.Colors[ImGui.Col.CheckMark], th: 2.2 });
+        ops.push({ t: "line", x1: bx + 5.5, y1: by + 10, x2: bx + 10.5, y2: by + 3, col: st.Colors[ImGui.Col.CheckMark], th: 2.2 });
+      }
+      const itemTextY = iy + Math.round((itemH - st.FontSize) * 0.5);
+      ops.push({ t: "text", str: key, x: bx + box + gap, y: itemTextY, col: st.Colors[ImGui.Col.Text] });
+      if (h && c.io.MouseClicked[0]) {
+        flagsMap[key] = !flagsMap[key];
+        changed = true;
+        c.io.MouseClicked[0] = false; c.io.MouseDown[0] = false;
+      }
+    });
+    // Outside click dismisses (trigger click toggles via BeginCombo itself).
+    if (c.io.MouseClicked[0] && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= py && m.y <= py + ph) && !(m.x >= a.x && m.x <= a.x + a.w && m.y >= a.triggerY && m.y <= a.triggerY + a.triggerH)) {
+      c.comboOpen = 0; c.io.MouseClicked[0] = false;
+    }
+    c._overlayOps = c._overlayOps || [];
+    c._overlayOps.push(...ops);
+    EndCombo();
+  } else {
+    const cc = ctx();
+    if (!cc.io.MouseClicked[0]) cc._comboRect = null;
+  }
+  return { changed, flags: flagsMap };
+}
+
 // ---------- window wrappers (mirror imgui.h) ----------
 function Begin(name, pOpen, flags) { return ctx().begin(name, pOpen, flags); }
 function End() { ctx().end(); }
@@ -2014,7 +2186,8 @@ Object.assign(ImGui, {
   SliderFloat, SliderInt, DragFloat,
   InputText, InputTextMultiline,
   ColorEdit3, ColorEdit4,
-  BeginCombo, EndCombo, Combo, Selectable, SelectableFlags, ListBox, ProgressBar,
+  BeginCombo, EndCombo, Combo, MultiCombo, Selectable, SelectableFlags, ListBox, ProgressBar,
+  KeyBind, formatKeyName,
   CollapsingHeader, TreeNode, TreePop,
   BeginChild, EndChild,
   Begin, End, SetNextWindowPos, SetNextWindowSize, SetNextWindowCollapsed, IsItemHovered,
@@ -2628,7 +2801,7 @@ global.__IMGUI_WIDGETS2__ = true;
  * Adds what widgets.js missed: ID stack, groups, disabled blocks, style stacks,
  * cursor/layout queries, item-state queries, mouse/key queries, tooltips, popups +
  * modals, menu bar + menus, tab bar, tables (lite), legacy columns, TreeNodeEx,
- * drag & drop (lite), .ini persistence via localStorage, style themes.
+ * drag & drop (lite), .ini persistence (GM storage + localStorage fallback), style themes.
  * Requires: core + widgets (+widgets2 for demo sections, not strictly).
  */
 (function (global) {
@@ -2844,13 +3017,41 @@ function wrapBeginEnd() {
 }
 wrapBeginEnd();
 
-// ---------- .ini persistence (localStorage) ----------
+// ---------- .ini persistence (GM storage with localStorage fallback) ----------
+// Violentmonkey/Tampermonkey persistent storage survives origin clears, CSP
+// sandboxing and subdomain isolation that routinely wipe localStorage.
+// Requires `// @grant GM_getValue` + `// @grant GM_setValue`; without the
+// grants (or outside a userscript manager) it falls back to localStorage.
+function storageGet(key, def) {
+  try {
+    if (typeof GM_getValue !== "undefined") {
+      const v = GM_getValue(key, undefined);
+      return v === undefined ? def : v;
+    }
+  } catch { /* GM bridge unavailable */ }
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null || raw === undefined) return def;
+    try { return JSON.parse(raw); } catch { return raw; }
+  } catch { return def; }
+}
+function storageSet(key, val) {
+  try {
+    if (typeof GM_setValue !== "undefined") { GM_setValue(key, val); return; }
+  } catch { /* fall through to localStorage */ }
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch { /* private mode */ }
+}
+function storageDel(key) {
+  try {
+    if (typeof GM_deleteValue !== "undefined") { GM_deleteValue(key); return; }
+  } catch { /* fall through */ }
+  try { localStorage.removeItem(key); } catch { /* ignore */ }
+}
 const INI_KEY = "[ImGui]winpos";
 function tryLoadIni(c) {
   try {
-    const raw = localStorage.getItem(INI_KEY);
-    if (!raw) return;
-    const j = JSON.parse(raw);
+    const j = storageGet(INI_KEY, null);
+    if (!j || typeof j !== "object") return;
     for (const [name, s] of Object.entries(j)) {
       const w = c.windows.get(name);
       if (w && s && typeof s.x === "number") {
@@ -2864,8 +3065,7 @@ function tryLoadIni(c) {
     // also stash for windows created later
     c._iniStash = j;
   } catch { /* private mode */ }
-}
-// stash applied on creation
+}// stash applied on creation
 setIntervalSafeHook();
 function setIntervalSafeHook() {
   const Proto = ImGui.ImGuiContext.prototype;
@@ -2891,7 +3091,7 @@ function throttleSaveIni(c) {
       if (w.flags & ImGui.WindowFlags.NoSavedSettings) continue;
       j[name] = { x: Math.round(w.pos.x), y: Math.round(w.pos.y), w: Math.round(w.sizeFull.x), h: w.size.y > 0 ? Math.round(w.sizeFull.y) : 0, collapsed: !!w.collapsed };
     }
-    localStorage.setItem(INI_KEY, JSON.stringify(j));
+    storageSet(INI_KEY, j);
   } catch { /* ignore */ }
 }
 function SetClipboardText(text) {
@@ -3059,6 +3259,98 @@ function StyleColorsLight() {
   C[ImGui.Col.UnsavedMarker] = F(0, 0, 0, 1); C[ImGui.Col.NavCursor] = [...C[ImGui.Col.HeaderHovered]];
   C[ImGui.Col.NavWindowingHighlight] = F(0.70, 0.70, 0.70, 0.70); C[ImGui.Col.NavWindowingDimBg] = F(0.20, 0.20, 0.20, 0.20);
   C[ImGui.Col.ModalWindowDimBg] = F(0.20, 0.20, 0.20, 0.35);
+}
+function StyleColorsCatppuccin() {
+  // Catppuccin Mocha (https://catppuccin.com/palette): Base/Mantle/Crust
+  // surfaces, Sapphire accents, Mauve grabs, Green checkmarks.
+  const c = ensure(), C = c.style.Colors;
+  const F = (r, g, b, a = 1) => [r / 255, g / 255, b / 255, a];
+  C[ImGui.Col.Text] = F(205, 214, 244, 1);
+  C[ImGui.Col.TextDisabled] = F(127, 132, 156, 1);
+  C[ImGui.Col.WindowBg] = F(30, 30, 46, 0.96);
+  C[ImGui.Col.ChildBg] = F(24, 24, 37, 1);
+  C[ImGui.Col.PopupBg] = F(24, 24, 37, 0.98);
+  C[ImGui.Col.Border] = F(69, 71, 90, 0.8);
+  C[ImGui.Col.FrameBg] = F(49, 50, 68, 0.8);
+  C[ImGui.Col.FrameBgHovered] = F(69, 71, 90, 1);
+  C[ImGui.Col.FrameBgActive] = F(88, 91, 112, 1);
+  C[ImGui.Col.TitleBg] = F(24, 24, 37, 1);
+  C[ImGui.Col.TitleBgActive] = F(17, 17, 27, 1);
+  C[ImGui.Col.TitleBgCollapsed] = F(17, 17, 27, 0.6);
+  C[ImGui.Col.MenuBarBg] = F(24, 24, 37, 1);
+  C[ImGui.Col.ScrollbarBg] = F(24, 24, 37, 0.6);
+  C[ImGui.Col.ScrollbarGrab] = F(69, 71, 90, 1);
+  C[ImGui.Col.ScrollbarGrabHovered] = F(88, 91, 112, 1);
+  C[ImGui.Col.ScrollbarGrabActive] = F(108, 112, 134, 1);
+  C[ImGui.Col.CheckMark] = F(166, 227, 161, 1);
+  C[ImGui.Col.SliderGrab] = F(203, 166, 247, 1);
+  C[ImGui.Col.SliderGrabActive] = F(203, 166, 247, 0.8);
+  C[ImGui.Col.Button] = F(137, 180, 250, 0.4);
+  C[ImGui.Col.ButtonHovered] = F(137, 180, 250, 0.8);
+  C[ImGui.Col.ButtonActive] = F(137, 180, 250, 1);
+  C[ImGui.Col.Header] = F(137, 180, 250, 0.3);
+  C[ImGui.Col.HeaderHovered] = F(137, 180, 250, 0.7);
+  C[ImGui.Col.HeaderActive] = F(137, 180, 250, 1);
+  C[ImGui.Col.Separator] = F(69, 71, 90, 0.8);
+  C[ImGui.Col.Tab] = F(49, 50, 68, 1);
+  C[ImGui.Col.TabSelected] = F(137, 180, 250, 0.4);
+  C[ImGui.Col.TabHovered] = F(137, 180, 250, 0.7);
+  C[ImGui.Col.PlotLines] = F(137, 180, 250, 1);
+  C[ImGui.Col.PlotHistogram] = F(250, 179, 135, 1);
+  C[ImGui.Col.TableHeaderBg] = F(24, 24, 37, 1);
+  C[ImGui.Col.TableBorderStrong] = F(69, 71, 90, 1);
+  C[ImGui.Col.TableBorderLight] = F(49, 50, 68, 1);
+  C[ImGui.Col.TableRowBgAlt] = F(205, 214, 244, 0.06);
+  C[ImGui.Col.TextSelectedBg] = F(137, 180, 250, 0.35);
+  c.style.WindowRounding = 8;
+  c.style.FrameRounding = 5;
+  c.style.PopupRounding = 6;
+}
+function StyleColorsCyberpunk() {
+  // Cyberpunk / neon: near-black violet shell, neon-pink borders + title,
+  // cyan buttons, yellow checkmarks.
+  const c = ensure(), C = c.style.Colors;
+  const F = (r, g, b, a = 1) => [r / 255, g / 255, b / 255, a];
+  C[ImGui.Col.Text] = F(240, 240, 240, 1);
+  C[ImGui.Col.TextDisabled] = F(120, 120, 140, 1);
+  C[ImGui.Col.WindowBg] = F(10, 10, 18, 0.96);
+  C[ImGui.Col.ChildBg] = F(14, 14, 26, 1);
+  C[ImGui.Col.PopupBg] = F(14, 14, 26, 0.98);
+  C[ImGui.Col.Border] = F(255, 0, 128, 0.7);
+  C[ImGui.Col.FrameBg] = F(20, 20, 35, 1);
+  C[ImGui.Col.FrameBgHovered] = F(40, 40, 70, 1);
+  C[ImGui.Col.FrameBgActive] = F(60, 60, 100, 1);
+  C[ImGui.Col.TitleBg] = F(20, 20, 35, 1);
+  C[ImGui.Col.TitleBgActive] = F(255, 0, 128, 0.9);
+  C[ImGui.Col.TitleBgCollapsed] = F(255, 0, 128, 0.4);
+  C[ImGui.Col.MenuBarBg] = F(14, 14, 26, 1);
+  C[ImGui.Col.ScrollbarBg] = F(10, 10, 18, 0.6);
+  C[ImGui.Col.ScrollbarGrab] = F(255, 0, 128, 0.6);
+  C[ImGui.Col.ScrollbarGrabHovered] = F(255, 0, 128, 0.85);
+  C[ImGui.Col.ScrollbarGrabActive] = F(0, 240, 255, 1);
+  C[ImGui.Col.CheckMark] = F(255, 230, 0, 1);
+  C[ImGui.Col.SliderGrab] = F(255, 0, 128, 1);
+  C[ImGui.Col.SliderGrabActive] = F(0, 240, 255, 1);
+  C[ImGui.Col.Button] = F(0, 240, 255, 0.35);
+  C[ImGui.Col.ButtonHovered] = F(0, 240, 255, 0.8);
+  C[ImGui.Col.ButtonActive] = F(0, 240, 255, 1);
+  C[ImGui.Col.Header] = F(255, 0, 128, 0.3);
+  C[ImGui.Col.HeaderHovered] = F(255, 0, 128, 0.7);
+  C[ImGui.Col.HeaderActive] = F(255, 0, 128, 1);
+  C[ImGui.Col.Separator] = F(255, 0, 128, 0.5);
+  C[ImGui.Col.Tab] = F(20, 20, 35, 1);
+  C[ImGui.Col.TabSelected] = F(255, 0, 128, 0.5);
+  C[ImGui.Col.TabHovered] = F(0, 240, 255, 0.5);
+  C[ImGui.Col.PlotLines] = F(0, 240, 255, 1);
+  C[ImGui.Col.PlotHistogram] = F(255, 0, 128, 1);
+  C[ImGui.Col.TableHeaderBg] = F(20, 20, 35, 1);
+  C[ImGui.Col.TableBorderStrong] = F(255, 0, 128, 0.7);
+  C[ImGui.Col.TableBorderLight] = F(60, 60, 100, 1);
+  C[ImGui.Col.TableRowBgAlt] = F(0, 240, 255, 0.06);
+  C[ImGui.Col.TextSelectedBg] = F(255, 0, 128, 0.35);
+  c.style.WindowRounding = 4;
+  c.style.FrameRounding = 2;
+  c.style.PopupRounding = 4;
 }
 
 // ---------- cursor / layout queries ----------
@@ -3252,17 +3544,41 @@ function GetWindowDrawList() {
 function GetBackgroundDrawList() {
   const c = ensure(); c._bgOps = c._bgOps || []; const a = c._bgOps;
   return {
-    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
-    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
     AddLine(p1, p2, col, th) { a.push({ t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+    AddRect(p1, p2, col, r, th) { a.push({ t: "rect", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col, th: th || 1 }); },
+    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddRectFilledMultiColor(p1, p2, tl, tr, br, bl) { a.push({ t: "rectGradient", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, tl, tr, br, bl }); },
+    AddCircle(cx, cy, r, col, th) { a.push({ t: "circle", x: cx, y: cy, r, col, th: th || 1 }); },
+    AddCircleFilled(cx, cy, r, col) { a.push({ t: "circleFilled", x: cx, y: cy, r, col }); },
+    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
+    AddTriangle(p1, p2, p3, col, th) { a.push({ t: "polyline", pts: [p1, p2, p3], col, th: th || 1, closed: true }); },
+    AddTriangleFilled(p1, p2, p3, col) { a.push({ t: "polygon", pts: [p1, p2, p3], col }); },
+    AddNgon(cx, cy, r, col, n, th) { a.push({ t: "polyline", pts: _ngonPts(cx, cy, r, n), col, th: th || 1, closed: true }); },
+    AddNgonFilled(cx, cy, r, col, n) { a.push({ t: "polygon", pts: _ngonPts(cx, cy, r, n), col }); },
+    AddPolyline(pts, col, th, closed) { a.push({ t: "polyline", pts: pts.slice(), col, th: th || 1, closed: !!closed }); },
+    AddConvexPolyFilled(pts, col) { a.push({ t: "polygon", pts: pts.slice(), col }); },
+    AddBezierCubic(p1, p2, p3, p4, col, th) { a.push({ t: "bezierCubic", p1, p2, p3, p4, col, th: th || 1 }); },
+    AddBezierQuadratic(p1, p2, p3, col, th) { a.push({ t: "bezierQuad", p1, p2, p3, col, th: th || 1 }); },
   };
 }
 function GetForegroundDrawList() {
   const c = ensure(); c._overlayOps = c._overlayOps || []; const a = c._overlayOps;
   return {
-    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
-    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
     AddLine(p1, p2, col, th) { a.push({ t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+    AddRect(p1, p2, col, r, th) { a.push({ t: "rect", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col, th: th || 1 }); },
+    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddRectFilledMultiColor(p1, p2, tl, tr, br, bl) { a.push({ t: "rectGradient", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, tl, tr, br, bl }); },
+    AddCircle(cx, cy, r, col, th) { a.push({ t: "circle", x: cx, y: cy, r, col, th: th || 1 }); },
+    AddCircleFilled(cx, cy, r, col) { a.push({ t: "circleFilled", x: cx, y: cy, r, col }); },
+    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
+    AddTriangle(p1, p2, p3, col, th) { a.push({ t: "polyline", pts: [p1, p2, p3], col, th: th || 1, closed: true }); },
+    AddTriangleFilled(p1, p2, p3, col) { a.push({ t: "polygon", pts: [p1, p2, p3], col }); },
+    AddNgon(cx, cy, r, col, n, th) { a.push({ t: "polyline", pts: _ngonPts(cx, cy, r, n), col, th: th || 1, closed: true }); },
+    AddNgonFilled(cx, cy, r, col, n) { a.push({ t: "polygon", pts: _ngonPts(cx, cy, r, n), col }); },
+    AddPolyline(pts, col, th, closed) { a.push({ t: "polyline", pts: pts.slice(), col, th: th || 1, closed: !!closed }); },
+    AddConvexPolyFilled(pts, col) { a.push({ t: "polygon", pts: pts.slice(), col }); },
+    AddBezierCubic(p1, p2, p3, p4, col, th) { a.push({ t: "bezierCubic", p1, p2, p3, p4, col, th: th || 1 }); },
+    AddBezierQuadratic(p1, p2, p3, col, th) { a.push({ t: "bezierQuad", p1, p2, p3, col, th: th || 1 }); },
   };
 }
 // ---------- ImGuiListClipper (uniform-height virtualization) ----------
@@ -3821,10 +4137,10 @@ function TableSetupColumn(label, widthOrWeight = 0, flags = 0) {
 }
 function tablePersistKey(t, kind) { return "imgui_table_" + t.id + "_" + kind; }
 function tableStateGet(t, kind) {
-  try { return JSON.parse(localStorage.getItem(tablePersistKey(t, kind)) || "null"); } catch (e) { return null; }
+  try { return storageGet(tablePersistKey(t, kind), null); } catch (e) { return null; }
 }
 function tableStateSet(t, kind, val) {
-  try { localStorage.setItem(tablePersistKey(t, kind), JSON.stringify(val)); return true; } catch (e) { return false; }
+  try { storageSet(tablePersistKey(t, kind), val); return true; } catch (e) { return false; }
 }
 function tableLayout(t) {
   // Column pitch reserves CellPadding.x on both sides so text never clips.
@@ -4190,6 +4506,8 @@ Object.assign(ImGui, {
   PushID, PopID, GetID, GetItemRect, BeginGroup, EndGroup, BeginDisabled, EndDisabled,
   PushItemWidth, PopItemWidth, PushStyleColor, PopStyleColor, PushStyleVar, PopStyleVar, PushStyleVarX, PushStyleVarY, StyleVar,
   GetStyleColorVec4, GetColorU32, StyleColorsDark, StyleColorsClassic, StyleColorsLight,
+  StyleColorsCatppuccin, StyleColorsCyberpunk,
+  StorageGet: storageGet, StorageSet: storageSet,
   SetCursorPos, SetCursorPosX, SetCursorPosY, GetCursorPos, GetCursorScreenPos, SetCursorScreenPos,
   GetContentRegionAvail, GetContentRegionMax, CalcTextSize, AlignTextToFramePadding,
   GetFontSize, GetTextLineHeight, GetTextLineHeightWithSpacing,
@@ -4908,6 +5226,30 @@ const Backend = {
   canvas: null, renderer: null, hiddenInput: null,
   running: false, raf: 0, lastT: 0, userFn: null,
   textCommit: null,
+  // Menu visibility toggle (cheat-overlay QoL): the menu starts open; the
+  // user can hide it with a hotkey so the page runs at full native speed.
+  // Rebindable at runtime via `Backend.menuToggleKey` (e.g. from a KeyBind
+  // widget inside the menu itself).
+  menuVisible: true,
+  menuToggleKey: "Insert", // e.code for keys ("Insert","Delete","F2",...) or "M1".."M5" for mouse buttons
+  // Friendly helper: is a KeyBind-style bind currently active?
+  // bindName: e.code ("KeyX","ShiftLeft","Insert",...) or "M1".."M5".
+  // isDownOnly=true -> held state; false -> clicked-this-frame edge.
+  isKeyOrMouseActive(bindName, isDownOnly = false) {
+    if (!bindName || bindName === "None") return false;
+    const io = ImGui.GetIO();
+    const mouseMap = { M1: 0, M2: 2, M3: 1, M4: 3, M5: 4 };
+    if (mouseMap[bindName] !== undefined) {
+      const btn = mouseMap[bindName];
+      return isDownOnly ? !!io.MouseDown[btn] : !!io.MouseClicked[btn];
+    }
+    return isDownOnly ? !!io.KeysDown[bindName] : false;
+  },
+  setMenuVisible(v) {
+    this.menuVisible = !!v;
+    if (this.canvas) this.canvas.style.display = this.menuVisible ? "block" : "none";
+  },
+  toggleMenu() { this.setMenuVisible(!this.menuVisible); },
 
   init(opts = {}) {
     const c = ImGui.GetContext();
@@ -4971,55 +5313,103 @@ const Backend = {
     resize();
 
     // --- input (capture phase so page doesn't steal UI clicks) ---
+    // Mouse button index -> KeyBind name (e.button order: left/middle/right/back/forward).
+    const mouseNames = ["M1", "M3", "M2", "M4", "M5"];
     window.addEventListener("mousemove", (e) => io.AddMousePosEvent(e.clientX, e.clientY), true);
     document.addEventListener("mouseleave", () => io.AddMousePosEvent(-9999, -9999));
     window.addEventListener("blur", () => {
       io.AddMousePosEvent(-9999, -9999);
       for (let b = 0; b < 5; b++) io.AddMouseButtonEvent(b, false);
     });
+    // Right-clicks inside the UI (or while rebinding) must not open the
+    // browser context menu — this is what makes M2 binds usable.
+    window.addEventListener("contextmenu", (e) => {
+      const cc = ImGui.GetContext();
+      if (Backend.menuVisible && (io.WantCaptureMouse || cc.activeKind === "keybind")) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
     window.addEventListener("mousedown", (e) => {
-      if (e.button >= 0 && e.button < 5) io.AddMouseButtonEvent(e.button, true);
-      if (io.WantCaptureMouse && e.target !== inp) { e.preventDefault(); e.stopPropagation(); }
+      const cc = ImGui.GetContext();
+      const btn = e.button;
+      // 1. KeyBind capture: any mouse button M1..M5 can be bound. The click
+      // that opened the listener predates activation, so justActivated guards
+      // the (sub-frame) race where the OS repeats the event.
+      if (cc.activeKind === "keybind" && cc.activePayload) {
+        if (!cc.activePayload.justActivated) {
+          cc.activePayload.result = mouseNames[btn] || ("Mouse" + btn);
+          cc.activePayload.done = true;
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
+      // 2. Menu toggle bound to a mouse button (e.g. M4/M5 side buttons).
+      if (mouseNames[btn] === Backend.menuToggleKey) {
+        Backend.toggleMenu();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (btn >= 0 && btn < 5) io.AddMouseButtonEvent(btn, true);
+      if (Backend.menuVisible && io.WantCaptureMouse && e.target !== inp) { e.preventDefault(); e.stopPropagation(); }
     }, true);
     window.addEventListener("mouseup", (e) => {
       if (e.button >= 0 && e.button < 5) io.AddMouseButtonEvent(e.button, false);
     }, true);
     window.addEventListener("wheel", (e) => {
-      if (io.WantCaptureMouse) e.preventDefault();
+      if (Backend.menuVisible && io.WantCaptureMouse) e.preventDefault();
       io.AddMouseWheelEvent(-(e.deltaY || 0) / 100);
     }, { capture: true, passive: false });
     window.addEventListener("keydown", (e) => {
-      io.KeysDown[e.code] = true;
       const cc = ImGui.GetContext();
+      // 1. KeyBind capture: any keyboard code can be bound; Escape clears.
+      if (cc.activeKind === "keybind" && cc.activePayload) {
+        e.preventDefault();
+        e.stopPropagation();
+        cc.activePayload.result = (e.code === "Escape") ? "None" : (e.code || "None");
+        cc.activePayload.done = true;
+        return;
+      }
+      // 2. Menu open/close hotkey — works even while hidden.
+      if (e.code === Backend.menuToggleKey) {
+        Backend.toggleMenu();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      io.KeysDown[e.code] = true;
+      const cc2 = ImGui.GetContext();
       // Pure canvas text editing: route editing keys straight into the
       // active widget's payload (no DOM element involved).
-      if ((cc.activeKind === "text" || cc.activeKind === "segtext") && cc.activePayload) {
+      if ((cc2.activeKind === "text" || cc2.activeKind === "segtext") && cc2.activePayload) {
         if (e.key === "Backspace") {
           e.preventDefault();
-          cc.activePayload.value = cc.activePayload.value.slice(0, -1);
-          cc.activePayload.cursorPos = Math.max(0, (cc.activePayload.cursorPos || cc.activePayload.value.length) - 1);
+          cc2.activePayload.value = cc2.activePayload.value.slice(0, -1);
+          cc2.activePayload.cursorPos = Math.max(0, (cc2.activePayload.cursorPos || cc2.activePayload.value.length) - 1);
         } else if (e.key === "Enter") {
           e.preventDefault();
-          if (cc.activePayload.multiline) {
-            cc.activePayload.value += "\n";
-            cc.activePayload.cursorPos = cc.activePayload.value.length;
+          if (cc2.activePayload.multiline) {
+            cc2.activePayload.value += "\n";
+            cc2.activePayload.cursorPos = cc2.activePayload.value.length;
           } else {
-            cc.activePayload.commit = true;
+            cc2.activePayload.commit = true;
             this.blurText();
           }
         } else if (e.key === "Escape") {
           e.preventDefault();
-          cc.activePayload.commit = true;
+          cc2.activePayload.commit = true;
           this.blurText();
         } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          cc.activePayload.value += e.key;
-          cc.activePayload.cursorPos = cc.activePayload.value.length;
+          cc2.activePayload.value += e.key;
+          cc2.activePayload.cursorPos = cc2.activePayload.value.length;
         }
         e.stopPropagation(); // the page must never see keys typed into the UI
         return;
       }
-      if (io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
+      if (Backend.menuVisible && io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
       if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
     }, true);
     window.addEventListener("keyup", (e) => { io.KeysDown[e.code] = false; }, true);
@@ -5060,6 +5450,17 @@ const Backend = {
       const dt = Math.min(0.1, (t - this.lastT) / 1000 || 1 / 60);
       this.lastT = t;
       const c = ImGui.GetContext();
+      // Menu toggled closed: halt UI work and release the page. State is kept
+      // (nothing is destroyed) — rendering simply resumes on the next toggle.
+      if (!this.menuVisible) {
+        c.anyWindowHovered = false;
+        c.activeId = 0;
+        if (c.activeKind === "keybind") { c.activeKind = null; c.activePayload = null; }
+        this.renderer.ctx.clearRect(0, 0, c.io.DisplaySize.x, c.io.DisplaySize.y);
+        if (this.canvas) this.canvas.style.pointerEvents = "none";
+        this.raf = requestAnimationFrame(loop);
+        return;
+      }
       c.newFrame(dt);
       try { this.userFn(c); } catch (err) { console.error("[ImGui] frame error:", err); }
       c.endFrame();
@@ -5124,7 +5525,7 @@ global.__IMGUI_BACKEND__ = true;
 "use strict";
 
 const CDN_BASE = "https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/";
-const LIB_VERSION = "1.0.43"; // bump on every update: also bump @version + ?v= in @require lines
+const LIB_VERSION = "1.0.44"; // bump on every update: also bump @version + ?v= in @require lines
 const LIBS = ["ImGui.core.js", "ImGui.animate.js", "ImGui.draw.js", "ImGui.widgets.js", "ImGui.widgets2.js", "ImGui.extended.js", "ImGui.demo.js", "ImGui.notify.js", "ImGui.backend.js"];
 
 function libsPresent() {
@@ -5156,6 +5557,7 @@ async function ensureLibs() {
  */
 const S = {
   showDemo: true, showMine: true, showStyle: false, showFull: true,
+  showDash: true, dashTab: 0,
   counter: 0, checked: true, radio: 0,
   fval: 0.5, ival: 42, drag: 1.0,
   name: "player1", hp: 100,
@@ -5165,6 +5567,14 @@ const S = {
   listIdx: 1, listItems: ["aimbot", "esp", "bunnyhop", "triggerbot", "skins"],
   progress: 0.33,
   fullOpen: { value: true },
+  // --- cheat-overlay QoL state ---
+  menuKey: "Insert",          // menu open/close hotkey (rebindable in-menu)
+  aimbotKey: "M2",            // right mouse button
+  triggerKey: "M4",           // side mouse button
+  aimbotEnabled: false,
+  triggerEnabled: true,
+  flags: { Wallhack: true, Chams: false, Skeletons: true, Snaplines: false },
+  theme: 0, themeItems: ["Dark", "Classic", "Light", "Catppuccin", "Cyberpunk"],
 };
 
 /* ====================== YOUR OWN MENU — EDIT THIS ===========================
@@ -5223,7 +5633,96 @@ function MY_MENU() {
     ImGui.Separator();
     ImGui.TextWrapped("Tip: drag the title bar to move, corner grip to resize, double-click title to collapse.");
 
+    ImGui.SeparatorText("Overlay");
+    // Rebindable menu toggle: updates the backend hotkey live.
+    const mk = ImGui.KeyBind("Menu toggle key", S.menuKey);
+    if (mk.changed) {
+      S.menuKey = mk.key;
+      ImGui.Backend.menuToggleKey = mk.key;
+      console.log("[menu] new toggle key:", S.menuKey);
+    }
+    ImGui.TextDisabled("Hide the overlay with the toggle key; the page runs natively while hidden.");
   }
+  ImGui.End();
+}
+
+/* ============ SIDEBAR DASHBOARD — sidebar layout example (EDIT ME) ============
+ * Modern vertical-sidebar tool UI: left nav, right content page. Copy this
+ * function as a starting point for game-tool / utility / automation overlays.
+ */
+const DASHBOARD_TABS = ["Aimbot", "Visuals", "Misc", "Settings"];
+function DASHBOARD_MENU() {
+  const ImGui = window.ImGui;
+  ImGui.SetNextWindowSize(540, 360, ImGui.Cond.FirstUseEver);
+  const w = ImGui.Begin("Tool Dashboard", S.showDash ? true : false, ImGui.WindowFlags.NoCollapse);
+  S.showDash = w.open !== false;
+  if (!w.visible) { ImGui.End(); return; }
+
+  // Left column: navigation sidebar
+  if (ImGui.BeginChild("##sidebar", 120, 0, true)) {
+    DASHBOARD_TABS.forEach((tab, idx) => {
+      if (ImGui.Selectable(tab, S.dashTab === idx, 0, [110, 28])) S.dashTab = idx;
+    });
+  }
+  ImGui.EndChild();
+  ImGui.SameLine();
+
+  // Right column: active page content
+  if (ImGui.BeginChild("##content", 0, 0, true)) {
+    if (S.dashTab === 0) {
+      ImGui.SeparatorText("Aimbot Configuration");
+      S.aimbotEnabled = ImGui.Checkbox("Enable Aimbot", S.aimbotEnabled).checked;
+      ImGui.SameLine();
+      const ak = ImGui.KeyBind("##AimbotKey", S.aimbotKey);
+      if (ak.changed) S.aimbotKey = ak.key;
+      S.triggerEnabled = ImGui.Checkbox("Enable Triggerbot", S.triggerEnabled).checked;
+      ImGui.SameLine();
+      const tk = ImGui.KeyBind("##TriggerKey", S.triggerKey);
+      if (tk.changed) S.triggerKey = tk.key;
+      ImGui.SeparatorText("Status Monitor");
+      const heldA = ImGui.Backend.isKeyOrMouseActive(S.aimbotKey, true);
+      ImGui.TextColored(heldA ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
+        "Aimbot [" + S.aimbotKey + "]: " + (heldA ? "ACTIVE (HELD)" : "INACTIVE"));
+      const heldT = ImGui.Backend.isKeyOrMouseActive(S.triggerKey, true);
+      ImGui.TextColored(heldT ? [0, 1, 0, 1] : [0.6, 0.6, 0.6, 1],
+        "Trigger [" + S.triggerKey + "]: " + (heldT ? "ACTIVE (HELD)" : "INACTIVE"));
+    } else if (S.dashTab === 1) {
+      ImGui.SeparatorText("ESP & Visuals");
+      const mc = ImGui.MultiCombo("ESP Flags", S.flags);
+      if (mc.changed) console.log("[menu] esp flags =", JSON.stringify(S.flags));
+      // Background draw-list ESP: snapline + box drawn under the windows.
+      const bg = ImGui.GetBackgroundDrawList();
+      const io = ImGui.GetIO();
+      const cx = io.DisplaySize.x / 2, bottom = io.DisplaySize.y;
+      if (S.flags.Snaplines) bg.AddLine({ x: cx, y: bottom }, { x: cx + 120, y: 200 }, [1, 0, 0, 1], 1.5);
+      if (S.flags.Wallhack) bg.AddRect({ x: cx + 80, y: 160 }, { x: cx + 160, y: 260 }, [0, 1, 0, 1], 2, 1.5);
+    } else if (S.dashTab === 2) {
+      ImGui.SeparatorText("Misc");
+      ImGui.TextWrapped("Persisted settings use GM storage (Violentmonkey) with a localStorage fallback, so subdomains and CSPs can't wipe them.");
+      if (ImGui.Button("Save flags")) ImGui.StorageSet("[ImGui]demo-flags", { ...S.flags });
+      ImGui.SameLine();
+      if (ImGui.Button("Load flags")) {
+        const saved = ImGui.StorageGet("[ImGui]demo-flags", null);
+        if (saved) S.flags = { ...S.flags, ...saved };
+      }
+    } else {
+      ImGui.SeparatorText("Menu Settings");
+      const mk2 = ImGui.KeyBind("Menu Open/Close Key", S.menuKey);
+      if (mk2.changed) { S.menuKey = mk2.key; ImGui.Backend.menuToggleKey = mk2.key; }
+      ImGui.TextDisabled("Press Escape while binding to set to None.");
+      const th = ImGui.Combo("Theme", S.theme, S.themeItems);
+      if (th.changed) {
+        S.theme = th.index;
+        if (S.theme === 1) ImGui.StyleColorsClassic();
+        else if (S.theme === 2) ImGui.StyleColorsLight();
+        else if (S.theme === 3) ImGui.StyleColorsCatppuccin();
+        else if (S.theme === 4) ImGui.StyleColorsCyberpunk();
+        else ImGui.StyleColorsDark();
+      }
+    }
+  }
+  ImGui.EndChild();
+
   ImGui.End();
 }
 
@@ -5280,10 +5779,12 @@ async function boot() {
   const ImGui = window.ImGui;
   ImGui.CreateContext();
   ImGui.Backend.init({ zIndex: 2147483646 });
+  ImGui.Backend.menuToggleKey = S.menuKey;
   // wait a tick so DisplaySize is correct, then start frame loop
   ImGui.Backend.frame((c) => {
     const dt = c.io.DeltaTime;
     MY_MENU();      // <-- your menu
+    DASHBOARD_MENU(); // <-- sidebar dashboard example (KeyBind/MultiCombo/themes/ESP)
     DEMO_WINDOW(dt); // <-- reference demo (set S.showDemo=false to hide)
     if (S.showFull) ImGui.ShowDemoWindow(S.fullOpen); // <-- FULL port demo (tabs/tables/popups/plots)
     if (!S.fullOpen.value) S.showFull = false;

@@ -11,6 +11,30 @@ const Backend = {
   canvas: null, renderer: null, hiddenInput: null,
   running: false, raf: 0, lastT: 0, userFn: null,
   textCommit: null,
+  // Menu visibility toggle (cheat-overlay QoL): the menu starts open; the
+  // user can hide it with a hotkey so the page runs at full native speed.
+  // Rebindable at runtime via `Backend.menuToggleKey` (e.g. from a KeyBind
+  // widget inside the menu itself).
+  menuVisible: true,
+  menuToggleKey: "Insert", // e.code for keys ("Insert","Delete","F2",...) or "M1".."M5" for mouse buttons
+  // Friendly helper: is a KeyBind-style bind currently active?
+  // bindName: e.code ("KeyX","ShiftLeft","Insert",...) or "M1".."M5".
+  // isDownOnly=true -> held state; false -> clicked-this-frame edge.
+  isKeyOrMouseActive(bindName, isDownOnly = false) {
+    if (!bindName || bindName === "None") return false;
+    const io = ImGui.GetIO();
+    const mouseMap = { M1: 0, M2: 2, M3: 1, M4: 3, M5: 4 };
+    if (mouseMap[bindName] !== undefined) {
+      const btn = mouseMap[bindName];
+      return isDownOnly ? !!io.MouseDown[btn] : !!io.MouseClicked[btn];
+    }
+    return isDownOnly ? !!io.KeysDown[bindName] : false;
+  },
+  setMenuVisible(v) {
+    this.menuVisible = !!v;
+    if (this.canvas) this.canvas.style.display = this.menuVisible ? "block" : "none";
+  },
+  toggleMenu() { this.setMenuVisible(!this.menuVisible); },
 
   init(opts = {}) {
     const c = ImGui.GetContext();
@@ -74,55 +98,103 @@ const Backend = {
     resize();
 
     // --- input (capture phase so page doesn't steal UI clicks) ---
+    // Mouse button index -> KeyBind name (e.button order: left/middle/right/back/forward).
+    const mouseNames = ["M1", "M3", "M2", "M4", "M5"];
     window.addEventListener("mousemove", (e) => io.AddMousePosEvent(e.clientX, e.clientY), true);
     document.addEventListener("mouseleave", () => io.AddMousePosEvent(-9999, -9999));
     window.addEventListener("blur", () => {
       io.AddMousePosEvent(-9999, -9999);
       for (let b = 0; b < 5; b++) io.AddMouseButtonEvent(b, false);
     });
+    // Right-clicks inside the UI (or while rebinding) must not open the
+    // browser context menu — this is what makes M2 binds usable.
+    window.addEventListener("contextmenu", (e) => {
+      const cc = ImGui.GetContext();
+      if (Backend.menuVisible && (io.WantCaptureMouse || cc.activeKind === "keybind")) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
     window.addEventListener("mousedown", (e) => {
-      if (e.button >= 0 && e.button < 5) io.AddMouseButtonEvent(e.button, true);
-      if (io.WantCaptureMouse && e.target !== inp) { e.preventDefault(); e.stopPropagation(); }
+      const cc = ImGui.GetContext();
+      const btn = e.button;
+      // 1. KeyBind capture: any mouse button M1..M5 can be bound. The click
+      // that opened the listener predates activation, so justActivated guards
+      // the (sub-frame) race where the OS repeats the event.
+      if (cc.activeKind === "keybind" && cc.activePayload) {
+        if (!cc.activePayload.justActivated) {
+          cc.activePayload.result = mouseNames[btn] || ("Mouse" + btn);
+          cc.activePayload.done = true;
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
+      // 2. Menu toggle bound to a mouse button (e.g. M4/M5 side buttons).
+      if (mouseNames[btn] === Backend.menuToggleKey) {
+        Backend.toggleMenu();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (btn >= 0 && btn < 5) io.AddMouseButtonEvent(btn, true);
+      if (Backend.menuVisible && io.WantCaptureMouse && e.target !== inp) { e.preventDefault(); e.stopPropagation(); }
     }, true);
     window.addEventListener("mouseup", (e) => {
       if (e.button >= 0 && e.button < 5) io.AddMouseButtonEvent(e.button, false);
     }, true);
     window.addEventListener("wheel", (e) => {
-      if (io.WantCaptureMouse) e.preventDefault();
+      if (Backend.menuVisible && io.WantCaptureMouse) e.preventDefault();
       io.AddMouseWheelEvent(-(e.deltaY || 0) / 100);
     }, { capture: true, passive: false });
     window.addEventListener("keydown", (e) => {
-      io.KeysDown[e.code] = true;
       const cc = ImGui.GetContext();
+      // 1. KeyBind capture: any keyboard code can be bound; Escape clears.
+      if (cc.activeKind === "keybind" && cc.activePayload) {
+        e.preventDefault();
+        e.stopPropagation();
+        cc.activePayload.result = (e.code === "Escape") ? "None" : (e.code || "None");
+        cc.activePayload.done = true;
+        return;
+      }
+      // 2. Menu open/close hotkey — works even while hidden.
+      if (e.code === Backend.menuToggleKey) {
+        Backend.toggleMenu();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      io.KeysDown[e.code] = true;
+      const cc2 = ImGui.GetContext();
       // Pure canvas text editing: route editing keys straight into the
       // active widget's payload (no DOM element involved).
-      if ((cc.activeKind === "text" || cc.activeKind === "segtext") && cc.activePayload) {
+      if ((cc2.activeKind === "text" || cc2.activeKind === "segtext") && cc2.activePayload) {
         if (e.key === "Backspace") {
           e.preventDefault();
-          cc.activePayload.value = cc.activePayload.value.slice(0, -1);
-          cc.activePayload.cursorPos = Math.max(0, (cc.activePayload.cursorPos || cc.activePayload.value.length) - 1);
+          cc2.activePayload.value = cc2.activePayload.value.slice(0, -1);
+          cc2.activePayload.cursorPos = Math.max(0, (cc2.activePayload.cursorPos || cc2.activePayload.value.length) - 1);
         } else if (e.key === "Enter") {
           e.preventDefault();
-          if (cc.activePayload.multiline) {
-            cc.activePayload.value += "\n";
-            cc.activePayload.cursorPos = cc.activePayload.value.length;
+          if (cc2.activePayload.multiline) {
+            cc2.activePayload.value += "\n";
+            cc2.activePayload.cursorPos = cc2.activePayload.value.length;
           } else {
-            cc.activePayload.commit = true;
+            cc2.activePayload.commit = true;
             this.blurText();
           }
         } else if (e.key === "Escape") {
           e.preventDefault();
-          cc.activePayload.commit = true;
+          cc2.activePayload.commit = true;
           this.blurText();
         } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          cc.activePayload.value += e.key;
-          cc.activePayload.cursorPos = cc.activePayload.value.length;
+          cc2.activePayload.value += e.key;
+          cc2.activePayload.cursorPos = cc2.activePayload.value.length;
         }
         e.stopPropagation(); // the page must never see keys typed into the UI
         return;
       }
-      if (io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
+      if (Backend.menuVisible && io.WantCaptureKeyboard) { e.preventDefault(); e.stopPropagation(); }
       if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) io.AddInputCharactersUTF8(e.key);
     }, true);
     window.addEventListener("keyup", (e) => { io.KeysDown[e.code] = false; }, true);
@@ -163,6 +235,17 @@ const Backend = {
       const dt = Math.min(0.1, (t - this.lastT) / 1000 || 1 / 60);
       this.lastT = t;
       const c = ImGui.GetContext();
+      // Menu toggled closed: halt UI work and release the page. State is kept
+      // (nothing is destroyed) — rendering simply resumes on the next toggle.
+      if (!this.menuVisible) {
+        c.anyWindowHovered = false;
+        c.activeId = 0;
+        if (c.activeKind === "keybind") { c.activeKind = null; c.activePayload = null; }
+        this.renderer.ctx.clearRect(0, 0, c.io.DisplaySize.x, c.io.DisplaySize.y);
+        if (this.canvas) this.canvas.style.pointerEvents = "none";
+        this.raf = requestAnimationFrame(loop);
+        return;
+      }
       c.newFrame(dt);
       try { this.userFn(c); } catch (err) { console.error("[ImGui] frame error:", err); }
       c.endFrame();

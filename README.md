@@ -22,7 +22,8 @@
   `preventDefault/stopPropagation` so the page doesn't get the click.
 - Style defaults copied from `imgui.cpp:1507-1592` + `StyleColorsDark`
   (`imgui_draw.cpp:187-253`); Classic/Light themes approximated.
-- `.ini` window persistence via `localStorage` (respects `NoSavedSettings`).
+- `.ini` window persistence via GM storage (`GM_getValue`/`GM_setValue`) with
+  `localStorage` fallback (respects `NoSavedSettings`).
 
 ## Files (this folder = `C:\Users\SkyD\Downloads\ImGui\Build`)
 | File | What |
@@ -30,9 +31,9 @@
 | `ImGui.core.js` | Context, IO, style, `Begin/End`, move/resize/collapse, ID hash, layout |
 | `ImGui.animate.js` | HImGuiAnimation port: keyframe sequencer, tweens (`ImGui.Animation`) |
 | `ImGui.draw.js` | `ImGui.CanvasRenderer` — windows + widgets + polyline/polygon/image on canvas |
-| `ImGui.widgets.js` | Base: Text/Button/Checkbox/Slider/Drag/Input/Color/Combo/Selectable/... |
+| `ImGui.widgets.js` | Base: Text/Button/Checkbox/Slider/Drag/Input/Color/Combo/MultiCombo/KeyBind/Selectable/... |
 | `ImGui.widgets2.js` | Arrow/CheckboxFlags/RadioInt/SliderN-Angle-VSlider/DragN/InputFloat-Int-Double/Hint/ColorButton-Picker/Image/Plot/LabelText/Value/SeparatorText/... |
-| `ImGui.extended.js` | ID stack, groups, disabled, style stacks, cursor/scroll/ini, item+mouse+key queries, tooltip, popup/modal, menubar+menu, tabbar, tables, columns, TreeNodeEx, drag&drop |
+| `ImGui.extended.js` | ID stack, groups, disabled, style stacks, cursor/scroll/ini (GM storage + localStorage fallback), item+mouse+key queries, tooltip, popup/modal, menubar+menu, tabbar, tables, columns, TreeNodeEx, drag&drop, Dark/Classic/Light/Catppuccin/Cyberpunk themes |
 | `ImGui.demo.js` | `ShowDemoWindow/ShowStyleEditor/ShowMetricsWindow` (tabbed, exercises all APIs) |
 | `ImGui.notify.js` | Toast notifications (ImGuiNotify port: bottom-corner stack, fade, dismiss/action buttons) |
 | `ImGui.backend.js` | Overlay canvas, listeners, hidden text input, rAF loop |
@@ -49,9 +50,9 @@
 ## Use the split `ImGui.main.js` with `https://` includes
 1. Pushed to `GamebP/ImGui-JS` — `@require` ×7 + `CDN_BASE` already point at
    `https://raw.githubusercontent.com/GamebP/ImGui-JS/refs/heads/main/`
-   with `?v=<version>` cache-buster (currently `?v=1.0.43`) (files live at repo root, no `Build/` prefix).
+   with `?v=<version>` cache-buster (currently `?v=1.0.44`) (files live at repo root, no `Build/` prefix).
 2. Next update: bump `@version`, `LIB_VERSION`, and the `?v=` in all 7 `@require`
-   lines (e.g. `?v=1.0.43` → `?v=1.0.43`). New URL = cache miss, old cached libs are dropped.
+   lines (e.g. `?v=1.0.44` → `?v=1.0.44`). New URL = cache miss, old cached libs are dropped.
 3. New userscript ← paste `ImGui.main.js` only. Violentmonkey fetches the 7 libs
    via `https://raw.githubusercontent.com/...` at install. If a lib 404s, the runtime
    fallback in `ensureLibs()` loads them from `CDN_BASE` + `?v=` via `<script src>`.
@@ -84,6 +85,27 @@ ImGui.SeparatorText("section"); ImGui.ProgressBar(0.5, "half");
 Rules: call widgets only between `Begin`/`End`, every frame; keep values in `S`.
 `##` hides label text but keeps ID unique: `Button("Save##slot1")`.
 Full API tour: open the **full-port Demo** window → each tab shows copy-pasteable usage.
+
+## Overlay QoL: toggle hotkey, KeyBind, MultiCombo, themes, ESP
+```js
+// Menu starts open; Insert hides it (canvas display:none, zero input capture).
+// Rebind live: ImGui.Backend.menuToggleKey = "F2"; // or "M4"/"M5" side buttons
+const mk = ImGui.KeyBind("Menu toggle key", S.menuKey); // any key or M1..M5, Esc clears
+if (mk.changed) { S.menuKey = mk.key; ImGui.Backend.menuToggleKey = mk.key; }
+// Held-or-clicked queries for feature keys:
+if (ImGui.Backend.isKeyOrMouseActive(S.aimbotKey, true)) { /* firing */ }
+// Multi-select dropdown:
+ImGui.MultiCombo("ESP Flags", S.flags); // {Wallhack:true, Chams:false, ...}
+// Themes: ImGui.StyleColorsDark/Classic/Light/Catppuccin/Cyberpunk();
+// ESP overlays (behind windows) + glow on any shape op ({glow:true, glowBlur:14}):
+const bg = ImGui.GetBackgroundDrawList();
+bg.AddLine({x: 640, y: 800}, {x: tx, y: ty}, [1,0,0,1], 1.5);
+bg.AddRect({x: x1, y: y1}, {x: x2, y: y2}, [0,1,0,1], 2, 1.5);
+// Persistent settings: ImGui.StorageGet/StorageSet -> GM_getValue/GM_setValue
+// with localStorage fallback (grants: GM_getValue + GM_setValue).
+```
+See `DASHBOARD_MENU()` in `ImGui.main.js` for a sidebar-layout starter (nav +
+content child panels) wiring all of the above.
 
 ## Rebuild after edits
 `cd Build && python3 build_bundle.py` (regenerates `ImGui.bundle.user.js`).

@@ -177,6 +177,17 @@ class CanvasRenderer {
     if (w._chromeOps) for (const op of w._chromeOps) this.drawOp(ctx, st, op);
     ctx.restore();
   }
+  // Optional neon glow: any op may carry glow:true (+glowColor/glowBlur or
+  // shadowColor/shadowBlur aliases). Implemented with Canvas2D shadow state
+  // so ESP boxes, buttons and frames can bloom without extra draw calls.
+  _applyGlow(ctx, st, op) {
+    if (!op.glow) return null;
+    const col = op.glowColor || op.shadowColor || op.css || css(op.col);
+    ctx.save();
+    ctx.shadowColor = (typeof col === "string") ? col : css(col);
+    ctx.shadowBlur = op.glowBlur || op.shadowBlur || 12;
+    return true;
+  }
   drawOp(ctx, st, op) {
     if (!op || !op.t) return;
     switch (op.t) {
@@ -203,17 +214,21 @@ class CanvasRenderer {
       case "polyline": {
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.lineJoin = "round"; ctx.lineCap = "round";
+        const gl = this._applyGlow(ctx, st, op);
         ctx.beginPath();
         (op.pts || []).forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
         if (op.closed) ctx.closePath();
         ctx.stroke();
+        if (gl) ctx.restore();
         break;
       }
       case "polygon": {
         ctx.fillStyle = op.css || css(op.col);
+        const gl2 = this._applyGlow(ctx, st, op);
         ctx.beginPath();
         (op.pts || []).forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
         ctx.closePath(); ctx.fill();
+        if (gl2) ctx.restore();
         break;
       }
       case "image": {
@@ -240,38 +255,59 @@ class CanvasRenderer {
         ctx.closePath(); ctx.fill();
         break;
       }
-      case "rectFilled":
+      case "rectFilled": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.fillStyle = op.css || css(op.col);
         roundRectPath(ctx, op.x, op.y, op.w, op.h, op.r || 0); ctx.fill();
+        if (gl) ctx.restore();
         break;
-      case "rect":
+      }
+      case "rect": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         roundRectPath(ctx, op.x, op.y, op.w, op.h, op.r || 0); ctx.stroke();
+        if (gl) ctx.restore();
         break;
-      case "line":
+      }
+      case "line": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.beginPath(); ctx.moveTo(op.x1, op.y1); ctx.lineTo(op.x2, op.y2); ctx.stroke();
+        if (gl) ctx.restore();
         break;
-      case "circleFilled":
+      }
+      case "circleFilled": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.fillStyle = op.css || css(op.col);
         ctx.beginPath(); ctx.arc(op.x, op.y, op.r, 0, Math.PI * 2); ctx.fill();
+        if (gl) ctx.restore();
         break;
-      case "circle": // AddCircle: stroke-only ring (notify icons emit this)
+      }
+      case "circle": { // AddCircle: stroke-only ring (notify icons emit this)
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.beginPath(); ctx.arc(op.x, op.y, Math.max(0.1, op.r), 0, Math.PI * 2); ctx.stroke();
+        if (gl) ctx.restore();
         break;
-      case "bezierCubic":
+      }
+      case "bezierCubic": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.lineCap = "round";
         ctx.beginPath(); ctx.moveTo(op.p1.x, op.p1.y);
         ctx.bezierCurveTo(op.p2.x, op.p2.y, op.p3.x, op.p3.y, op.p4.x, op.p4.y); ctx.stroke();
+        if (gl) ctx.restore();
         break;
-      case "bezierQuad":
+      }
+      case "bezierQuad": {
+        const gl = this._applyGlow(ctx, st, op);
         ctx.strokeStyle = op.css || css(op.col); ctx.lineWidth = op.th || 1;
         ctx.lineCap = "round";
         ctx.beginPath(); ctx.moveTo(op.p1.x, op.p1.y);
         ctx.quadraticCurveTo(op.p2.x, op.p2.y, op.p3.x, op.p3.y); ctx.stroke();
+        if (gl) ctx.restore();
         break;
+      }
       case "rectGradient": { // AddRectFilledMultiColor: horizontal tl->tr blend
         const g = ctx.createLinearGradient(op.x, 0, op.x + op.w, 0);
         g.addColorStop(0, css(op.tl)); g.addColorStop(1, css(op.tr));

@@ -2,7 +2,7 @@
  * Adds what widgets.js missed: ID stack, groups, disabled blocks, style stacks,
  * cursor/layout queries, item-state queries, mouse/key queries, tooltips, popups +
  * modals, menu bar + menus, tab bar, tables (lite), legacy columns, TreeNodeEx,
- * drag & drop (lite), .ini persistence via localStorage, style themes.
+ * drag & drop (lite), .ini persistence (GM storage + localStorage fallback), style themes.
  * Requires: core + widgets (+widgets2 for demo sections, not strictly).
  */
 (function (global) {
@@ -218,13 +218,41 @@ function wrapBeginEnd() {
 }
 wrapBeginEnd();
 
-// ---------- .ini persistence (localStorage) ----------
+// ---------- .ini persistence (GM storage with localStorage fallback) ----------
+// Violentmonkey/Tampermonkey persistent storage survives origin clears, CSP
+// sandboxing and subdomain isolation that routinely wipe localStorage.
+// Requires `// @grant GM_getValue` + `// @grant GM_setValue`; without the
+// grants (or outside a userscript manager) it falls back to localStorage.
+function storageGet(key, def) {
+  try {
+    if (typeof GM_getValue !== "undefined") {
+      const v = GM_getValue(key, undefined);
+      return v === undefined ? def : v;
+    }
+  } catch { /* GM bridge unavailable */ }
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null || raw === undefined) return def;
+    try { return JSON.parse(raw); } catch { return raw; }
+  } catch { return def; }
+}
+function storageSet(key, val) {
+  try {
+    if (typeof GM_setValue !== "undefined") { GM_setValue(key, val); return; }
+  } catch { /* fall through to localStorage */ }
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch { /* private mode */ }
+}
+function storageDel(key) {
+  try {
+    if (typeof GM_deleteValue !== "undefined") { GM_deleteValue(key); return; }
+  } catch { /* fall through */ }
+  try { localStorage.removeItem(key); } catch { /* ignore */ }
+}
 const INI_KEY = "[ImGui]winpos";
 function tryLoadIni(c) {
   try {
-    const raw = localStorage.getItem(INI_KEY);
-    if (!raw) return;
-    const j = JSON.parse(raw);
+    const j = storageGet(INI_KEY, null);
+    if (!j || typeof j !== "object") return;
     for (const [name, s] of Object.entries(j)) {
       const w = c.windows.get(name);
       if (w && s && typeof s.x === "number") {
@@ -238,8 +266,7 @@ function tryLoadIni(c) {
     // also stash for windows created later
     c._iniStash = j;
   } catch { /* private mode */ }
-}
-// stash applied on creation
+}// stash applied on creation
 setIntervalSafeHook();
 function setIntervalSafeHook() {
   const Proto = ImGui.ImGuiContext.prototype;
@@ -265,7 +292,7 @@ function throttleSaveIni(c) {
       if (w.flags & ImGui.WindowFlags.NoSavedSettings) continue;
       j[name] = { x: Math.round(w.pos.x), y: Math.round(w.pos.y), w: Math.round(w.sizeFull.x), h: w.size.y > 0 ? Math.round(w.sizeFull.y) : 0, collapsed: !!w.collapsed };
     }
-    localStorage.setItem(INI_KEY, JSON.stringify(j));
+    storageSet(INI_KEY, j);
   } catch { /* ignore */ }
 }
 function SetClipboardText(text) {
@@ -433,6 +460,98 @@ function StyleColorsLight() {
   C[ImGui.Col.UnsavedMarker] = F(0, 0, 0, 1); C[ImGui.Col.NavCursor] = [...C[ImGui.Col.HeaderHovered]];
   C[ImGui.Col.NavWindowingHighlight] = F(0.70, 0.70, 0.70, 0.70); C[ImGui.Col.NavWindowingDimBg] = F(0.20, 0.20, 0.20, 0.20);
   C[ImGui.Col.ModalWindowDimBg] = F(0.20, 0.20, 0.20, 0.35);
+}
+function StyleColorsCatppuccin() {
+  // Catppuccin Mocha (https://catppuccin.com/palette): Base/Mantle/Crust
+  // surfaces, Sapphire accents, Mauve grabs, Green checkmarks.
+  const c = ensure(), C = c.style.Colors;
+  const F = (r, g, b, a = 1) => [r / 255, g / 255, b / 255, a];
+  C[ImGui.Col.Text] = F(205, 214, 244, 1);
+  C[ImGui.Col.TextDisabled] = F(127, 132, 156, 1);
+  C[ImGui.Col.WindowBg] = F(30, 30, 46, 0.96);
+  C[ImGui.Col.ChildBg] = F(24, 24, 37, 1);
+  C[ImGui.Col.PopupBg] = F(24, 24, 37, 0.98);
+  C[ImGui.Col.Border] = F(69, 71, 90, 0.8);
+  C[ImGui.Col.FrameBg] = F(49, 50, 68, 0.8);
+  C[ImGui.Col.FrameBgHovered] = F(69, 71, 90, 1);
+  C[ImGui.Col.FrameBgActive] = F(88, 91, 112, 1);
+  C[ImGui.Col.TitleBg] = F(24, 24, 37, 1);
+  C[ImGui.Col.TitleBgActive] = F(17, 17, 27, 1);
+  C[ImGui.Col.TitleBgCollapsed] = F(17, 17, 27, 0.6);
+  C[ImGui.Col.MenuBarBg] = F(24, 24, 37, 1);
+  C[ImGui.Col.ScrollbarBg] = F(24, 24, 37, 0.6);
+  C[ImGui.Col.ScrollbarGrab] = F(69, 71, 90, 1);
+  C[ImGui.Col.ScrollbarGrabHovered] = F(88, 91, 112, 1);
+  C[ImGui.Col.ScrollbarGrabActive] = F(108, 112, 134, 1);
+  C[ImGui.Col.CheckMark] = F(166, 227, 161, 1);
+  C[ImGui.Col.SliderGrab] = F(203, 166, 247, 1);
+  C[ImGui.Col.SliderGrabActive] = F(203, 166, 247, 0.8);
+  C[ImGui.Col.Button] = F(137, 180, 250, 0.4);
+  C[ImGui.Col.ButtonHovered] = F(137, 180, 250, 0.8);
+  C[ImGui.Col.ButtonActive] = F(137, 180, 250, 1);
+  C[ImGui.Col.Header] = F(137, 180, 250, 0.3);
+  C[ImGui.Col.HeaderHovered] = F(137, 180, 250, 0.7);
+  C[ImGui.Col.HeaderActive] = F(137, 180, 250, 1);
+  C[ImGui.Col.Separator] = F(69, 71, 90, 0.8);
+  C[ImGui.Col.Tab] = F(49, 50, 68, 1);
+  C[ImGui.Col.TabSelected] = F(137, 180, 250, 0.4);
+  C[ImGui.Col.TabHovered] = F(137, 180, 250, 0.7);
+  C[ImGui.Col.PlotLines] = F(137, 180, 250, 1);
+  C[ImGui.Col.PlotHistogram] = F(250, 179, 135, 1);
+  C[ImGui.Col.TableHeaderBg] = F(24, 24, 37, 1);
+  C[ImGui.Col.TableBorderStrong] = F(69, 71, 90, 1);
+  C[ImGui.Col.TableBorderLight] = F(49, 50, 68, 1);
+  C[ImGui.Col.TableRowBgAlt] = F(205, 214, 244, 0.06);
+  C[ImGui.Col.TextSelectedBg] = F(137, 180, 250, 0.35);
+  c.style.WindowRounding = 8;
+  c.style.FrameRounding = 5;
+  c.style.PopupRounding = 6;
+}
+function StyleColorsCyberpunk() {
+  // Cyberpunk / neon: near-black violet shell, neon-pink borders + title,
+  // cyan buttons, yellow checkmarks.
+  const c = ensure(), C = c.style.Colors;
+  const F = (r, g, b, a = 1) => [r / 255, g / 255, b / 255, a];
+  C[ImGui.Col.Text] = F(240, 240, 240, 1);
+  C[ImGui.Col.TextDisabled] = F(120, 120, 140, 1);
+  C[ImGui.Col.WindowBg] = F(10, 10, 18, 0.96);
+  C[ImGui.Col.ChildBg] = F(14, 14, 26, 1);
+  C[ImGui.Col.PopupBg] = F(14, 14, 26, 0.98);
+  C[ImGui.Col.Border] = F(255, 0, 128, 0.7);
+  C[ImGui.Col.FrameBg] = F(20, 20, 35, 1);
+  C[ImGui.Col.FrameBgHovered] = F(40, 40, 70, 1);
+  C[ImGui.Col.FrameBgActive] = F(60, 60, 100, 1);
+  C[ImGui.Col.TitleBg] = F(20, 20, 35, 1);
+  C[ImGui.Col.TitleBgActive] = F(255, 0, 128, 0.9);
+  C[ImGui.Col.TitleBgCollapsed] = F(255, 0, 128, 0.4);
+  C[ImGui.Col.MenuBarBg] = F(14, 14, 26, 1);
+  C[ImGui.Col.ScrollbarBg] = F(10, 10, 18, 0.6);
+  C[ImGui.Col.ScrollbarGrab] = F(255, 0, 128, 0.6);
+  C[ImGui.Col.ScrollbarGrabHovered] = F(255, 0, 128, 0.85);
+  C[ImGui.Col.ScrollbarGrabActive] = F(0, 240, 255, 1);
+  C[ImGui.Col.CheckMark] = F(255, 230, 0, 1);
+  C[ImGui.Col.SliderGrab] = F(255, 0, 128, 1);
+  C[ImGui.Col.SliderGrabActive] = F(0, 240, 255, 1);
+  C[ImGui.Col.Button] = F(0, 240, 255, 0.35);
+  C[ImGui.Col.ButtonHovered] = F(0, 240, 255, 0.8);
+  C[ImGui.Col.ButtonActive] = F(0, 240, 255, 1);
+  C[ImGui.Col.Header] = F(255, 0, 128, 0.3);
+  C[ImGui.Col.HeaderHovered] = F(255, 0, 128, 0.7);
+  C[ImGui.Col.HeaderActive] = F(255, 0, 128, 1);
+  C[ImGui.Col.Separator] = F(255, 0, 128, 0.5);
+  C[ImGui.Col.Tab] = F(20, 20, 35, 1);
+  C[ImGui.Col.TabSelected] = F(255, 0, 128, 0.5);
+  C[ImGui.Col.TabHovered] = F(0, 240, 255, 0.5);
+  C[ImGui.Col.PlotLines] = F(0, 240, 255, 1);
+  C[ImGui.Col.PlotHistogram] = F(255, 0, 128, 1);
+  C[ImGui.Col.TableHeaderBg] = F(20, 20, 35, 1);
+  C[ImGui.Col.TableBorderStrong] = F(255, 0, 128, 0.7);
+  C[ImGui.Col.TableBorderLight] = F(60, 60, 100, 1);
+  C[ImGui.Col.TableRowBgAlt] = F(0, 240, 255, 0.06);
+  C[ImGui.Col.TextSelectedBg] = F(255, 0, 128, 0.35);
+  c.style.WindowRounding = 4;
+  c.style.FrameRounding = 2;
+  c.style.PopupRounding = 4;
 }
 
 // ---------- cursor / layout queries ----------
@@ -626,17 +745,41 @@ function GetWindowDrawList() {
 function GetBackgroundDrawList() {
   const c = ensure(); c._bgOps = c._bgOps || []; const a = c._bgOps;
   return {
-    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
-    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
     AddLine(p1, p2, col, th) { a.push({ t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+    AddRect(p1, p2, col, r, th) { a.push({ t: "rect", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col, th: th || 1 }); },
+    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddRectFilledMultiColor(p1, p2, tl, tr, br, bl) { a.push({ t: "rectGradient", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, tl, tr, br, bl }); },
+    AddCircle(cx, cy, r, col, th) { a.push({ t: "circle", x: cx, y: cy, r, col, th: th || 1 }); },
+    AddCircleFilled(cx, cy, r, col) { a.push({ t: "circleFilled", x: cx, y: cy, r, col }); },
+    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
+    AddTriangle(p1, p2, p3, col, th) { a.push({ t: "polyline", pts: [p1, p2, p3], col, th: th || 1, closed: true }); },
+    AddTriangleFilled(p1, p2, p3, col) { a.push({ t: "polygon", pts: [p1, p2, p3], col }); },
+    AddNgon(cx, cy, r, col, n, th) { a.push({ t: "polyline", pts: _ngonPts(cx, cy, r, n), col, th: th || 1, closed: true }); },
+    AddNgonFilled(cx, cy, r, col, n) { a.push({ t: "polygon", pts: _ngonPts(cx, cy, r, n), col }); },
+    AddPolyline(pts, col, th, closed) { a.push({ t: "polyline", pts: pts.slice(), col, th: th || 1, closed: !!closed }); },
+    AddConvexPolyFilled(pts, col) { a.push({ t: "polygon", pts: pts.slice(), col }); },
+    AddBezierCubic(p1, p2, p3, p4, col, th) { a.push({ t: "bezierCubic", p1, p2, p3, p4, col, th: th || 1 }); },
+    AddBezierQuadratic(p1, p2, p3, col, th) { a.push({ t: "bezierQuad", p1, p2, p3, col, th: th || 1 }); },
   };
 }
 function GetForegroundDrawList() {
   const c = ensure(); c._overlayOps = c._overlayOps || []; const a = c._overlayOps;
   return {
-    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
-    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
     AddLine(p1, p2, col, th) { a.push({ t: "line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, col, th: th || 1 }); },
+    AddRect(p1, p2, col, r, th) { a.push({ t: "rect", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col, th: th || 1 }); },
+    AddRectFilled(p1, p2, col, r) { a.push({ t: "rectFilled", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, r: r || 0, col }); },
+    AddRectFilledMultiColor(p1, p2, tl, tr, br, bl) { a.push({ t: "rectGradient", x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y, tl, tr, br, bl }); },
+    AddCircle(cx, cy, r, col, th) { a.push({ t: "circle", x: cx, y: cy, r, col, th: th || 1 }); },
+    AddCircleFilled(cx, cy, r, col) { a.push({ t: "circleFilled", x: cx, y: cy, r, col }); },
+    AddText(x, y, col, str) { a.push({ t: "text", str, x, y, col }); },
+    AddTriangle(p1, p2, p3, col, th) { a.push({ t: "polyline", pts: [p1, p2, p3], col, th: th || 1, closed: true }); },
+    AddTriangleFilled(p1, p2, p3, col) { a.push({ t: "polygon", pts: [p1, p2, p3], col }); },
+    AddNgon(cx, cy, r, col, n, th) { a.push({ t: "polyline", pts: _ngonPts(cx, cy, r, n), col, th: th || 1, closed: true }); },
+    AddNgonFilled(cx, cy, r, col, n) { a.push({ t: "polygon", pts: _ngonPts(cx, cy, r, n), col }); },
+    AddPolyline(pts, col, th, closed) { a.push({ t: "polyline", pts: pts.slice(), col, th: th || 1, closed: !!closed }); },
+    AddConvexPolyFilled(pts, col) { a.push({ t: "polygon", pts: pts.slice(), col }); },
+    AddBezierCubic(p1, p2, p3, p4, col, th) { a.push({ t: "bezierCubic", p1, p2, p3, p4, col, th: th || 1 }); },
+    AddBezierQuadratic(p1, p2, p3, col, th) { a.push({ t: "bezierQuad", p1, p2, p3, col, th: th || 1 }); },
   };
 }
 // ---------- ImGuiListClipper (uniform-height virtualization) ----------
@@ -1195,10 +1338,10 @@ function TableSetupColumn(label, widthOrWeight = 0, flags = 0) {
 }
 function tablePersistKey(t, kind) { return "imgui_table_" + t.id + "_" + kind; }
 function tableStateGet(t, kind) {
-  try { return JSON.parse(localStorage.getItem(tablePersistKey(t, kind)) || "null"); } catch (e) { return null; }
+  try { return storageGet(tablePersistKey(t, kind), null); } catch (e) { return null; }
 }
 function tableStateSet(t, kind, val) {
-  try { localStorage.setItem(tablePersistKey(t, kind), JSON.stringify(val)); return true; } catch (e) { return false; }
+  try { storageSet(tablePersistKey(t, kind), val); return true; } catch (e) { return false; }
 }
 function tableLayout(t) {
   // Column pitch reserves CellPadding.x on both sides so text never clips.
@@ -1564,6 +1707,8 @@ Object.assign(ImGui, {
   PushID, PopID, GetID, GetItemRect, BeginGroup, EndGroup, BeginDisabled, EndDisabled,
   PushItemWidth, PopItemWidth, PushStyleColor, PopStyleColor, PushStyleVar, PopStyleVar, PushStyleVarX, PushStyleVarY, StyleVar,
   GetStyleColorVec4, GetColorU32, StyleColorsDark, StyleColorsClassic, StyleColorsLight,
+  StyleColorsCatppuccin, StyleColorsCyberpunk,
+  StorageGet: storageGet, StorageSet: storageSet,
   SetCursorPos, SetCursorPosX, SetCursorPosY, GetCursorPos, GetCursorScreenPos, SetCursorScreenPos,
   GetContentRegionAvail, GetContentRegionMax, CalcTextSize, AlignTextToFramePadding,
   GetFontSize, GetTextLineHeight, GetTextLineHeightWithSpacing,
